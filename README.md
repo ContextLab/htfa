@@ -52,7 +52,7 @@ make codestyle
 git add .
 git commit -m ":tada: Initial commit"
 git branch -M main
-git remote add origin https://github.com/jeremymanning/htfa.git
+git remote add origin https://github.com/ContextLab/htfa.git
 git push -u origin main
 ```
 
@@ -385,7 +385,7 @@ This project is licensed under the terms of the `MIT` license. See [LICENSE](htt
   year = {2022},
   publisher = {GitHub},
   journal = {GitHub repository},
-  howpublished = {\url{https://github.com/jeremymanning/htfa}}
+  howpublished = {\url{https://github.com/ContextLab/htfa}}
 }
 ```
 
