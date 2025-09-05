@@ -282,7 +282,9 @@ def _fit_arrays(
         return model
 
 
-def _infer_parameters(data: npt.NDArray[np.floating[Any]], **kwargs: Any) -> Dict[str, Any]:
+def _infer_parameters(
+    data: npt.NDArray[np.floating[Any]], **kwargs: Any
+) -> Dict[str, Any]:
     """Infer optimal parameters from data characteristics.
 
     Parameters
@@ -319,7 +321,9 @@ def _infer_parameters(data: npt.NDArray[np.floating[Any]], **kwargs: Any) -> Dic
     return inferred
 
 
-def _load_nifti_file(path: Path) -> Tuple[npt.NDArray[np.floating[Any]], npt.NDArray[np.floating[Any]]]:
+def _load_nifti_file(
+    path: Path,
+) -> Tuple[npt.NDArray[np.floating[Any]], npt.NDArray[np.floating[Any]]]:
     """Load NIfTI file and extract data and coordinates.
 
     This is a placeholder function that will be enhanced when nibabel

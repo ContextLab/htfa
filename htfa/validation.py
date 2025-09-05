@@ -4,9 +4,7 @@ This module provides input validation functions for arrays, BIDS paths, paramete
 and error formatting to ensure data integrity and provide clear error messages.
 """
 
-from typing import Any, Dict, List, Optional, Tuple, Union, Type
-
-import numpy.typing as npt
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import os
 import re
@@ -14,6 +12,7 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 from sklearn.utils.validation import check_array
 
@@ -34,7 +33,9 @@ class ValidationError(ValueError):
 
 def validate_arrays(
     data: Union[npt.NDArray[np.floating[Any]], List[npt.NDArray[np.floating[Any]]]],
-    coords: Optional[Union[npt.NDArray[np.floating[Any]], List[npt.NDArray[np.floating[Any]]]]] = None,
+    coords: Optional[
+        Union[npt.NDArray[np.floating[Any]], List[npt.NDArray[np.floating[Any]]]]
+    ] = None,
 ) -> Tuple[npt.NDArray[np.floating[Any]], Optional[npt.NDArray[np.floating[Any]]]]:
     """Validate input arrays for shape, type, and dimensional consistency.
 
@@ -726,7 +727,9 @@ def format_validation_error(error_type: str, context: Dict[str, Any]) -> str:
 
 
 def check_data_quality(
-    data: npt.NDArray[np.floating[Any]], min_signal_std: float = 1e-6, max_outlier_ratio: float = 0.05
+    data: npt.NDArray[np.floating[Any]],
+    min_signal_std: float = 1e-6,
+    max_outlier_ratio: float = 0.05,
 ) -> Dict[str, Any]:
     """Check data quality and provide warnings for potential issues.
 

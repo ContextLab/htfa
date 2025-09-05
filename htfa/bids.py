@@ -1,16 +1,14 @@
 """BIDS dataset integration for HTFA.
 
-This module provides functionality for parsing and working with BIDS 
+This module provides functionality for parsing and working with BIDS
 (Brain Imaging Data Structure) datasets, including:
 - BIDS dataset parsing with pybids integration
-- Subject/task/session filtering capabilities  
+- Subject/task/session filtering capabilities
 - Metadata extraction and aggregation
 - Derivative detection and loading
 """
 
 from typing import Any, Dict, List, Optional, Tuple, Union
-
-import numpy.typing as npt
 
 import os
 import warnings
@@ -18,6 +16,7 @@ from pathlib import Path
 
 import nibabel as nib
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 from bids import BIDSLayout
 from bids.layout import BIDSFile, Query
@@ -135,7 +134,12 @@ def validate_bids_structure(path: Union[str, Path]) -> Dict[str, Any]:
     path = Path(path)
 
     # Initialize report
-    report: Dict[str, Any] = {"valid": True, "errors": [], "warnings": [], "summary": {}}
+    report: Dict[str, Any] = {
+        "valid": True,
+        "errors": [],
+        "warnings": [],
+        "summary": {},
+    }
 
     # Check if path exists
     if not path.exists():
