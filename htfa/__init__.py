@@ -15,7 +15,16 @@ from htfa.results import HTFAResults
 # Try to import optional BIDS functionality
 try:
     from htfa.bids import fit_bids
-    __all__ = ["HTFA", "TFA", "HTFAResults", "fit", "fit_bids", "get_version", "version"]
+
+    __all__ = [
+        "HTFA",
+        "TFA",
+        "HTFAResults",
+        "fit",
+        "fit_bids",
+        "get_version",
+        "version",
+    ]
 except ImportError:
     __all__ = ["HTFA", "TFA", "HTFAResults", "fit", "get_version", "version"]
 
