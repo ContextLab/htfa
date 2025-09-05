@@ -24,17 +24,22 @@ classifiers = [  #! Update me
   "Topic :: Software Development :: Libraries :: Python Modules",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.7",
   "Programming Language :: Python :: 3.8",
   "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
 ]
 
 
 
 [tool.poetry.dependencies]
-python = "^3.7"
-importlib_metadata = {version = "^6.0.0", python = "<3.8"}
-[tool.poetry.dev-dependencies]
+python = "^3.8"
+numpy = "^1.21.0"
+psutil = "^5.8.0"
+
+
+[tool.poetry.group.dev.dependencies]
 bandit = "^1.7.1"
 black = {version = "^23.1", allow-prereleases = true}
 darglint = "^1.8.1"
@@ -54,7 +59,7 @@ pytest-cov = "^4.0.0"
 
 [tool.black]
 # https://github.com/psf/black
-target-version = ["py37"]
+target-version = ["py38"]
 line-length = 88
 color = true
 
@@ -76,7 +81,7 @@ exclude = '''
 
 [tool.isort]
 # https://github.com/timothycrosley/isort/
-py_version = 37
+py_version = 38
 line_length = 88
 
 known_typing = ["typing", "types", "typing_extensions", "mypy", "mypy_extensions"]
@@ -89,7 +94,7 @@ color_output = true
 
 [tool.mypy]
 # https://mypy.readthedocs.io/en/latest/config_file.html#using-a-pyproject-toml-file
-python_version = 3.7
+python_version = 3.8
 pretty = true
 show_traceback = true
 color_output = true
