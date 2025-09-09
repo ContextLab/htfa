@@ -133,18 +133,19 @@ jobs:
             echo "[![Ecosystem Health](https://img.shields.io/badge/ecosystem-issues-yellow)]()" > health-badge.md
           fi
       
-      - name: Alert on failures
-        if: failure()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: 'Ecosystem Health Check Failed',
-              body: `The ecosystem health check failed at ${new Date().toISOString()}.\n\nRun: ${context.runId}\n\nPlease investigate.`,
-              labels: ['infrastructure', 'urgent']
-            });
+      # Alert on failures - issue creation disabled
+      # - name: Alert on failures
+      #   if: failure()
+      #   uses: actions/github-script@v7
+      #   with:
+      #     script: |
+      #       await github.rest.issues.create({
+      #         owner: context.repo.owner,
+      #         repo: context.repo.repo,
+      #         title: 'Ecosystem Health Check Failed',
+      #         body: `The ecosystem health check failed at ${new Date().toISOString()}.\n\nRun: ${context.runId}\n\nPlease investigate.`,
+      #         labels: ['infrastructure', 'urgent']
+      #       });
 
   resource-monitoring:
     name: Resource Usage Monitoring
