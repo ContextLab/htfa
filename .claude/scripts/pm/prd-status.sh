@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "PRD PRD Status Report"
+echo "📄 PRD Status Report"
 echo "===================="
 echo ""
 
@@ -34,7 +34,7 @@ echo ""
 echo ""
 
 # Display chart
-echo "STATUS Distribution:"
+echo "📊 Distribution:"
 echo "================"
 
 echo ""
@@ -46,7 +46,7 @@ echo "  Total PRDs: $total"
 
 # Recent activity
 echo ""
-echo "DATE Recent PRDs (last 5 modified):"
+echo "📅 Recent PRDs (last 5 modified):"
 ls -t .claude/prds/*.md 2>/dev/null | head -5 | while read file; do
   name=$(grep "^name:" "$file" | head -1 | sed 's/^name: *//')
   [ -z "$name" ] && name=$(basename "$file" .md)
@@ -55,7 +55,7 @@ done
 
 # Suggestions
 echo ""
-echo "TIP Next Actions:"
+echo "💡 Next Actions:"
 [ $backlog -gt 0 ] && echo "  • Parse backlog PRDs to epics: /pm:prd-parse <name>"
 [ $in_progress -gt 0 ] && echo "  • Check progress on active PRDs: /pm:epic-status <name>"
 [ $total -eq 0 ] && echo "  • Create your first PRD: /pm:prd-new <name>"

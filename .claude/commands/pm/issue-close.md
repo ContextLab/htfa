@@ -67,9 +67,8 @@ if [ ! -z "$epic_issue" ]; then
   # Get current epic body
   gh issue view $epic_issue --json body -q .body > /tmp/epic-body.md
   
-  # Check off this task - use cross-platform approach
-  source .claude/scripts/utils.sh
-  cross_platform_sed "s/- \[ \] #$ARGUMENTS/- [x] #$ARGUMENTS/" /tmp/epic-body.md
+  # Check off this task
+  sed -i "s/- \[ \] #$ARGUMENTS/- [x] #$ARGUMENTS/" /tmp/epic-body.md
   
   # Update epic issue
   gh issue edit $epic_issue --body-file /tmp/epic-body.md

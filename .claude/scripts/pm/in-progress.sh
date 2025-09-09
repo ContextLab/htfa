@@ -3,7 +3,7 @@ echo "Getting status..."
 echo ""
 echo ""
 
-echo "IN-PROGRESS In Progress Work"
+echo "🔄 In Progress Work"
 echo "==================="
 echo ""
 
@@ -29,7 +29,7 @@ if [ -d ".claude/epics" ]; then
         task_name="Unknown task"
       fi
 
-      echo "NOTE Issue #$issue_num - $task_name"
+      echo "📝 Issue #$issue_num - $task_name"
       echo "   Epic: $epic_name"
       echo "   Progress: $completion complete"
 
@@ -46,7 +46,7 @@ if [ -d ".claude/epics" ]; then
 fi
 
 # Also check for in-progress epics
-echo "EPIC Active Epics:"
+echo "📚 Active Epics:"
 for epic_dir in .claude/epics/*/; do
   [ -d "$epic_dir" ] || continue
   [ -f "$epic_dir/epic.md" ] || continue
@@ -66,9 +66,9 @@ echo ""
 if [ $found -eq 0 ]; then
   echo "No active work items found."
   echo ""
-  echo "TIP Start work with: /pm:next"
+  echo "💡 Start work with: /pm:next"
 else
-  echo "STATUS Total active items: $found"
+  echo "📊 Total active items: $found"
 fi
 
 exit 0

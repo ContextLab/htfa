@@ -3,10 +3,10 @@ echo "Getting epics..."
 echo ""
 echo ""
 
-[ ! -d ".claude/epics" ] && echo "No epics directory found. Create your first epic with: /pm:prd-parse <feature-name>" && exit 0
-[ -z "$(ls -d .claude/epics/*/ 2>/dev/null)" ] && echo "No epics found. Create your first epic with: /pm:prd-parse <feature-name>" && exit 0
+[ ! -d ".claude/epics" ] && echo "📁 No epics directory found. Create your first epic with: /pm:prd-parse <feature-name>" && exit 0
+[ -z "$(ls -d .claude/epics/*/ 2>/dev/null)" ] && echo "📁 No epics found. Create your first epic with: /pm:prd-parse <feature-name>" && exit 0
 
-echo "EPIC Project Epics"
+echo "📚 Project Epics"
 echo "================"
 echo ""
 
@@ -36,9 +36,9 @@ for dir in .claude/epics/*/; do
   # Format output with GitHub issue number if available
   if [ -n "$g" ]; then
     i=$(echo "$g" | grep -o '/[0-9]*$' | tr -d '/')
-    entry="   TASK ${dir}epic.md (#$i) - $p complete ($t tasks)"
+    entry="   📋 ${dir}epic.md (#$i) - $p complete ($t tasks)"
   else
-    entry="   TASK ${dir}epic.md - $p complete ($t tasks)"
+    entry="   📋 ${dir}epic.md - $p complete ($t tasks)"
   fi
 
   # Categorize by status (handle various status values)
@@ -60,7 +60,7 @@ for dir in .claude/epics/*/; do
 done
 
 # Display categorized epics
-echo "NOTE Planning:"
+echo "📝 Planning:"
 if [ -n "$planning_epics" ]; then
   echo -e "$planning_epics" | sed '/^$/d'
 else
@@ -68,7 +68,7 @@ else
 fi
 
 echo ""
-echo "LAUNCH In Progress:"
+echo "🚀 In Progress:"
 if [ -n "$in_progress_epics" ]; then
   echo -e "$in_progress_epics" | sed '/^$/d'
 else
@@ -76,7 +76,7 @@ else
 fi
 
 echo ""
-echo "OK Completed:"
+echo "✅ Completed:"
 if [ -n "$completed_epics" ]; then
   echo -e "$completed_epics" | sed '/^$/d'
 else
@@ -85,7 +85,7 @@ fi
 
 # Summary
 echo ""
-echo "STATUS Summary"
+echo "📊 Summary"
 total=$(ls -d .claude/epics/*/ 2>/dev/null | wc -l)
 tasks=$(find .claude/epics -name "[0-9]*.md" 2>/dev/null | wc -l)
 echo "   Total epics: $total"

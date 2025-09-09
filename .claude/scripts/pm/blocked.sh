@@ -51,9 +51,9 @@ done
 if [ $found -eq 0 ]; then
   echo "No blocked tasks found!"
   echo ""
-  echo "TIP All tasks with dependencies are either completed or in progress."
+  echo "💡 All tasks with dependencies are either completed or in progress."
 else
-  echo "STATUS Total blocked: $found tasks"
+  echo "📊 Total blocked: $found tasks"
 fi
 
 exit 0
