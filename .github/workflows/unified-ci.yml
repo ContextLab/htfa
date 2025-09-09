@@ -252,7 +252,7 @@ jobs:
       
       - name: Validate component compatibility
         run: |
-          poetry run python -m htfa.validation.cross_epic_check
+          poetry run python -m htfa.validation_infrastructure.cross_epic_check
       
       - name: Run end-to-end tests
         run: |

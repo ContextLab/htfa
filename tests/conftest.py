@@ -185,7 +185,7 @@ def epic_components() -> Dict[str, List[str]]:
         "core": ["htfa.core", "htfa.tfa", "htfa.htfa"],
         "scalability": ["htfa.optimization", "htfa.backends"],
         "deployment": ["htfa.cloud", "htfa.containers"],
-        "integration": ["htfa.bids", "htfa.validation", "htfa.results"],
+        "integration": ["htfa.bids", "htfa.validation_infrastructure", "htfa.results"],
     }
 
 

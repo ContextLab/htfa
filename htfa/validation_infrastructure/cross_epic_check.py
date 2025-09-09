@@ -49,7 +49,7 @@ class CrossEpicValidator:
         ],
         "integration": [
             "htfa.bids",
-            "htfa.validation",
+            "htfa.validation_infrastructure",
             "htfa.results",
             "htfa.fit",
         ],

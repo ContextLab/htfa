@@ -32,7 +32,7 @@ jobs:
       - name: Run cross-epic validation
         id: validation
         run: |
-          poetry run python -m htfa.validation.cross_epic_check > validation-report.txt
+          poetry run python -m htfa.validation_infrastructure.cross_epic_check > validation-report.txt
           echo "exit_code=$?" >> $GITHUB_OUTPUT
       
       - name: Collect metrics
