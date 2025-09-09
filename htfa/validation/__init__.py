@@ -15,7 +15,7 @@ from .cross_epic_check import ComponentStatus, CrossEpicValidator
 
 __all__ = [
     "ValidationError",
-    "check_data_quality", 
+    "check_data_quality",
     "format_validation_error",
     "validate_arrays",
     "validate_bids_path",
