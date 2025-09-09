@@ -20,8 +20,8 @@ def test_tfa_fit_performance(benchmark, sample_neuroimaging_data):
 
     result = benchmark(run_tfa_fit)
     assert result is not None
-    assert hasattr(result, "F")
-    assert hasattr(result, "W")
+    assert hasattr(result, "factors_")
+    assert hasattr(result, "weights_")
 
 
 @pytest.mark.benchmark
@@ -34,13 +34,15 @@ def test_htfa_fit_performance(benchmark, sample_neuroimaging_data):
     coords = np.random.randn(subjects_data[0].shape[1], 3)
 
     def run_htfa_fit():
-        htfa = HTFA(K=10)
-        htfa.fit(subjects_data, coords)
+        htfa = HTFA(K=10, max_global_iter=2, max_local_iter=5)
+        # HTFA expects coords as a list, one per subject
+        coords_list = [coords for _ in subjects_data]
+        htfa.fit(subjects_data, coords_list)
         return htfa
 
     result = benchmark(run_htfa_fit)
     assert result is not None
-    assert hasattr(result, "G")
+    assert hasattr(result, "global_template_")
 
 
 @pytest.mark.benchmark
@@ -97,4 +99,4 @@ def test_scaling_with_voxels(benchmark, n_voxels):
         return tfa
 
     result = benchmark(run_with_n_voxels)
-    assert result.F.shape[1] == n_voxels
+    assert result.factors_.shape[1] == n_voxels

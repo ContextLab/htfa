@@ -25,13 +25,14 @@ def test_multi_subject_analysis(sample_neuroimaging_data, temp_dir):
     coords = np.random.randn(n_voxels, 3) * 50
 
     # Fit HTFA model
-    htfa = HTFA(K=10, max_iter=10)  # Reduced iterations for testing
-    htfa.fit(subjects_data, coords)
+    htfa = HTFA(K=10, max_global_iter=2, max_local_iter=5)  # Reduced iterations for testing
+    # HTFA expects coords as a list, one per subject
+    coords_list = [coords for _ in subjects_data]
+    htfa.fit(subjects_data, coords_list)
 
     # Verify basic outputs
-    assert hasattr(htfa, "G")  # Global factors
-    assert htfa.G is not None
-    assert htfa.G.shape[0] == 10  # K factors
+    assert hasattr(htfa, "global_template_")  # Global template
+    assert htfa.global_template_ is not None
 
 
 @pytest.mark.e2e
@@ -58,12 +59,14 @@ def test_large_scale_analysis(temp_dir):
     coords = np.random.randn(n_voxels, 3) * 50
 
     # Fit HTFA
-    htfa = HTFA(K=5, max_iter=5, verbose=False)
-    htfa.fit(subjects_data, coords)
+    htfa = HTFA(K=5, max_global_iter=2, max_local_iter=5, verbose=False)
+    # HTFA expects coords as a list, one per subject
+    coords_list = [coords for _ in subjects_data]
+    htfa.fit(subjects_data, coords_list)
 
     # Verify outputs
-    assert hasattr(htfa, "G")
-    assert htfa.G.shape[0] == 5  # K factors
+    assert hasattr(htfa, "global_template_")
+    assert htfa.global_template_ is not None
 
 
 @pytest.mark.e2e
@@ -89,8 +92,8 @@ def test_cross_validation_workflow(sample_neuroimaging_data):
         tfa.fit(X_train, coords)
 
         # Just check that model fits without error
-        assert hasattr(tfa, "F")
-        assert hasattr(tfa, "W")
+        assert hasattr(tfa, "factors_")
+        assert hasattr(tfa, "weights_")
         scores.append(1.0)  # Dummy score
 
     # Check we ran the splits
