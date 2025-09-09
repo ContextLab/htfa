@@ -25,7 +25,9 @@ def test_multi_subject_analysis(sample_neuroimaging_data, temp_dir):
     coords = np.random.randn(n_voxels, 3) * 50
 
     # Fit HTFA model
-    htfa = HTFA(K=10, max_global_iter=2, max_local_iter=5)  # Reduced iterations for testing
+    htfa = HTFA(
+        K=10, max_global_iter=2, max_local_iter=5
+    )  # Reduced iterations for testing
     # HTFA expects coords as a list, one per subject
     coords_list = [coords for _ in subjects_data]
     htfa.fit(subjects_data, coords_list)
