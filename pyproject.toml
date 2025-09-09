@@ -76,6 +76,25 @@ sphinx = "^8.0.0"
 sphinx-rtd-theme = "^3.0.0"
 nbsphinx = "^0.9.0"
 
+[tool.poetry.group.test.dependencies]
+pytest-benchmark = "^4.0.0"
+pytest-xdist = "^3.5.0"
+pytest-timeout = "^2.2.0"
+psutil = "^6.0.0"
+radon = "^6.0.0"
+ruff = "^0.5.0"
+
+[tool.poetry.group.docs.dependencies]
+sphinx = "^8.0.0"
+sphinx-rtd-theme = "^3.0.0"
+sphinx-autodoc-typehints = "^2.0.0"
+myst-parser = "^3.0.0"
+
+[tool.poetry.group.benchmark.dependencies]
+pytest-benchmark = "^4.0.0"
+memory-profiler = "^0.61.0"
+line-profiler = "^4.0.0"
+
 [tool.black]
 # https://github.com/psf/black
 target-version = ["py310"]
@@ -144,6 +163,21 @@ warn_unused_ignores = true
 norecursedirs =["hooks", "*.egg", ".eggs", "dist", "build", "docs", ".tox", ".git", "__pycache__"]
 doctest_optionflags = ["NUMBER", "NORMALIZE_WHITESPACE", "IGNORE_EXCEPTION_DETAIL"]
 
+# Markers for test categorization
+markers = [
+  "unit: Unit tests for individual components",
+  "integration: Integration tests for component interactions",
+  "e2e: End-to-end tests for complete workflows",
+  "benchmark: Performance benchmark tests",
+  "slow: Tests that take >5 seconds to run",
+  "epic_core: Tests for core HTFA functionality",
+  "epic_scalability: Tests for scalability features",
+  "epic_deployment: Tests for deployment infrastructure",
+  "epic_integration: Tests for ecosystem integration",
+  "gpu: Tests requiring GPU resources",
+  "hpc: Tests requiring HPC resources",
+]
+
 # Extra options:
 addopts = [
   "--strict-markers",
@@ -151,6 +185,13 @@ addopts = [
   "--doctest-modules",
   "--doctest-continue-on-failure",
 ]
+
+# Benchmark plugin settings
+benchmark_only = false
+benchmark_disable = false
+benchmark_max_time = 60
+benchmark_min_rounds = 5
+benchmark_sort = "mean"
 
 [tool.coverage.run]
 source = ["tests"]

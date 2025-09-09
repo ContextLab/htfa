@@ -1,0 +1,350 @@
+name: Unified CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop, 'epic-*']
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      epic:
+        description: 'Epic to build (all, core, scalability, deployment, integration)'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - core
+          - scalability
+          - deployment
+          - integration
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  POETRY_VERSION: "1.8.0"
+  NODE_VERSION: "20"
+  COVERAGE_THRESHOLD: 90
+
+jobs:
+  setup:
+    name: Setup Infrastructure
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      cache-key: ${{ steps.cache-key.outputs.key }}
+    steps:
+      - uses: actions/checkout@v5
+      
+      - name: Generate cache key
+        id: cache-key
+        run: |
+          echo "key=deps-${{ hashFiles('**/poetry.lock', '**/package-lock.json') }}-${{ runner.os }}" >> $GITHUB_OUTPUT
+      
+      - name: Set build matrix
+        id: set-matrix
+        run: |
+          if [[ "${{ github.event.inputs.epic }}" == "all" ]] || [[ -z "${{ github.event.inputs.epic }}" ]]; then
+            echo 'matrix={"epic":["core","scalability","deployment","integration"],"python":["3.10","3.11","3.12"]}' >> $GITHUB_OUTPUT
+          else
+            echo 'matrix={"epic":["${{ github.event.inputs.epic }}"],"python":["3.10","3.11","3.12"]}' >> $GITHUB_OUTPUT
+          fi
+
+  quality-gates:
+    name: Quality Gates - ${{ matrix.epic }} (Python ${{ matrix.python }})
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: ${{ env.POETRY_VERSION }}
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+      
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            .venv
+            ~/.cache/pip
+            ~/.cache/pypoetry
+          key: ${{ needs.setup.outputs.cache-key }}-${{ matrix.python }}-${{ matrix.epic }}
+      
+      - name: Install dependencies
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install --with dev,test
+      
+      - name: Code formatting check
+        run: |
+          poetry run black --check .
+          poetry run isort --check-only .
+      
+      - name: Linting
+        run: |
+          poetry run ruff check .
+          poetry run mypy --config-file pyproject.toml .
+      
+      - name: Security scan
+        run: |
+          poetry run bandit -r htfa/ -ll
+          poetry run safety check --json
+      
+      - name: Complexity analysis
+        run: |
+          poetry run radon cc htfa/ -s -nb --total-average
+          poetry run radon mi htfa/ -s
+
+  testing:
+    name: Testing - ${{ matrix.epic }} (Python ${{ matrix.python }})
+    needs: [setup, quality-gates]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+      
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: ${{ env.POETRY_VERSION }}
+      
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            .venv
+            ~/.cache/pip
+            ~/.cache/pypoetry
+          key: ${{ needs.setup.outputs.cache-key }}-${{ matrix.python }}-${{ matrix.epic }}
+      
+      - name: Install dependencies
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install --with dev,test
+      
+      - name: Run unit tests
+        run: |
+          poetry run pytest tests/unit/ \
+            --cov=htfa \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --junitxml=junit/test-results-${{ matrix.epic }}-${{ matrix.python }}.xml \
+            -v
+      
+      - name: Run integration tests
+        if: matrix.epic != 'core'
+        run: |
+          poetry run pytest tests/integration/ \
+            --cov=htfa \
+            --cov-append \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --junitxml=junit/integration-results-${{ matrix.epic }}-${{ matrix.python }}.xml \
+            -v
+      
+      - name: Check coverage threshold
+        run: |
+          coverage_percent=$(poetry run coverage report --skip-covered | grep TOTAL | awk '{print $4}' | sed 's/%//')
+          echo "Coverage: ${coverage_percent}%"
+          if (( $(echo "$coverage_percent < ${{ env.COVERAGE_THRESHOLD }}" | bc -l) )); then
+            echo "Coverage ${coverage_percent}% is below threshold of ${{ env.COVERAGE_THRESHOLD }}%"
+            exit 1
+          fi
+      
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          flags: ${{ matrix.epic }}-py${{ matrix.python }}
+          name: coverage-${{ matrix.epic }}-${{ matrix.python }}
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.epic }}-${{ matrix.python }}
+          path: junit/
+
+  performance-benchmarks:
+    name: Performance Benchmarks
+    needs: testing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: ${{ env.POETRY_VERSION }}
+      
+      - name: Install dependencies
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install --with dev,test,benchmark
+      
+      - name: Run performance benchmarks
+        run: |
+          poetry run python -m pytest tests/benchmarks/ \
+            --benchmark-only \
+            --benchmark-json=benchmark.json \
+            --benchmark-autosave
+      
+      - name: Store benchmark results
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'pytest'
+          output-file-path: benchmark.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: false
+          comment-on-alert: true
+          alert-threshold: '120%'
+          fail-on-alert: true
+
+  integration-validation:
+    name: Cross-Epic Integration
+    needs: testing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: ${{ env.POETRY_VERSION }}
+      
+      - name: Install all components
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install --all-extras
+      
+      - name: Validate component compatibility
+        run: |
+          poetry run python -m htfa.validation.cross_epic_check
+      
+      - name: Run end-to-end tests
+        run: |
+          poetry run pytest tests/e2e/ -v --tb=short
+
+  documentation:
+    name: Build Documentation
+    needs: quality-gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: ${{ env.POETRY_VERSION }}
+      
+      - name: Install dependencies
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install --with docs
+      
+      - name: Build documentation
+        run: |
+          poetry run sphinx-build -b html docs/ docs/_build/html
+          poetry run sphinx-build -b linkcheck docs/ docs/_build/linkcheck
+      
+      - name: Upload documentation
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation
+          path: docs/_build/html/
+
+  deploy-preview:
+    name: Deploy Preview
+    if: github.event_name == 'pull_request'
+    needs: [testing, documentation]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      
+      - name: Download documentation
+        uses: actions/download-artifact@v4
+        with:
+          name: documentation
+          path: ./docs-preview
+      
+      - name: Deploy to preview environment
+        run: |
+          echo "Deploying preview to pr-${{ github.event.pull_request.number }}.htfa-preview.dev"
+
+  publish-metrics:
+    name: Publish Metrics
+    if: always()
+    needs: [quality-gates, testing, performance-benchmarks, integration-validation]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+      
+      - name: Generate unified report
+        run: |
+          echo "## CI/CD Pipeline Report" > report.md
+          echo "Build: ${{ github.run_number }}" >> report.md
+          echo "Commit: ${{ github.sha }}" >> report.md
+          echo "" >> report.md
+          
+          echo "### Test Results" >> report.md
+          find ./artifacts -name "*.xml" -exec echo "- {}" \; >> report.md
+          
+          echo "### Coverage" >> report.md
+          find ./artifacts -name "coverage.xml" -exec echo "- {}" \; >> report.md
+      
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('report.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });

@@ -1,0 +1,278 @@
+name: Ecosystem Monitoring
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  health-check:
+    name: Ecosystem Health Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "1.8.0"
+      
+      - name: Install dependencies
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install --all-extras
+      
+      - name: Run cross-epic validation
+        id: validation
+        run: |
+          poetry run python -m htfa.validation.cross_epic_check > validation-report.txt
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+      
+      - name: Collect metrics
+        run: |
+          # Collect various metrics
+          echo "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" > metrics.json
+          echo "python_version: $(python --version)" >> metrics.json
+          echo "poetry_version: $(poetry --version)" >> metrics.json
+          
+          # Test execution time
+          start_time=$(date +%s)
+          poetry run pytest tests/unit/ --co -q | wc -l > test_count.txt
+          end_time=$(date +%s)
+          echo "test_discovery_time: $((end_time - start_time))" >> metrics.json
+          echo "test_count: $(cat test_count.txt)" >> metrics.json
+          
+          # Code metrics
+          echo "lines_of_code: $(find htfa -name '*.py' -exec wc -l {} + | tail -1 | awk '{print $1}')" >> metrics.json
+          echo "number_of_files: $(find htfa -name '*.py' | wc -l)" >> metrics.json
+      
+      - name: Performance benchmark
+        run: |
+          poetry run python -m pytest tests/benchmarks/ \
+            --benchmark-only \
+            --benchmark-json=benchmark.json \
+            --benchmark-min-rounds=5 || true
+      
+      - name: Generate health dashboard
+        run: |
+          cat > health-dashboard.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>HTFA Ecosystem Health Dashboard</title>
+              <style>
+                  body { font-family: Arial, sans-serif; margin: 20px; }
+                  .metric { 
+                      display: inline-block; 
+                      margin: 10px; 
+                      padding: 15px; 
+                      border: 1px solid #ddd; 
+                      border-radius: 5px;
+                      min-width: 200px;
+                  }
+                  .healthy { background-color: #d4edda; }
+                  .warning { background-color: #fff3cd; }
+                  .error { background-color: #f8d7da; }
+                  h1 { color: #333; }
+                  .timestamp { color: #666; font-size: 0.9em; }
+              </style>
+          </head>
+          <body>
+              <h1>HTFA Ecosystem Health Dashboard</h1>
+              <p class="timestamp">Last updated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")</p>
+              
+              <div class="metrics">
+                  <div class="metric healthy">
+                      <h3>Build Status</h3>
+                      <p>✅ Passing</p>
+                  </div>
+                  
+                  <div class="metric healthy">
+                      <h3>Test Count</h3>
+                      <p>$(cat test_count.txt) tests</p>
+                  </div>
+                  
+                  <div class="metric healthy">
+                      <h3>Code Size</h3>
+                      <p>$(find htfa -name '*.py' -exec wc -l {} + | tail -1 | awk '{print $1}') lines</p>
+                  </div>
+              </div>
+              
+              <h2>Cross-Epic Validation</h2>
+              <pre>$(cat validation-report.txt)</pre>
+              
+              <h2>Recent Performance</h2>
+              <p>Benchmark results available in artifacts.</p>
+          </body>
+          </html>
+          EOF
+      
+      - name: Upload monitoring artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitoring-${{ github.run_number }}
+          path: |
+            validation-report.txt
+            metrics.json
+            benchmark.json
+            health-dashboard.html
+      
+      - name: Update status badge
+        if: github.ref == 'refs/heads/main'
+        run: |
+          if [ "${{ steps.validation.outputs.exit_code }}" == "0" ]; then
+            echo "[![Ecosystem Health](https://img.shields.io/badge/ecosystem-healthy-green)]()" > health-badge.md
+          else
+            echo "[![Ecosystem Health](https://img.shields.io/badge/ecosystem-issues-yellow)]()" > health-badge.md
+          fi
+      
+      - name: Alert on failures
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Ecosystem Health Check Failed',
+              body: `The ecosystem health check failed at ${new Date().toISOString()}.\n\nRun: ${context.runId}\n\nPlease investigate.`,
+              labels: ['infrastructure', 'urgent']
+            });
+
+  resource-monitoring:
+    name: Resource Usage Monitoring
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      
+      - name: Monitor GitHub Actions usage
+        run: |
+          echo "## GitHub Actions Resource Usage" > resource-report.md
+          echo "" >> resource-report.md
+          echo "- Workflow: ${{ github.workflow }}" >> resource-report.md
+          echo "- Run ID: ${{ github.run_id }}" >> resource-report.md
+          echo "- Runner: ${{ runner.os }} - ${{ runner.arch }}" >> resource-report.md
+          echo "" >> resource-report.md
+          
+          # Get system resources
+          echo "### System Resources" >> resource-report.md
+          echo "- CPU Cores: $(nproc)" >> resource-report.md
+          echo "- Memory: $(free -h | grep Mem | awk '{print $2}')" >> resource-report.md
+          echo "- Disk: $(df -h / | tail -1 | awk '{print $4}' ) available" >> resource-report.md
+      
+      - name: Estimate compute costs
+        run: |
+          # Simple cost estimation (example rates)
+          minutes=$(( $GITHUB_RUN_NUMBER * 5 ))  # Rough estimate
+          cost=$(echo "scale=2; $minutes * 0.008" | bc)  # $0.008 per minute
+          
+          echo "" >> resource-report.md
+          echo "### Estimated Costs" >> resource-report.md
+          echo "- Compute minutes: ~$minutes" >> resource-report.md
+          echo "- Estimated cost: ~\$$cost" >> resource-report.md
+      
+      - name: Upload resource report
+        uses: actions/upload-artifact@v4
+        with:
+          name: resource-monitoring
+          path: resource-report.md
+
+  documentation-build:
+    name: Documentation Build and Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "1.8.0"
+      
+      - name: Install documentation dependencies
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install --with docs
+      
+      - name: Build Sphinx documentation
+        run: |
+          cd docs
+          poetry run sphinx-build -b html . _build/html
+          poetry run sphinx-build -b linkcheck . _build/linkcheck
+      
+      - name: Generate API documentation
+        run: |
+          poetry run sphinx-apidoc -o docs/api htfa
+      
+      - name: Build coverage report
+        run: |
+          poetry run pytest tests/ --cov=htfa --cov-report=html:docs/_build/coverage
+      
+      - name: Create documentation index
+        run: |
+          cat > docs/_build/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>HTFA Documentation Hub</title>
+              <style>
+                  body { font-family: Arial, sans-serif; margin: 40px; }
+                  .doc-section { 
+                      margin: 20px 0; 
+                      padding: 20px; 
+                      border: 1px solid #ddd; 
+                      border-radius: 5px;
+                  }
+                  a { color: #007bff; text-decoration: none; }
+                  a:hover { text-decoration: underline; }
+              </style>
+          </head>
+          <body>
+              <h1>HTFA Documentation Hub</h1>
+              
+              <div class="doc-section">
+                  <h2>📚 Main Documentation</h2>
+                  <p><a href="html/index.html">Sphinx Documentation</a></p>
+              </div>
+              
+              <div class="doc-section">
+                  <h2>📊 Coverage Report</h2>
+                  <p><a href="coverage/index.html">Test Coverage Report</a></p>
+              </div>
+              
+              <div class="doc-section">
+                  <h2>🔍 API Reference</h2>
+                  <p><a href="html/api/modules.html">API Documentation</a></p>
+              </div>
+              
+              <div class="doc-section">
+                  <h2>📈 Performance</h2>
+                  <p><a href="../../../monitoring/health-dashboard.html">Health Dashboard</a></p>
+              </div>
+          </body>
+          </html>
+          EOF
+      
+      - name: Upload documentation
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation-build
+          path: docs/_build/
+      
+      - name: Deploy to GitHub Pages
+        if: github.ref == 'refs/heads/main'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs/_build

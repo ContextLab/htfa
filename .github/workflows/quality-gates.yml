@@ -1,0 +1,306 @@
+name: Quality Gates
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_call:
+    inputs:
+      threshold_coverage:
+        type: number
+        default: 90
+      threshold_complexity:
+        type: number
+        default: 10
+      threshold_duplication:
+        type: number
+        default: 5
+
+jobs:
+  code-quality:
+    name: Code Quality Analysis
+    runs-on: ubuntu-latest
+    outputs:
+      coverage: ${{ steps.coverage.outputs.percentage }}
+      complexity: ${{ steps.complexity.outputs.score }}
+      duplication: ${{ steps.duplication.outputs.percentage }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "1.8.0"
+      
+      - name: Install dependencies
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install --with dev,test
+      
+      - name: Run coverage analysis
+        id: coverage
+        run: |
+          poetry run pytest tests/ --cov=htfa --cov-report=xml --cov-report=term
+          coverage_percent=$(poetry run coverage report --skip-covered | grep TOTAL | awk '{print $4}' | sed 's/%//')
+          echo "percentage=${coverage_percent}" >> $GITHUB_OUTPUT
+          
+          if (( $(echo "$coverage_percent < ${{ inputs.threshold_coverage || 90 }}" | bc -l) )); then
+            echo "::error::Coverage ${coverage_percent}% is below threshold of ${{ inputs.threshold_coverage || 90 }}%"
+            exit 1
+          fi
+      
+      - name: Analyze code complexity
+        id: complexity
+        run: |
+          poetry run radon cc htfa/ -s -j > complexity.json
+          avg_complexity=$(python -c "import json; data=json.load(open('complexity.json')); scores=[m['complexity'] for f in data.values() for m in f]; print(sum(scores)/len(scores) if scores else 0)")
+          echo "score=${avg_complexity}" >> $GITHUB_OUTPUT
+          
+          if (( $(echo "$avg_complexity > ${{ inputs.threshold_complexity || 10 }}" | bc -l) )); then
+            echo "::error::Average complexity ${avg_complexity} exceeds threshold of ${{ inputs.threshold_complexity || 10 }}"
+            exit 1
+          fi
+      
+      - name: Check code duplication
+        id: duplication
+        run: |
+          poetry run pylint htfa/ --disable=all --enable=duplicate-code --output-format=json > duplication.json || true
+          duplication_percent=$(python -c "import json; data=json.load(open('duplication.json')); print(len([m for m in data if m['type']=='duplicate-code'])*100/len(data) if data else 0)")
+          echo "percentage=${duplication_percent}" >> $GITHUB_OUTPUT
+          
+          if (( $(echo "$duplication_percent > ${{ inputs.threshold_duplication || 5 }}" | bc -l) )); then
+            echo "::warning::Code duplication ${duplication_percent}% exceeds threshold of ${{ inputs.threshold_duplication || 5 }}%"
+          fi
+      
+      - name: Generate quality report
+        run: |
+          cat > quality-report.md << EOF
+          ## Code Quality Report
+          
+          | Metric | Value | Threshold | Status |
+          |--------|-------|-----------|--------|
+          | Coverage | ${{ steps.coverage.outputs.percentage }}% | ${{ inputs.threshold_coverage || 90 }}% | $([ $(echo "${{ steps.coverage.outputs.percentage }} >= ${{ inputs.threshold_coverage || 90 }}" | bc -l) -eq 1 ] && echo "✅" || echo "❌") |
+          | Complexity | ${{ steps.complexity.outputs.score }} | ${{ inputs.threshold_complexity || 10 }} | $([ $(echo "${{ steps.complexity.outputs.score }} <= ${{ inputs.threshold_complexity || 10 }}" | bc -l) -eq 1 ] && echo "✅" || echo "❌") |
+          | Duplication | ${{ steps.duplication.outputs.percentage }}% | ${{ inputs.threshold_duplication || 5 }}% | $([ $(echo "${{ steps.duplication.outputs.percentage }} <= ${{ inputs.threshold_duplication || 5 }}" | bc -l) -eq 1 ] && echo "✅" || echo "❌") |
+          EOF
+      
+      - name: Upload quality artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-reports
+          path: |
+            coverage.xml
+            complexity.json
+            duplication.json
+            quality-report.md
+      
+      - name: Comment PR with quality report
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('quality-report.md', 'utf8');
+            
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.data.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('## Code Quality Report')
+            );
+            
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: report
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: report
+              });
+            }
+
+  security-scan:
+    name: Security Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "1.8.0"
+      
+      - name: Install dependencies
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install --with dev
+      
+      - name: Run Bandit security scan
+        run: |
+          poetry run bandit -r htfa/ -f json -o bandit-report.json || true
+          
+          high_issues=$(python -c "import json; data=json.load(open('bandit-report.json')); print(len([i for i in data['results'] if i['issue_severity']=='HIGH']))")
+          
+          if [ "$high_issues" -gt 0 ]; then
+            echo "::error::Found $high_issues high-severity security issues"
+            poetry run bandit -r htfa/ -ll
+            exit 1
+          fi
+      
+      - name: Check dependency vulnerabilities
+        run: |
+          poetry run safety check --json > safety-report.json || true
+          
+          vulnerabilities=$(python -c "import json; data=json.load(open('safety-report.json')); print(len(data.get('vulnerabilities', [])))")
+          
+          if [ "$vulnerabilities" -gt 0 ]; then
+            echo "::warning::Found $vulnerabilities vulnerable dependencies"
+            poetry run safety check
+          fi
+      
+      - name: Upload security reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            safety-report.json
+
+  type-checking:
+    name: Type Checking
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "1.8.0"
+      
+      - name: Install dependencies
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install --with dev
+      
+      - name: Run mypy type checking
+        run: |
+          poetry run mypy htfa/ --html-report mypy-report --junit-xml mypy-junit.xml || true
+          
+          errors=$(grep -c '<testcase.*errors="[1-9]' mypy-junit.xml || echo "0")
+          
+          if [ "$errors" -gt 0 ]; then
+            echo "::error::Found $errors type errors"
+            poetry run mypy htfa/
+            exit 1
+          fi
+      
+      - name: Upload type checking report
+        uses: actions/upload-artifact@v4
+        with:
+          name: type-reports
+          path: |
+            mypy-report/
+            mypy-junit.xml
+
+  dependency-check:
+    name: Dependency Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "1.8.0"
+      
+      - name: Check for outdated dependencies
+        run: |
+          poetry show --outdated > outdated-deps.txt || true
+          
+          outdated_count=$(wc -l < outdated-deps.txt)
+          
+          if [ "$outdated_count" -gt 10 ]; then
+            echo "::warning::Found $outdated_count outdated dependencies"
+            cat outdated-deps.txt
+          fi
+      
+      - name: Check dependency tree
+        run: |
+          poetry show --tree > dependency-tree.txt
+      
+      - name: Analyze dependency complexity
+        run: |
+          poetry export -f requirements.txt --without-hashes | wc -l > dep-count.txt
+          dep_count=$(cat dep-count.txt)
+          
+          if [ "$dep_count" -gt 100 ]; then
+            echo "::warning::High number of dependencies: $dep_count"
+          fi
+      
+      - name: Upload dependency reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-reports
+          path: |
+            outdated-deps.txt
+            dependency-tree.txt
+            dep-count.txt
+
+  gate-summary:
+    name: Quality Gate Summary
+    needs: [code-quality, security-scan, type-checking, dependency-check]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+      
+      - name: Generate summary report
+        run: |
+          echo "# Quality Gates Summary" > SUMMARY.md
+          echo "" >> SUMMARY.md
+          echo "## Results" >> SUMMARY.md
+          echo "- Coverage: ${{ needs.code-quality.outputs.coverage }}%" >> SUMMARY.md
+          echo "- Complexity: ${{ needs.code-quality.outputs.complexity }}" >> SUMMARY.md
+          echo "- Duplication: ${{ needs.code-quality.outputs.duplication }}%" >> SUMMARY.md
+          echo "" >> SUMMARY.md
+          echo "## Artifacts" >> SUMMARY.md
+          echo "All quality reports have been uploaded as artifacts." >> SUMMARY.md
+      
+      - name: Upload summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-gate-summary
+          path: SUMMARY.md
