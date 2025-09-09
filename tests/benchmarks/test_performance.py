@@ -90,7 +90,8 @@ def test_scaling_with_voxels(benchmark, n_voxels):
     """Test performance scaling with number of voxels."""
     from htfa.core.tfa import TFA
 
-    X = np.random.randn(100, n_voxels)
+    # TFA expects (n_voxels, n_timepoints)
+    X = np.random.randn(n_voxels, 100)  # n_voxels voxels, 100 timepoints
     coords = np.random.randn(n_voxels, 3)
 
     def run_with_n_voxels():
