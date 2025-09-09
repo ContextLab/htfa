@@ -1,0 +1,22 @@
+{
+  "TaskName": "rest",
+  "RepetitionTime": 2.0,
+  "EchoTime": 0.03,
+  "FlipAngle": 90,
+  "SliceTiming": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "PhaseEncodingDirection": "j-",
+  "EffectiveEchoSpacing": 0.00055,
+  "BandwidthPerPixelPhaseEncode": 20.0,
+  "TotalReadoutTime": 0.055
+}

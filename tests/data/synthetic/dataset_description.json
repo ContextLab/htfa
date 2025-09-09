@@ -1,0 +1,13 @@
+{
+  "Name": "Synthetic HTFA Validation Dataset",
+  "BIDSVersion": "1.6.0",
+  "DatasetType": "raw",
+  "Authors": [
+    "HTFA Development Team"
+  ],
+  "Description": "Synthetic dataset with known ground truth for HTFA validation",
+  "License": "CC0",
+  "ReferencesAndLinks": [
+    "https://github.com/jeremymanning/htfa"
+  ]
+}
