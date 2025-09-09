@@ -245,7 +245,7 @@ def _fit_arrays(
 
         # Convert to format expected by HTFA: list of (n_timepoints, n_voxels)
         data_transposed = [arr.T for arr in data]
-        
+
         # Create coordinate list (same coords for all subjects)
         coords_list = [coords for _ in data] if coords is not None else None
         model.fit(data_transposed, coords_list)

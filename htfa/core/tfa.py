@@ -149,7 +149,7 @@ class TFA(BaseEstimator):
             # Generate default 3D coordinates if none provided
             n_voxels = X.shape[0]
             # Create a simple grid of coordinates
-            side = int(np.ceil(n_voxels ** (1/3)))
+            side = int(np.ceil(n_voxels ** (1 / 3)))
             x, y, z = np.meshgrid(range(side), range(side), range(side))
             coords = np.column_stack([x.ravel(), y.ravel(), z.ravel()])[:n_voxels]
             coords = coords.astype(float)
