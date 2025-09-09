@@ -243,12 +243,10 @@ def _fit_arrays(
         # Use HTFA for multi-subject (override multi_subject parameter)
         model = HTFA(n_factors=n_factors, **kwargs)
 
-        # Convert to format expected by HTFA: list of (n_timepoints, n_voxels)
-        data_transposed = [arr.T for arr in data]
-
+        # HTFA expects list of (n_voxels, n_timepoints) - data is already in this format
         # Create coordinate list (same coords for all subjects)
         coords_list = [coords for _ in data] if coords is not None else None
-        model.fit(data_transposed, coords_list)
+        model.fit(data, coords_list)
 
         # Store coordinates
         model.coords_ = coords
@@ -276,11 +274,11 @@ def _fit_arrays(
             model = HTFA(n_factors=n_factors, **kwargs)
             # Wrap data and coords in lists for HTFA
             coords_list = [coords] if coords is not None else None
-            model.fit([data.T], coords_list)
+            model.fit([data], coords_list)  # HTFA expects (n_voxels, n_timepoints)
         else:
             # Use TFA for single subject
             model = TFA(n_factors=n_factors, **kwargs)
-            model.fit(data.T, coords)  # Pass coordinates to TFA
+            model.fit(data, coords)  # TFA expects (n_voxels, n_timepoints)
 
         # Store coordinates
         model.coords_ = coords
