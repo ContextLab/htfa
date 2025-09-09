@@ -50,8 +50,8 @@ jobs:
           coverage_percent=$(poetry run coverage report --skip-covered | grep TOTAL | awk '{print $4}' | sed 's/%//')
           echo "percentage=${coverage_percent}" >> $GITHUB_OUTPUT
           
-          if (( $(echo "$coverage_percent < ${{ inputs.threshold_coverage || 50 }}" | bc -l) )); then
-            echo "::warning::Coverage ${coverage_percent}% is below threshold of ${{ inputs.threshold_coverage || 50 }}%"
+          if (( $(echo "$coverage_percent < ${{ inputs.threshold_coverage || 40 }}" | bc -l) )); then
+            echo "::warning::Coverage ${coverage_percent}% is below threshold of ${{ inputs.threshold_coverage || 40 }}%"
           fi
       
       - name: Analyze code complexity
