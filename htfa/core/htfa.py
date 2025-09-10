@@ -37,6 +37,14 @@ class HTFA(BaseEstimator):
         Convergence tolerance.
     verbose : bool
         Whether to print progress information.
+    n_levels : int, default=2
+        Number of hierarchical levels in the model.
+    backend : str or None, default=None
+        Computational backend to use ('jax', 'pytorch', or None for numpy).
+    random_state : int, RandomState instance or None, default=None
+        Random state for reproducible results.
+    max_iter : int, default=100
+        Maximum number of iterations for optimization.
     """
 
     def __init__(
@@ -48,24 +56,28 @@ class HTFA(BaseEstimator):
         max_local_iter: int = 50,
         tol: float = 1e-6,
         verbose: bool = False,
+        n_levels: int = 2,
+        backend: Optional[str] = None,
+        random_state: Optional[Union[int, np.random.RandomState]] = None,
+        max_iter: int = 100,
         n_factors: Optional[int] = None,
-        max_iter: Optional[int] = None,
-        random_state: Optional[int] = None,
     ):
-        # Allow n_factors as alias for K
+        # Allow n_factors as alias for K (backward compatibility)
         if n_factors is not None:
             K = n_factors
-        # Allow max_iter as alias for max_local_iter
-        if max_iter is not None:
-            max_local_iter = max_iter
+        
+        # Store all parameters as instance attributes
         self.K = K
-        self.random_state = random_state
         self.max_num_voxel = max_num_voxel
         self.max_num_tr = max_num_tr
         self.max_global_iter = max_global_iter
         self.max_local_iter = max_local_iter
         self.tol = tol
         self.verbose = verbose
+        self.n_levels = n_levels
+        self.backend = backend
+        self.random_state = random_state
+        self.max_iter = max_iter
 
         # Fitted parameters
         self.global_template_: Optional[np.ndarray] = None
