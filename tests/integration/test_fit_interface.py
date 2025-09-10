@@ -18,6 +18,7 @@ from htfa.core import HTFA, TFA
 from htfa.fit import fit
 
 
+@pytest.mark.slow
 class TestFitInterfaceIntegration:
     """Integration tests for the main fit interface."""
 
@@ -311,6 +312,7 @@ class TestFitInterfaceIntegration:
         assert model2.factors_ is not None
 
 
+@pytest.mark.slow
 class TestErrorHandlingIntegration:
     """Integration tests for error handling in realistic scenarios."""
 
