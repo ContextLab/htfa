@@ -11,6 +11,7 @@ from scipy.optimize import least_squares
 from scipy.spatial import distance
 from sklearn.base import BaseEstimator
 from sklearn.cluster import KMeans
+from sklearn.utils import check_random_state
 
 
 class TFA(BaseEstimator):
@@ -56,7 +57,7 @@ class TFA(BaseEstimator):
         if n_factors is not None:
             K = n_factors
         self.K = K
-        self.random_state = random_state
+        self.random_state = check_random_state(random_state)
         self.max_num_voxel = max_num_voxel
         self.max_num_tr = max_num_tr
         self.max_iter = max_iter
@@ -99,13 +100,13 @@ class TFA(BaseEstimator):
 
         # Subsample if requested
         if self.max_num_voxel is not None and n_voxels > self.max_num_voxel:
-            voxel_idx = np.random.choice(n_voxels, self.max_num_voxel, replace=False)
+            voxel_idx = self.random_state.choice(n_voxels, self.max_num_voxel, replace=False)
             X = X[voxel_idx]
             if coords is not None:
                 coords = coords[voxel_idx]
 
         if self.max_num_tr is not None and n_timepoints > self.max_num_tr:
-            tr_idx = np.random.choice(n_timepoints, self.max_num_tr, replace=False)
+            tr_idx = self.random_state.choice(n_timepoints, self.max_num_tr, replace=False)
             X = X[:, tr_idx]
 
         # Initialize parameters using k-means clustering
@@ -122,7 +123,7 @@ class TFA(BaseEstimator):
         """Initialize factor centers and widths using k-means clustering."""
         if coords is not None:
             # Use spatial coordinates for initialization
-            kmeans = KMeans(n_clusters=self.K, random_state=42)
+            kmeans = KMeans(n_clusters=self.K, random_state=self.random_state)
             kmeans.fit(coords)
             self.centers_ = kmeans.cluster_centers_
 
@@ -139,8 +140,8 @@ class TFA(BaseEstimator):
                     self.widths_[k] = 1.0
         else:
             # Use data-based initialization
-            n_voxels = X.shape[0]
-            self.centers_ = np.random.randn(self.K, n_voxels)
+            # When no coords provided, _optimize will create 3D coordinates
+            self.centers_ = self.random_state.randn(self.K, 3)
             self.widths_ = np.ones(self.K)
 
     def _optimize(self, X: np.ndarray, coords: Optional[np.ndarray]) -> None:
