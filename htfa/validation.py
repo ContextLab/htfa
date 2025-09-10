@@ -15,6 +15,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 from sklearn.utils.validation import check_array
+from sklearn.utils import check_random_state
 
 
 class ValidationError(ValueError):
@@ -426,6 +427,182 @@ def validate_bids_path(path: Union[str, Path]) -> Path:
     return path_obj
 
 
+def validate_n_levels(n_levels: int) -> int:
+    """Validate n_levels parameter for HTFA.
+    
+    Parameters
+    ----------
+    n_levels : int
+        Number of hierarchical levels.
+    
+    Returns
+    -------
+    n_levels : int
+        Validated n_levels value.
+        
+    Raises
+    ------
+    ValidationError
+        If n_levels is invalid.
+    """
+    if not isinstance(n_levels, int):
+        raise ValidationError(
+            f"n_levels must be an integer, got {type(n_levels).__name__}",
+            error_type="type_error",
+            context={
+                "parameter": "n_levels",
+                "expected_type": "int",
+                "actual_type": type(n_levels).__name__,
+                "description": "Number of hierarchical levels (HTFA only)",
+            },
+        )
+    
+    if n_levels < 1:
+        raise ValidationError(
+            f"n_levels must be >= 1, got {n_levels}",
+            error_type="value_range_error",
+            context={
+                "parameter": "n_levels", 
+                "value": n_levels,
+                "min_allowed": 1,
+                "max_allowed": None,
+                "description": "Number of hierarchical levels (HTFA only)",
+            },
+        )
+    
+    return n_levels
+
+
+def validate_backend(backend: Optional[str]) -> Optional[str]:
+    """Validate backend parameter for HTFA.
+    
+    Parameters
+    ----------
+    backend : str or None
+        Computational backend name.
+        
+    Returns
+    -------
+    backend : str or None
+        Validated backend value.
+        
+    Raises
+    ------
+    ValidationError
+        If backend is invalid.
+    """
+    if backend is None:
+        return None
+        
+    if not isinstance(backend, str):
+        raise ValidationError(
+            f"backend must be a string or None, got {type(backend).__name__}",
+            error_type="type_error",
+            context={
+                "parameter": "backend",
+                "expected_types": ["str", "None"],
+                "actual_type": type(backend).__name__,
+                "description": "Computational backend for optimization",
+            },
+        )
+    
+    valid_backends = ["numpy", "jax", "pytorch"]
+    if backend not in valid_backends:
+        raise ValidationError(
+            f"backend must be one of {valid_backends}, got '{backend}'",
+            error_type="invalid_choice",
+            context={
+                "parameter": "backend",
+                "value": backend,
+                "valid_choices": valid_backends,
+                "description": "Computational backend for optimization",
+            },
+        )
+    
+    return backend
+
+
+def validate_random_state(random_state: Union[int, np.random.RandomState, None]) -> Optional[np.random.RandomState]:
+    """Validate random_state parameter using sklearn's check_random_state.
+    
+    Parameters
+    ----------
+    random_state : int, RandomState instance or None
+        Random seed or RandomState instance.
+        
+    Returns
+    -------
+    random_state : RandomState instance or None
+        Validated RandomState instance.
+        
+    Raises
+    ------
+    ValidationError
+        If random_state is invalid.
+    """
+    try:
+        return check_random_state(random_state)
+    except (ValueError, TypeError) as e:
+        raise ValidationError(
+            f"Invalid random_state: {str(e)}",
+            error_type="random_state_error",
+            context={
+                "parameter": "random_state",
+                "value": random_state,
+                "expected_types": ["int", "RandomState", "None"],
+                "actual_type": type(random_state).__name__,
+                "description": "Random seed for reproducibility",
+                "original_error": str(e),
+            },
+        )
+
+
+def validate_max_iter(max_iter: int) -> int:
+    """Validate max_iter parameter for HTFA.
+    
+    Parameters
+    ----------
+    max_iter : int
+        Maximum number of iterations.
+    
+    Returns
+    -------
+    max_iter : int
+        Validated max_iter value.
+        
+    Raises
+    ------
+    ValidationError
+        If max_iter is invalid.
+    """
+    if not isinstance(max_iter, int):
+        raise ValidationError(
+            f"max_iter must be an integer, got {type(max_iter).__name__}",
+            error_type="type_error",
+            context={
+                "parameter": "max_iter",
+                "expected_type": "int",
+                "actual_type": type(max_iter).__name__,
+                "description": "Maximum number of optimization iterations",
+            },
+        )
+    
+    if max_iter < 1:
+        raise ValidationError(
+            f"max_iter must be >= 1, got {max_iter}",
+            error_type="value_range_error",
+            context={
+                "parameter": "max_iter",
+                "value": max_iter,
+                "min_allowed": 1,
+                "max_allowed": None,
+                "description": "Maximum number of optimization iterations",
+            },
+        )
+    
+    return max_iter
+
+
 def validate_parameters(**kwargs: Any) -> Dict[str, Any]:
     """Validate algorithm parameters for TFA/HTFA.
 
@@ -508,6 +685,14 @@ def validate_parameters(**kwargs: Any) -> Dict[str, Any]:
             "max": 10,
             "default": 2,
             "description": "Number of hierarchical levels (HTFA only)",
+        },
+        "backend": {
+            "type": (str, type(None)),
+            "min": None,
+            "max": None,
+            "default": None,
+            "choices": ["numpy", "jax", "pytorch"],
+            "description": "Computational backend for optimization",
         },
     }
 
@@ -712,6 +897,12 @@ def format_validation_error(error_type: str, context: Dict[str, Any]) -> str:
             "Mismatch between number of data arrays ({n_data_arrays}) and coordinate arrays ({n_coord_arrays})\n"
             "Action: Provide either one coordinate array per data array, or a single coordinate array for all."
         ),
+        "random_state_error": (
+            "Invalid random_state parameter: {original_error}\n"
+            "Expected types: {expected_types}\n"
+            "Description: {description}\n"
+            "Action: Use an integer seed, RandomState instance, or None for default random behavior."
+        ),
     }
 
     if error_type not in templates:
@@ -818,6 +1009,10 @@ __all__ = [
     "validate_arrays",
     "validate_bids_path",
     "validate_parameters",
+    "validate_n_levels",
+    "validate_backend", 
+    "validate_random_state",
+    "validate_max_iter",
     "format_validation_error",
     "check_data_quality",
 ]
