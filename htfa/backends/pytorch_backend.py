@@ -20,7 +20,7 @@ except ImportError:
 
     torch = _DummyTorch()
 
-from ..core import HTFABackend
+from ..backend_base import HTFABackend
 
 
 class PyTorchBackend(HTFABackend):

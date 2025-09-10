@@ -9,7 +9,8 @@ import time
 
 import numpy as np
 
-from htfa.htfa import HTFA, HTFABenchmark
+from htfa.core.htfa import HTFA
+from htfa.benchmark import HTFABenchmark
 
 
 def main():

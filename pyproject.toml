@@ -82,7 +82,7 @@ pytest-xdist = "^3.5.0"
 pytest-timeout = "^2.2.0"
 psutil = "^6.0.0"
 radon = "^6.0.0"
-ruff = "^0.5.0"
+ruff = "^0.12.12"
 
 [tool.poetry.group.docs.dependencies]
 sphinx = "^7.0.0"
@@ -168,6 +168,7 @@ markers = [
   "unit: Unit tests for individual components",
   "integration: Integration tests for component interactions",
   "e2e: End-to-end tests for complete workflows",
+  "slow: Slow tests that should be skipped in CI",
   "benchmark: Performance benchmark tests",
   "slow: Tests that take >5 seconds to run",
   "epic_core: Tests for core HTFA functionality",

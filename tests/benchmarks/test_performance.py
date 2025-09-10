@@ -5,6 +5,7 @@ import pytest
 
 
 @pytest.mark.benchmark
+@pytest.mark.slow
 def test_tfa_fit_performance(benchmark, sample_neuroimaging_data):
     """Benchmark TFA fitting performance."""
     from htfa.core.tfa import TFA
