@@ -12,6 +12,8 @@ from sklearn.base import BaseEstimator
 
 from htfa.core.tfa import TFA
 from htfa.validation import validate_random_state
+from htfa.backend_base import HTFABackend
+from htfa.backends.numpy_backend import NumPyBackend
 
 
 class HTFA(BaseEstimator):
@@ -40,8 +42,8 @@ class HTFA(BaseEstimator):
         Whether to print progress information.
     n_levels : int, default=2
         Number of hierarchical levels in the model.
-    backend : str or None, default=None
-        Computational backend to use ('jax', 'pytorch', or None for numpy).
+    backend : str, HTFABackend, or None, default=None
+        Computational backend to use ('numpy', 'jax', 'pytorch', custom backend, or None for numpy).
     random_state : int, RandomState instance or None, default=None
         Random state for reproducible results.
     max_iter : int, default=100
@@ -58,7 +60,7 @@ class HTFA(BaseEstimator):
         tol: float = 1e-6,
         verbose: bool = False,
         n_levels: int = 2,
-        backend: Optional[str] = None,
+        backend: Optional[Union[str, HTFABackend]] = None,
         random_state: Optional[Union[int, np.random.RandomState]] = None,
         max_iter: int = 100,
         n_factors: Optional[int] = None,
@@ -76,16 +78,46 @@ class HTFA(BaseEstimator):
         self.tol = tol
         self.verbose = verbose
         self.n_levels = n_levels
-        self.backend = backend
         # Validate and store random_state
         self.random_state = validate_random_state(random_state)
         self.max_iter = max_iter
+
+        # Initialize backend
+        if isinstance(backend, str):
+            self.backend = self._create_backend(backend)
+        elif backend is None:
+            self.backend = NumPyBackend()
+        else:
+            self.backend = backend
 
         # Fitted parameters
         self.global_template_: Optional[np.ndarray] = None
         self.factors_: Optional[List[np.ndarray]] = None
         self.weights_: Optional[List[np.ndarray]] = None
         self.subject_templates_: Optional[List[np.ndarray]] = None
+
+    def _create_backend(self, backend_name: str) -> HTFABackend:
+        """Create backend from string name."""
+        if backend_name == "numpy":
+            return NumPyBackend()
+        elif backend_name == "jax":
+            try:
+                from htfa.backends.jax_backend import JAXBackend
+                return JAXBackend()
+            except ImportError:
+                raise ImportError(
+                    "JAX backend not available. Install JAX with: pip install jax jaxlib"
+                )
+        elif backend_name == "pytorch":
+            try:
+                from htfa.backends.pytorch_backend import PyTorchBackend
+                return PyTorchBackend()
+            except ImportError:
+                raise ImportError(
+                    "PyTorch backend not available. Install PyTorch: pip install torch"
+                )
+        else:
+            raise ValueError(f"Unknown backend: {backend_name}")
 
     def fit(
         self, X: List[np.ndarray], coords: Optional[List[np.ndarray]] = None
@@ -148,6 +180,7 @@ class HTFA(BaseEstimator):
                 tol=self.tol,
                 verbose=False,  # Suppress individual subject verbose output
                 random_state=self.random_state,
+                backend=self.backend,  # Pass backend to TFA
             )
 
             tfa.fit(subject_data, subject_coords)

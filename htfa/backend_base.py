@@ -65,46 +65,6 @@ class HTFABackend(ABC):
         pass
 
 
-class NumPyBackend(HTFABackend):
-    """NumPy backend for HTFA."""
-
-    def array(self, data: Any) -> np.ndarray:
-        return np.array(data)
-
-    def zeros(self, shape: Tuple[int, ...], dtype: Any = None) -> np.ndarray:
-        return np.zeros(shape, dtype=dtype)
-
-    def ones(self, shape: Tuple[int, ...], dtype: Any = None) -> np.ndarray:
-        return np.ones(shape, dtype=dtype)
-
-    def random(self, shape: Tuple[int, ...], dtype: Any = None) -> np.ndarray:
-        return np.random.random(shape).astype(dtype if dtype else np.float32)
-
-    def matmul(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        return np.matmul(a, b)
-
-    def transpose(
-        self, a: np.ndarray, axes: Optional[Tuple[int, ...]] = None
-    ) -> np.ndarray:
-        return np.transpose(a, axes)
-
-    def svd(
-        self, a: np.ndarray, full_matrices: bool = True
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        return np.linalg.svd(a, full_matrices=full_matrices)
-
-    def norm(
-        self, a: np.ndarray, axis: Optional[int] = None, keepdims: bool = False
-    ) -> np.ndarray:
-        return np.linalg.norm(a, axis=axis, keepdims=keepdims)
-
-    def mean(
-        self, a: np.ndarray, axis: Optional[int] = None, keepdims: bool = False
-    ) -> np.ndarray:
-        return np.mean(a, axis=axis, keepdims=keepdims)
-
-    def to_numpy(self, a: np.ndarray) -> np.ndarray:
-        return a
 
 
 class HTFA:
@@ -167,6 +127,7 @@ class HTFA:
     def _create_backend(self, backend_name: str) -> HTFABackend:
         """Create backend from string name."""
         if backend_name == "numpy":
+            from .backends.numpy_backend import NumPyBackend
             return NumPyBackend()
         elif backend_name == "jax":
             try:

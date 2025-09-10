@@ -13,6 +13,9 @@ from sklearn.base import BaseEstimator
 from sklearn.cluster import KMeans
 from sklearn.utils import check_random_state
 
+from htfa.backend_base import HTFABackend
+from htfa.backends.numpy_backend import NumPyBackend
+
 
 class TFA(BaseEstimator):
     """Topographic Factor Analysis (TFA).
@@ -34,6 +37,8 @@ class TFA(BaseEstimator):
         Convergence tolerance.
     verbose : bool
         Whether to print progress information.
+    backend : str, HTFABackend, or None, default=None
+        Computational backend to use ('numpy', 'jax', 'pytorch', custom backend, or None for numpy).
     """
 
     def __init__(
@@ -52,6 +57,7 @@ class TFA(BaseEstimator):
         nlss_loss: str = "soft_l1",
         upper_ratio: float = 1.8,
         lower_ratio: float = 0.02,
+        backend: Optional[Union[str, HTFABackend]] = None,
     ):
         # Allow n_factors as alias for K
         if n_factors is not None:
@@ -70,11 +76,42 @@ class TFA(BaseEstimator):
         self.upper_ratio = upper_ratio
         self.lower_ratio = lower_ratio
 
+        # Initialize backend
+        if isinstance(backend, str):
+            self.backend = self._create_backend(backend)
+        elif backend is None:
+            self.backend = NumPyBackend()
+        else:
+            self.backend = backend
+
         # Fitted parameters
         self.factors_: Optional[np.ndarray] = None
         self.weights_: Optional[np.ndarray] = None
         self.centers_: Optional[np.ndarray] = None
         self.widths_: Optional[np.ndarray] = None
+
+    def _create_backend(self, backend_name: str) -> HTFABackend:
+        """Create backend from string name."""
+        if backend_name == "numpy":
+            return NumPyBackend()
+        elif backend_name == "jax":
+            try:
+                from htfa.backends.jax_backend import JAXBackend
+                return JAXBackend()
+            except ImportError:
+                raise ImportError(
+                    "JAX backend not available. Install JAX with: pip install jax jaxlib"
+                )
+        elif backend_name == "pytorch":
+            try:
+                from htfa.backends.pytorch_backend import PyTorchBackend
+                return PyTorchBackend()
+            except ImportError:
+                raise ImportError(
+                    "PyTorch backend not available. Install PyTorch: pip install torch"
+                )
+        else:
+            raise ValueError(f"Unknown backend: {backend_name}")
 
     def fit(self, X: np.ndarray, coords: Optional[np.ndarray] = None) -> "TFA":
         """Fit the TFA model to data.
