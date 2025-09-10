@@ -15,6 +15,7 @@ def test_bids_to_results_pipeline(mock_bids_dataset, temp_dir):
 
 
 @pytest.mark.e2e
+@pytest.mark.slow
 def test_multi_subject_analysis(sample_neuroimaging_data, temp_dir):
     """Test multi-subject HTFA analysis workflow."""
     from htfa.core.htfa import HTFA

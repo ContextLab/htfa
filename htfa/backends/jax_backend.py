@@ -19,7 +19,7 @@ except ImportError:
 
     jnp = _DummyJNP()
 
-from ..core import HTFABackend
+from ..backend_base import HTFABackend
 
 
 class JAXBackend(HTFABackend):

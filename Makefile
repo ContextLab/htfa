@@ -40,6 +40,12 @@ formatting: codestyle
 #* Linting
 .PHONY: test
 test:
+	PYTHONPATH=$(PYTHONPATH) poetry run pytest -c pyproject.toml --cov-report=html --cov=htfa tests/ -m "not slow"
+	poetry run coverage xml
+	poetry run genbadge coverage -i coverage.xml -o assets/images/coverage.svg
+
+.PHONY: test-all
+test-all:
 	PYTHONPATH=$(PYTHONPATH) poetry run pytest -c pyproject.toml --cov-report=html --cov=htfa tests/
 	poetry run coverage xml
 	poetry run genbadge coverage -i coverage.xml -o assets/images/coverage.svg
