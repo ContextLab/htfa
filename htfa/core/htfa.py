@@ -11,6 +11,7 @@ from scipy.optimize import linear_sum_assignment
 from sklearn.base import BaseEstimator
 
 from htfa.core.tfa import TFA
+from htfa.validation import validate_random_state
 
 
 class HTFA(BaseEstimator):
@@ -76,7 +77,8 @@ class HTFA(BaseEstimator):
         self.verbose = verbose
         self.n_levels = n_levels
         self.backend = backend
-        self.random_state = random_state
+        # Validate and store random_state
+        self.random_state = validate_random_state(random_state)
         self.max_iter = max_iter
 
         # Fitted parameters
@@ -145,6 +147,7 @@ class HTFA(BaseEstimator):
                 max_iter=self.max_local_iter,
                 tol=self.tol,
                 verbose=False,  # Suppress individual subject verbose output
+                random_state=self.random_state,
             )
 
             tfa.fit(subject_data, subject_coords)
