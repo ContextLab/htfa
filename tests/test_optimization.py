@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from htfa.htfa.optimization import (
+from htfa.optimization import (
     AdamOptimizer,
     AlternatingLeastSquares,
     MiniBatchOptimizer,
