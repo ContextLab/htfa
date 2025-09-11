@@ -82,7 +82,7 @@ pytest-xdist = "^3.5.0"
 pytest-timeout = "^2.2.0"
 psutil = "^6.0.0"
 radon = "^6.0.0"
-ruff = "^0.12.12"
+ruff = "^0.13.0"
 
 [tool.poetry.group.docs.dependencies]
 sphinx = "^7.0.0"
