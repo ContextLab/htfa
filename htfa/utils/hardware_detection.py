@@ -261,8 +261,10 @@ def clear_hardware_cache():
 def get_recommended_backend() -> str:
     """Get recommended backend based on hardware.
 
-    Returns:
-        Recommended backend name: 'jax', 'pytorch', or 'numpy'
+    Returns
+    -------
+    str
+        Backend name ('jax', 'pytorch', or 'numpy')
     """
     hardware = detect_all_hardware()
 

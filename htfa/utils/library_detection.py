@@ -228,8 +228,10 @@ def detect_all_libraries() -> Dict[str, Any]:
 def get_optimal_backend() -> str:
     """Determine optimal backend based on available libraries.
 
-    Returns:
-        Optimal backend name: 'jax', 'pytorch', or 'numpy'
+    Returns
+    -------
+    str
+        Backend name ('jax', 'pytorch', or 'numpy')
     """
     libs = detect_all_libraries()
 
