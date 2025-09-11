@@ -12,7 +12,9 @@ def test_tfa_fit_performance(benchmark, sample_neuroimaging_data):
 
     # Use first subject's data and transpose to (n_voxels, n_timepoints)
     # Reduce size for faster benchmarking
-    X = list(sample_neuroimaging_data.values())[0][:20, :30].T  # 30 voxels, 20 timepoints
+    X = list(sample_neuroimaging_data.values())[0][
+        :20, :30
+    ].T  # 30 voxels, 20 timepoints
     coords = np.random.randn(X.shape[0], 3)
 
     def run_tfa_fit():
@@ -33,7 +35,9 @@ def test_htfa_fit_performance(benchmark, sample_neuroimaging_data):
 
     # Prepare multi-subject data, transpose to (n_voxels, n_timepoints)
     # Reduce size for faster benchmarking
-    subjects_data = [data[:20, :30].T for data in list(sample_neuroimaging_data.values())[:2]]
+    subjects_data = [
+        data[:20, :30].T for data in list(sample_neuroimaging_data.values())[:2]
+    ]
     coords = np.random.randn(subjects_data[0].shape[0], 3)
 
     def run_htfa_fit():
@@ -54,7 +58,8 @@ def test_memory_usage(benchmark, capture_metrics):
     from htfa.core.tfa import TFA
 
     # Generate smaller dataset for faster testing
-    X = np.random.randn(50, 100)  # 100 voxels, 50 timepoints
+    # TFA expects (n_voxels, n_timepoints)
+    X = np.random.randn(100, 50)  # 100 voxels, 50 timepoints
     coords = np.random.randn(100, 3)
 
     def memory_intensive_operation():
@@ -62,7 +67,7 @@ def test_memory_usage(benchmark, capture_metrics):
         tfa.fit(X, coords)
         return tfa
 
-    result = benchmark(memory_intensive_operation)
+    benchmark(memory_intensive_operation)
 
     # Check memory usage from capture_metrics
     memory_delta = capture_metrics.get("memory_delta", 0)
@@ -75,7 +80,8 @@ def test_scaling_with_components(benchmark, n_components):
     """Test performance scaling with number of components."""
     from htfa.core.tfa import TFA
 
-    X = np.random.randn(30, 50)  # 50 voxels, 30 timepoints
+    # TFA expects (n_voxels, n_timepoints)
+    X = np.random.randn(50, 30)  # 50 voxels, 30 timepoints
     coords = np.random.randn(50, 3)
 
     def run_with_n_components():

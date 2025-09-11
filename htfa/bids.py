@@ -19,7 +19,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 from bids import BIDSLayout
-from bids.layout import BIDSFile, Query
+from bids.layout import BIDSFile
 
 from .validation import validate_bids_path
 

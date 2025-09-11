@@ -1,6 +1,6 @@
 """Optimization utilities and advanced algorithms for HTFA."""
 
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Tuple
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass

@@ -1,11 +1,10 @@
 """Hardware detection module for automatic backend selection."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import os
 import platform
 import subprocess
-import warnings
 from functools import lru_cache
 
 import psutil

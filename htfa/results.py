@@ -5,11 +5,14 @@ for accessing HTFA analysis results, including built-in visualization methods
 and NIfTI reconstruction capabilities.
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 import warnings
 
 import numpy as np
+
+if TYPE_CHECKING:
+    pass
 
 # Placeholder imports - will be implemented in Phase 2
 # import nibabel as nib
@@ -58,7 +61,7 @@ class HTFAResults:
         preprocessing: Dict[str, Any],
         model_params: Dict[str, Any],
         fit_info: Dict[str, Any],
-        template_img: Optional["nib.Nifti1Image"] = None,
+        template_img: Optional[Any] = None,  # nib.Nifti1Image
         brain_mask: Optional[np.ndarray] = None,
         coordinates: Optional[np.ndarray] = None,
     ):
@@ -229,7 +232,7 @@ class HTFAResults:
 
     def to_nifti(
         self, factor_idx: Optional[int] = None, subject_id: Optional[str] = None
-    ) -> "nib.Nifti1Image":
+    ) -> Any:  # nib.Nifti1Image
         """Reconstruct NIfTI images from HTFA factors.
 
         Parameters
@@ -264,7 +267,7 @@ class HTFAResults:
         """
         raise NotImplementedError("Will be implemented in Phase 2 (Issue #66)")
 
-    def get_network_timeseries(self, subject_id: str) -> "pd.DataFrame":
+    def get_network_timeseries(self, subject_id: str) -> Any:  # pd.DataFrame
         """Extract network timeseries for further analysis.
 
         Parameters

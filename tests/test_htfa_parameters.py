@@ -42,6 +42,7 @@ class TestHTFAParameterAcceptance:
         # Test that parameter is stored as instance attribute
         if hasattr(htfa_model, "backend"):
             from htfa.backends.numpy_backend import NumPyBackend
+
             # Check that backend instance is stored
             assert isinstance(htfa_model.backend, NumPyBackend)
             # Check that backend name is accessible
@@ -113,6 +114,7 @@ class TestHTFAParameterDefaults:
             assert htfa_model.backend is not None
             # Backend should be an object, not a string
             from htfa.backends.numpy_backend import NumPyBackend
+
             assert isinstance(htfa_model.backend, (NumPyBackend, object))
 
     def test_max_iter_default_mapping(self):
@@ -332,6 +334,7 @@ class TestParameterIntegration:
 
             if hasattr(htfa_model, "backend"):
                 from htfa.backends.numpy_backend import NumPyBackend
+
                 assert isinstance(htfa_model.backend, NumPyBackend)
 
                 # Test that backend name is accessible if implemented
@@ -402,6 +405,7 @@ class TestParameterEdgeCases:
                 assert htfa_model.backend is not None
                 # Backend should be an object
                 from htfa.backends.numpy_backend import NumPyBackend
+
                 assert isinstance(htfa_model.backend, (NumPyBackend, object))
         except TypeError:
             # backend parameter not implemented yet
@@ -428,7 +432,7 @@ class TestParameterDocumentation:
         """Test that parameter information is accessible via help."""
         # This is more of a smoke test
         try:
-            help_output = help(HTFA)  # This returns None but may print
+            help(HTFA)  # This returns None but may print
             # The test passes if help() doesn't crash
             assert True
         except Exception:

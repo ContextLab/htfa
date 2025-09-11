@@ -4,16 +4,13 @@ This module provides input validation functions for arrays, BIDS paths, paramete
 and error formatting to ensure data integrity and provide clear error messages.
 """
 
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-import os
-import re
 import warnings
 from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
-import pandas as pd
 from sklearn.utils import check_random_state
 from sklearn.utils.validation import check_array
 
@@ -394,7 +391,7 @@ def validate_bids_path(path: Union[str, Path]) -> Path:
         )
 
     # Check for subjects directory
-    subjects_dir = path_obj / "sub-*"
+    path_obj / "sub-*"
     subject_dirs = list(path_obj.glob("sub-*"))
 
     if not subject_dirs:
@@ -733,7 +730,7 @@ def validate_parameters(**kwargs: Any) -> Dict[str, Any]:
                 )
         else:
             # Single expected type
-            if expected_type != type(None) and not isinstance(
+            if expected_type is not type(None) and not isinstance(
                 param_value, expected_type
             ):
                 raise ValidationError(

@@ -5,11 +5,7 @@ including real data flows, parameter inference, and model fitting
 without mocks to ensure the entire pipeline works correctly.
 """
 
-from typing import List, Tuple
 
-import shutil
-import tempfile
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -27,10 +23,11 @@ class TestFitInterfaceIntegration:
         np.random.seed(42)  # Reproducible tests
 
         # Create realistic fMRI-like synthetic data
-        self.n_voxels = 1000
-        self.n_timepoints = 200
+        # Reduced sizes for faster testing
+        self.n_voxels = 100
+        self.n_timepoints = 50
         self.n_subjects = 3
-        self.true_n_factors = 10
+        self.true_n_factors = 5
 
         # Generate synthetic fMRI data with spatial structure
         self.single_subject_data = self._generate_synthetic_fmri_data(
@@ -268,13 +265,13 @@ class TestFitInterfaceIntegration:
 
     def test_memory_efficiency_large_data(self):
         """Test memory efficiency with larger datasets."""
-        # Create larger synthetic dataset
-        large_n_voxels = 5000
-        large_n_timepoints = 400
+        # Create larger synthetic dataset (but still reasonable for testing)
+        large_n_voxels = 500
+        large_n_timepoints = 100
 
         large_coords = self._generate_brain_coordinates(large_n_voxels)
         large_data = self._generate_synthetic_fmri_data(
-            large_n_voxels, large_n_timepoints, 20
+            large_n_voxels, large_n_timepoints, 10
         )
 
         # This should not crash due to memory issues

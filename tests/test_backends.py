@@ -1,12 +1,11 @@
 """Comprehensive tests for HTFA backend functionality."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 
 from htfa.backend_base import HTFA as BaseHTFA
-from htfa.backend_base import HTFABackend
 from htfa.backends.numpy_backend import NumPyBackend
 from htfa.core.htfa import HTFA
 from htfa.core.tfa import TFA

@@ -4,13 +4,11 @@ from typing import Any, Dict, Optional, Tuple
 
 import logging
 import warnings
-from functools import lru_cache
 
 from ..utils import (
     detect_all_hardware,
     detect_all_libraries,
     get_gpu_memory_mb,
-    has_gpu,
 )
 
 logger = logging.getLogger(__name__)

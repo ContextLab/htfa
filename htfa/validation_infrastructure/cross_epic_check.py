@@ -5,7 +5,6 @@ from typing import Dict, List, Optional, Tuple
 import importlib
 import sys
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 
@@ -203,7 +202,7 @@ class CrossEpicValidator:
         try:
             from htfa.results import HTFAResults
 
-            results = HTFAResults(
+            HTFAResults(
                 factors=np.random.randn(10, 1000),
                 weights=np.random.randn(100, 10),
                 coordinates=np.random.randn(1000, 3),

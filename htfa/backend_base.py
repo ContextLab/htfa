@@ -4,7 +4,7 @@ This module provides the main HTFA algorithm with support for modern ML backends
 and performance optimizations.
 """
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
 from abc import ABC, abstractmethod
 
@@ -111,7 +111,7 @@ class HTFA:
             self._backend = self._create_backend(backend)
         else:
             self._backend = backend
-        
+
         # Expose backend as property for compatibility
         self.backend = self._backend
 

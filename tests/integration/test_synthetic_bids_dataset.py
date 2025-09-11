@@ -164,7 +164,6 @@ class TestSyntheticBIDSDataset:
         subjects = layout.get_subjects()
 
         for sub in subjects:
-            sub_id = f"sub-{sub}"
 
             # Load data
             func_file = layout.get(subject=sub, suffix="bold", extension="nii.gz")[0]

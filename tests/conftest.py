@@ -1,11 +1,13 @@
 """Shared pytest configuration and fixtures for HTFA ecosystem testing."""
 
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, Dict, Generator, List
 
 import os
 import sys
 import tempfile
 from pathlib import Path
+
+import time
 
 import numpy as np
 import pytest

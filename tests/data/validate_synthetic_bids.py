@@ -60,13 +60,13 @@ def validate_bids_structure():
                 with open(json_files[0].path) as f:
                     metadata = json.load(f)
                     if metadata.get("RepetitionTime") == 2.0:
-                        print(f"    ✓ JSON sidecar present with TR=2.0s")
+                        print("    ✓ JSON sidecar present with TR=2.0s")
                     else:
                         print(
                             f"    ✗ Incorrect TR in JSON: {metadata.get('RepetitionTime')}"
                         )
             else:
-                print(f"    ✗ Missing JSON sidecar")
+                print("    ✗ Missing JSON sidecar")
                 return False
         else:
             print(
@@ -82,7 +82,7 @@ def validate_bids_structure():
             ground_truth = json.load(f)
 
         info = ground_truth["dataset_info"]
-        print(f"  ✓ Ground truth file exists")
+        print("  ✓ Ground truth file exists")
         print(f"    - Participants: {info['n_participants']}")
         print(f"    - Voxels: {info['n_voxels']}")
         print(f"    - Timepoints: {info['n_timepoints']}")

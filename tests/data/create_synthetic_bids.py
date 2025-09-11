@@ -5,13 +5,11 @@ parameters for validating HTFA algorithm accuracy.
 """
 
 import json
-import os
 from pathlib import Path
 
 import nibabel as nib
 import numpy as np
 import pandas as pd
-from scipy.spatial.distance import cdist
 
 
 def create_bids_structure(base_path: Path) -> None:

@@ -1,6 +1,5 @@
 """End-to-end tests for complete HTFA workflows."""
 
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -61,7 +60,7 @@ def test_large_scale_analysis(temp_dir):
     n_timepoints = 30
     n_voxels = 40
 
-    # HTFA expects (n_voxels, n_timepoints) 
+    # HTFA expects (n_voxels, n_timepoints)
     subjects_data = [np.random.randn(n_voxels, n_timepoints) for _ in range(n_subjects)]
     coords = np.random.randn(n_voxels, 3) * 50
 
@@ -85,7 +84,9 @@ def test_cross_validation_workflow(sample_neuroimaging_data):
 
     # Use single subject data, transpose to (n_voxels, n_timepoints)
     # Reduce data size for faster testing
-    X = list(sample_neuroimaging_data.values())[0][:30, :40].T  # 40 voxels, 30 timepoints
+    X = list(sample_neuroimaging_data.values())[0][
+        :30, :40
+    ].T  # 40 voxels, 30 timepoints
     coords = np.random.randn(X.shape[0], 3)
 
     # Time series cross-validation
@@ -95,7 +96,7 @@ def test_cross_validation_workflow(sample_neuroimaging_data):
     # Split on time dimension (X.T splits timepoints)
     for train_idx, test_idx in tscv.split(X.T):
         X_train = X[:, train_idx]  # All voxels, training timepoints
-        X_test = X[:, test_idx]    # All voxels, test timepoints
+        X[:, test_idx]  # All voxels, test timepoints
 
         # Fit model with reduced complexity
         tfa = TFA(K=3, max_iter=5)  # Reduced components and iterations

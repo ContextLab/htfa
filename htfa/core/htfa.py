@@ -4,7 +4,7 @@ This module provides a standalone implementation of Hierarchical Topographic Fac
 based on the BrainIAK implementation but with minimal dependencies.
 """
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 import warnings
 
@@ -88,7 +88,9 @@ class HTFA(BaseEstimator):
         # Initialize backend with auto-selection support
         if isinstance(backend, str):
             self.backend_name = backend  # Store the string name
-            self.backend = self._create_backend(backend)  # Store the actual backend object
+            self.backend = self._create_backend(
+                backend
+            )  # Store the actual backend object
             self._backend = self.backend  # Alias for internal use
         elif backend is None:
             # Auto-select optimal backend
@@ -96,13 +98,17 @@ class HTFA(BaseEstimator):
 
             selected = select_backend(None)
             self.backend_name = selected  # Store the selected backend name
-            self.backend = self._create_backend(selected)  # Store the actual backend object
+            self.backend = self._create_backend(
+                selected
+            )  # Store the actual backend object
             self._backend = self.backend  # Alias for internal use
             if self.verbose:
                 print(f"Auto-selected backend: {selected}")
         else:
             # If a backend object is passed directly
-            self.backend_name = str(type(backend).__name__).replace("Backend", "").lower()
+            self.backend_name = (
+                str(type(backend).__name__).replace("Backend", "").lower()
+            )
             self.backend = backend
             self._backend = backend
 
@@ -212,7 +218,7 @@ class HTFA(BaseEstimator):
         self, X: List[np.ndarray], coords: Optional[List[np.ndarray]]
     ) -> None:
         """Run the hierarchical optimization algorithm."""
-        n_subjects = len(X)
+        len(X)
 
         # Initialize global template
         self._compute_global_template()
@@ -308,7 +314,7 @@ class HTFA(BaseEstimator):
             self.template_widths_var_ = np.var(all_widths, axis=0)
 
             # Store as global template
-            n_dims = self.template_centers_.shape[1]
+            self.template_centers_.shape[1]
             self.global_template_ = {
                 "centers": self.template_centers_,
                 "widths": self.template_widths_,

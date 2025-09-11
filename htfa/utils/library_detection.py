@@ -3,7 +3,6 @@
 from typing import Any, Dict, Optional
 
 import importlib
-import warnings
 from functools import lru_cache
 
 from packaging import version
