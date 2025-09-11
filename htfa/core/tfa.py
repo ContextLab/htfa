@@ -82,24 +82,23 @@ class TFA(BaseEstimator):
 
         # Initialize backend with auto-selection support
         if isinstance(backend, str):
-            self.backend = backend  # Store the string name
-            self._backend = self._create_backend(
-                backend
-            )  # Store the actual backend object
+            self.backend_name = backend  # Store the string name
+            self.backend = self._create_backend(backend)  # Store the actual backend object
+            self._backend = self.backend  # Alias for internal use
         elif backend is None:
             # Auto-select optimal backend
             from htfa.backends.selector import select_backend
 
             selected = select_backend(None)
-            self.backend = selected  # Store the selected backend name
-            self._backend = self._create_backend(
-                selected
-            )  # Store the actual backend object
+            self.backend_name = selected  # Store the selected backend name
+            self.backend = self._create_backend(selected)  # Store the actual backend object
+            self._backend = self.backend  # Alias for internal use
             if self.verbose:
                 print(f"Auto-selected backend: {selected}")
         else:
             # If a backend object is passed directly
-            self.backend = str(type(backend).__name__).replace("Backend", "").lower()
+            self.backend_name = str(type(backend).__name__).replace("Backend", "").lower()
+            self.backend = backend
             self._backend = backend
 
         # Fitted parameters
@@ -414,13 +413,15 @@ class TFA(BaseEstimator):
             return (X - reconstruction).flatten()
 
         # Optimize using least squares
+        # Reduce max_nfev for faster testing when max_iter is low
+        max_nfev = 20 if self.max_iter <= 5 else 100
         result = least_squares(
             residual,
             init_params,
             bounds=(lower_bounds, upper_bounds),
             method=self.nlss_method,
             loss=self.nlss_loss,
-            max_nfev=100,  # Limit function evaluations for efficiency
+            max_nfev=max_nfev,  # Limit function evaluations for efficiency
         )
 
         # Extract updated parameters

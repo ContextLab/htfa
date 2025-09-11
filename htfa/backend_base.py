@@ -111,6 +111,9 @@ class HTFA:
             self._backend = self._create_backend(backend)
         else:
             self._backend = backend
+        
+        # Expose backend as property for compatibility
+        self.backend = self._backend
 
         # Initialize state
         self.is_fitted_ = False
