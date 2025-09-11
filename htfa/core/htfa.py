@@ -44,7 +44,7 @@ class HTFA(BaseEstimator):
     n_levels : int, default=2
         Number of hierarchical levels in the model.
     backend : str, HTFABackend, or None, default=None
-        Computational backend to use ('numpy', 'jax', 'pytorch', custom backend, or None for numpy).
+        Computational backend to use ('numpy', 'jax', 'pytorch', custom backend, or None for auto-selection).
     random_state : int, RandomState instance or None, default=None
         Random state for reproducible results.
     max_iter : int, default=100
@@ -83,11 +83,16 @@ class HTFA(BaseEstimator):
         self.random_state = validate_random_state(random_state)
         self.max_iter = max_iter
 
-        # Initialize backend
+        # Initialize backend with auto-selection support
         if isinstance(backend, str):
             self.backend = self._create_backend(backend)
         elif backend is None:
-            self.backend = NumPyBackend()
+            # Auto-select optimal backend
+            from htfa.backends.selector import select_backend
+            selected = select_backend(None)
+            self.backend = self._create_backend(selected)
+            if self.verbose:
+                print(f"Auto-selected backend: {selected}")
         else:
             self.backend = backend
 

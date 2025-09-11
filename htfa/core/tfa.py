@@ -39,7 +39,7 @@ class TFA(BaseEstimator):
     verbose : bool
         Whether to print progress information.
     backend : str, HTFABackend, or None, default=None
-        Computational backend to use ('numpy', 'jax', 'pytorch', custom backend, or None for numpy).
+        Computational backend to use ('numpy', 'jax', 'pytorch', custom backend, or None for auto-selection).
     """
 
     def __init__(
@@ -77,11 +77,16 @@ class TFA(BaseEstimator):
         self.upper_ratio = upper_ratio
         self.lower_ratio = lower_ratio
 
-        # Initialize backend
+        # Initialize backend with auto-selection support
         if isinstance(backend, str):
             self.backend = self._create_backend(backend)
         elif backend is None:
-            self.backend = NumPyBackend()
+            # Auto-select optimal backend
+            from htfa.backends.selector import select_backend
+            selected = select_backend(None)
+            self.backend = self._create_backend(selected)
+            if self.verbose:
+                print(f"Auto-selected backend: {selected}")
         else:
             self.backend = backend
 

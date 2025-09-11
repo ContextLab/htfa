@@ -10,12 +10,15 @@ The backend system is designed for dependency injection into HTFA classes:
 
     from htfa.backends import Backend, get_default_backend, create_backend
     
-    # Use default backend (typically NumPy)
+    # Use default backend (auto-selected based on hardware/libraries)
     backend_name = get_default_backend()
     backend = create_backend(backend_name)
     
+    # Or let HTFA auto-select by passing backend=None
+    htfa = HTFA(K=10, backend=None)  # Auto-selects optimal backend
+    
     # Or specify a particular backend
-    backend = create_backend('jax')  # Once JAX backend is implemented
+    backend = create_backend('jax')  # Force JAX backend
     
     # Pass to HTFA
     htfa = HTFA(K=10, backend=backend)
@@ -58,10 +61,25 @@ from htfa.backends.base import (
     get_default_backend,
 )
 
+# Import automatic backend selection
+from htfa.backends.selector import (
+    select_backend,
+    get_backend_device,
+    validate_backend_selection,
+    clear_backend_cache,
+    BackendSelector,
+)
+
 __all__ = [
     "Backend",
     "register_backend", 
     "get_available_backends",
     "create_backend",
     "get_default_backend",
+    # Automatic selection
+    "select_backend",
+    "get_backend_device",
+    "validate_backend_selection",
+    "clear_backend_cache",
+    "BackendSelector",
 ]
