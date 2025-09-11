@@ -20,9 +20,11 @@ def test_multi_subject_analysis(sample_neuroimaging_data, temp_dir):
     """Test multi-subject HTFA analysis workflow."""
     from htfa.core.htfa import HTFA
 
-    # Prepare data
-    subjects_data = list(sample_neuroimaging_data.values())[:2]  # Use only 2 subjects
-    n_voxels = subjects_data[0].shape[1]
+    # Prepare data, transpose to (n_voxels, n_timepoints)
+    subjects_data = [
+        data.T for data in list(sample_neuroimaging_data.values())[:2]
+    ]  # Use only 2 subjects
+    n_voxels = subjects_data[0].shape[0]
     coords = np.random.randn(n_voxels, 3) * 50
 
     # Fit HTFA model
@@ -79,9 +81,9 @@ def test_cross_validation_workflow(sample_neuroimaging_data):
 
     from htfa.core.tfa import TFA
 
-    # Use single subject data
-    X = list(sample_neuroimaging_data.values())[0]
-    coords = np.random.randn(X.shape[1], 3)
+    # Use single subject data, transpose to (n_voxels, n_timepoints)
+    X = list(sample_neuroimaging_data.values())[0].T
+    coords = np.random.randn(X.shape[0], 3)
 
     # Time series cross-validation
     tscv = TimeSeriesSplit(n_splits=2)  # Reduce splits for speed

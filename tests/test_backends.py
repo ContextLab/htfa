@@ -1,12 +1,13 @@
 """Comprehensive tests for HTFA backend functionality."""
 
+from unittest.mock import MagicMock, patch
+
 import numpy as np
 import pytest
-from unittest.mock import patch, MagicMock
 
+from htfa.backend_base import HTFA as BaseHTFA
 from htfa.backend_base import HTFABackend
 from htfa.backends.numpy_backend import NumPyBackend
-from htfa.backend_base import HTFA as BaseHTFA
 from htfa.core.htfa import HTFA
 from htfa.core.tfa import TFA
 
@@ -61,7 +62,7 @@ class TestNumPyBackend:
         result = self.backend.transpose(self.test_data)
         expected = np.transpose(self.test_data)
         np.testing.assert_array_equal(result, expected)
-        
+
         # Test with axes
         result_axes = self.backend.transpose(self.test_data, axes=(1, 0))
         expected_axes = np.transpose(self.test_data, axes=(1, 0))
@@ -71,11 +72,11 @@ class TestNumPyBackend:
         """Test singular value decomposition."""
         test_matrix = np.random.randn(5, 4)
         U, s, Vt = self.backend.svd(test_matrix, full_matrices=True)
-        
+
         # Check reconstruction
-        reconstruction = U[:, :len(s)] @ np.diag(s) @ Vt
+        reconstruction = U[:, : len(s)] @ np.diag(s) @ Vt
         np.testing.assert_array_almost_equal(reconstruction, test_matrix)
-        
+
         # Check shapes
         assert U.shape == (5, 5)
         assert s.shape == (4,)
@@ -86,7 +87,7 @@ class TestNumPyBackend:
         result = self.backend.norm(self.test_data)
         expected = np.linalg.norm(self.test_data)
         np.testing.assert_almost_equal(result, expected)
-        
+
         # Test with axis
         result_axis = self.backend.norm(self.test_data, axis=0)
         expected_axis = np.linalg.norm(self.test_data, axis=0)
@@ -97,7 +98,7 @@ class TestNumPyBackend:
         result = self.backend.mean(self.test_data)
         expected = np.mean(self.test_data)
         np.testing.assert_almost_equal(result, expected)
-        
+
         # Test with axis
         result_axis = self.backend.mean(self.test_data, axis=0)
         expected_axis = np.mean(self.test_data, axis=0)
@@ -129,13 +130,13 @@ class TestBackendFactory:
         htfa = BaseHTFA(n_factors=5, backend=custom_backend)
         assert htfa.backend is custom_backend
 
-    @patch('htfa.backends.jax_backend.HAS_JAX', False)
+    @patch("htfa.backends.jax_backend.HAS_JAX", False)
     def test_jax_backend_unavailable(self):
         """Test error when JAX backend is not available."""
         with pytest.raises(ImportError, match="JAX backend not available"):
             BaseHTFA(n_factors=5, backend="jax")
 
-    @patch('htfa.backends.pytorch_backend.HAS_TORCH', False)
+    @patch("htfa.backends.pytorch_backend.HAS_TORCH", False)
     def test_pytorch_backend_unavailable(self):
         """Test error when PyTorch backend is not available."""
         with pytest.raises(ImportError, match="PyTorch backend not available"):
@@ -160,7 +161,7 @@ class TestTFABackendIntegration:
         """Test TFA with default NumPy backend."""
         tfa = TFA(K=3, max_iter=10, verbose=False)
         assert isinstance(tfa.backend, NumPyBackend)
-        
+
         # Test fitting
         tfa.fit(self.X, self.coords)
         assert tfa.factors_ is not None
@@ -172,7 +173,7 @@ class TestTFABackendIntegration:
         """Test TFA with explicit NumPy backend."""
         tfa = TFA(K=3, backend="numpy", max_iter=10, verbose=False)
         assert isinstance(tfa.backend, NumPyBackend)
-        
+
         tfa.fit(self.X, self.coords)
         assert tfa.factors_ is not None
         assert tfa.weights_ is not None
@@ -182,7 +183,7 @@ class TestTFABackendIntegration:
         backend = NumPyBackend()
         tfa = TFA(K=3, backend=backend, max_iter=10, verbose=False)
         assert tfa.backend is backend
-        
+
         tfa.fit(self.X, self.coords)
         assert tfa.factors_ is not None
         assert tfa.weights_ is not None
@@ -190,11 +191,11 @@ class TestTFABackendIntegration:
     def test_tfa_backend_factory_methods(self):
         """Test TFA backend factory methods."""
         tfa = TFA(K=3, max_iter=10, verbose=False)
-        
+
         # Test NumPy backend creation
         numpy_backend = tfa._create_backend("numpy")
         assert isinstance(numpy_backend, NumPyBackend)
-        
+
         # Test unknown backend error
         with pytest.raises(ValueError, match="Unknown backend: unknown"):
             tfa._create_backend("unknown")
@@ -222,7 +223,7 @@ class TestHTFABackendIntegration:
         """Test HTFA with default NumPy backend."""
         htfa = HTFA(K=2, max_global_iter=2, max_local_iter=5, verbose=False)
         assert isinstance(htfa.backend, NumPyBackend)
-        
+
         # Test fitting
         htfa.fit(self.X, self.coords)
         assert htfa.factors_ is not None
@@ -232,9 +233,11 @@ class TestHTFABackendIntegration:
 
     def test_htfa_explicit_numpy_backend(self):
         """Test HTFA with explicit NumPy backend."""
-        htfa = HTFA(K=2, backend="numpy", max_global_iter=2, max_local_iter=5, verbose=False)
+        htfa = HTFA(
+            K=2, backend="numpy", max_global_iter=2, max_local_iter=5, verbose=False
+        )
         assert isinstance(htfa.backend, NumPyBackend)
-        
+
         htfa.fit(self.X, self.coords)
         assert htfa.factors_ is not None
         assert htfa.weights_ is not None
@@ -242,9 +245,11 @@ class TestHTFABackendIntegration:
     def test_htfa_custom_backend_object(self):
         """Test HTFA with custom backend object."""
         backend = NumPyBackend()
-        htfa = HTFA(K=2, backend=backend, max_global_iter=2, max_local_iter=5, verbose=False)
+        htfa = HTFA(
+            K=2, backend=backend, max_global_iter=2, max_local_iter=5, verbose=False
+        )
         assert htfa.backend is backend
-        
+
         htfa.fit(self.X, self.coords)
         assert htfa.factors_ is not None
         assert htfa.weights_ is not None
@@ -252,10 +257,16 @@ class TestHTFABackendIntegration:
     def test_htfa_backend_propagation_to_tfa(self):
         """Test that HTFA passes backend to TFA models."""
         custom_backend = NumPyBackend()
-        htfa = HTFA(K=2, backend=custom_backend, max_global_iter=2, max_local_iter=5, verbose=False)
-        
+        htfa = HTFA(
+            K=2,
+            backend=custom_backend,
+            max_global_iter=2,
+            max_local_iter=5,
+            verbose=False,
+        )
+
         htfa.fit(self.X, self.coords)
-        
+
         # Check that all TFA models received the same backend
         for tfa_model in htfa.subject_models_:
             assert tfa_model.backend is custom_backend
@@ -263,11 +274,11 @@ class TestHTFABackendIntegration:
     def test_htfa_backend_factory_methods(self):
         """Test HTFA backend factory methods."""
         htfa = HTFA(K=2, max_global_iter=2, max_local_iter=5, verbose=False)
-        
+
         # Test NumPy backend creation
         numpy_backend = htfa._create_backend("numpy")
         assert isinstance(numpy_backend, NumPyBackend)
-        
+
         # Test unknown backend error
         with pytest.raises(ValueError, match="Unknown backend: unknown"):
             htfa._create_backend("unknown")
@@ -287,7 +298,7 @@ class TestBackendSwapping:
         tfa = TFA(K=2, max_iter=5, verbose=False)
         original_backend = tfa.backend
         assert isinstance(original_backend, NumPyBackend)
-        
+
         # Swap to a new backend
         new_backend = NumPyBackend()
         tfa.backend = new_backend
@@ -299,7 +310,7 @@ class TestBackendSwapping:
         htfa = HTFA(K=2, max_global_iter=1, max_local_iter=3, verbose=False)
         original_backend = htfa.backend
         assert isinstance(original_backend, NumPyBackend)
-        
+
         # Swap to a new backend
         new_backend = NumPyBackend()
         htfa.backend = new_backend
@@ -311,7 +322,7 @@ class TestBackendSwapping:
         htfa = BaseHTFA(n_factors=2, max_iter=5)
         original_backend = htfa.backend
         assert isinstance(original_backend, NumPyBackend)
-        
+
         # Swap to a new backend
         new_backend = NumPyBackend()
         htfa.backend = new_backend
@@ -333,11 +344,11 @@ class TestBackendCompatibility:
         # Create two identical TFA instances with NumPy backend
         tfa1 = TFA(K=2, random_state=42, max_iter=10, verbose=False, backend="numpy")
         tfa2 = TFA(K=2, random_state=42, max_iter=10, verbose=False, backend="numpy")
-        
+
         # Fit both models
         tfa1.fit(self.X, self.coords)
         tfa2.fit(self.X, self.coords)
-        
+
         # Results should be identical (or very close due to randomness in optimization)
         np.testing.assert_array_almost_equal(tfa1.factors_, tfa2.factors_, decimal=3)
         np.testing.assert_array_almost_equal(tfa1.weights_, tfa2.weights_, decimal=3)
@@ -345,30 +356,30 @@ class TestBackendCompatibility:
     def test_backend_interface_compliance(self):
         """Test that all backends implement required interface methods."""
         backends = [NumPyBackend()]
-        
+
         for backend in backends:
-            assert hasattr(backend, 'array')
-            assert hasattr(backend, 'zeros')
-            assert hasattr(backend, 'ones')
-            assert hasattr(backend, 'random')
-            assert hasattr(backend, 'matmul')
-            assert hasattr(backend, 'transpose')
-            assert hasattr(backend, 'svd')
-            assert hasattr(backend, 'norm')
-            assert hasattr(backend, 'mean')
-            assert hasattr(backend, 'to_numpy')
-            
+            assert hasattr(backend, "array")
+            assert hasattr(backend, "zeros")
+            assert hasattr(backend, "ones")
+            assert hasattr(backend, "random")
+            assert hasattr(backend, "matmul")
+            assert hasattr(backend, "transpose")
+            assert hasattr(backend, "svd")
+            assert hasattr(backend, "norm")
+            assert hasattr(backend, "mean")
+            assert hasattr(backend, "to_numpy")
+
             # Test that all methods are callable
-            assert callable(getattr(backend, 'array'))
-            assert callable(getattr(backend, 'zeros'))
-            assert callable(getattr(backend, 'ones'))
-            assert callable(getattr(backend, 'random'))
-            assert callable(getattr(backend, 'matmul'))
-            assert callable(getattr(backend, 'transpose'))
-            assert callable(getattr(backend, 'svd'))
-            assert callable(getattr(backend, 'norm'))
-            assert callable(getattr(backend, 'mean'))
-            assert callable(getattr(backend, 'to_numpy'))
+            assert callable(getattr(backend, "array"))
+            assert callable(getattr(backend, "zeros"))
+            assert callable(getattr(backend, "ones"))
+            assert callable(getattr(backend, "random"))
+            assert callable(getattr(backend, "matmul"))
+            assert callable(getattr(backend, "transpose"))
+            assert callable(getattr(backend, "svd"))
+            assert callable(getattr(backend, "norm"))
+            assert callable(getattr(backend, "mean"))
+            assert callable(getattr(backend, "to_numpy"))
 
 
 class TestBackendErrorHandling:
@@ -382,14 +393,14 @@ class TestBackendErrorHandling:
         """Test error handling for invalid matrix multiplication dimensions."""
         a = np.random.randn(3, 4)
         b = np.random.randn(5, 2)  # Incompatible dimensions
-        
+
         with pytest.raises(ValueError):
             self.backend.matmul(a, b)
 
     def test_invalid_transpose_axes(self):
         """Test error handling for invalid transpose axes."""
         data = np.random.randn(3, 4)
-        
+
         with pytest.raises((ValueError, IndexError)):
             self.backend.transpose(data, axes=(0, 1, 2))  # Too many axes
 
@@ -397,7 +408,7 @@ class TestBackendErrorHandling:
         """Test SVD on near-singular matrices."""
         # Create a near-singular matrix
         singular_matrix = np.array([[1, 2], [1, 2 + 1e-15]])
-        
+
         # Should not raise an error, but might produce warnings
         U, s, Vt = self.backend.svd(singular_matrix)
         assert U is not None
@@ -417,44 +428,54 @@ class TestPerformanceRegression:
     def test_tfa_performance_with_backend(self):
         """Test that TFA performance doesn't degrade significantly with backend."""
         import time
-        
+
         # Test with explicit NumPy backend
         start_time = time.time()
         tfa_backend = TFA(K=5, max_iter=20, verbose=False, backend="numpy")
         tfa_backend.fit(self.large_X, self.large_coords)
         backend_time = time.time() - start_time
-        
+
         # Test with default backend (should be similar)
         start_time = time.time()
         tfa_default = TFA(K=5, max_iter=20, verbose=False)
         tfa_default.fit(self.large_X, self.large_coords)
         default_time = time.time() - start_time
-        
+
         # Backend overhead should be minimal (less than 50% increase)
-        assert backend_time < default_time * 1.5, f"Backend time {backend_time:.3f}s vs default {default_time:.3f}s"
+        assert (
+            backend_time < default_time * 1.5
+        ), f"Backend time {backend_time:.3f}s vs default {default_time:.3f}s"
 
     def test_htfa_performance_with_backend(self):
         """Test that HTFA performance doesn't degrade significantly with backend."""
         import time
-        
+
         # Multi-subject data
         X_multi = [self.large_X[:30], self.large_X[30:], self.large_X[20:]]
-        coords_multi = [self.large_coords[:30], self.large_coords[30:], self.large_coords[20:]]
-        
+        coords_multi = [
+            self.large_coords[:30],
+            self.large_coords[30:],
+            self.large_coords[20:],
+        ]
+
         # Test with explicit NumPy backend
         start_time = time.time()
-        htfa_backend = HTFA(K=3, backend="numpy", max_global_iter=2, max_local_iter=10, verbose=False)
+        htfa_backend = HTFA(
+            K=3, backend="numpy", max_global_iter=2, max_local_iter=10, verbose=False
+        )
         htfa_backend.fit(X_multi, coords_multi)
         backend_time = time.time() - start_time
-        
+
         # Test with default backend
         start_time = time.time()
         htfa_default = HTFA(K=3, max_global_iter=2, max_local_iter=10, verbose=False)
         htfa_default.fit(X_multi, coords_multi)
         default_time = time.time() - start_time
-        
+
         # Backend overhead should be minimal
-        assert backend_time < default_time * 1.5, f"Backend time {backend_time:.3f}s vs default {default_time:.3f}s"
+        assert (
+            backend_time < default_time * 1.5
+        ), f"Backend time {backend_time:.3f}s vs default {default_time:.3f}s"
 
 
 # Test for optional backends (only run if available)
@@ -465,8 +486,10 @@ class TestJAXBackendIntegration:
         """Test JAX backend creation when available."""
         try:
             import jax
+
             htfa = BaseHTFA(n_factors=3, backend="jax")
             from htfa.backends.jax_backend import JAXBackend
+
             assert isinstance(htfa.backend, JAXBackend)
         except ImportError:
             pytest.skip("JAX not available")
@@ -479,8 +502,10 @@ class TestPyTorchBackendIntegration:
         """Test PyTorch backend creation when available."""
         try:
             import torch
+
             htfa = BaseHTFA(n_factors=3, backend="pytorch")
             from htfa.backends.pytorch_backend import PyTorchBackend
+
             assert isinstance(htfa.backend, PyTorchBackend)
         except ImportError:
             pytest.skip("PyTorch not available")

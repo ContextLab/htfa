@@ -65,8 +65,6 @@ class HTFABackend(ABC):
         pass
 
 
-
-
 class HTFA:
     """Hierarchical Topographic Factor Analysis.
 
@@ -128,6 +126,7 @@ class HTFA:
         """Create backend from string name."""
         if backend_name == "numpy":
             from .backends.numpy_backend import NumPyBackend
+
             return NumPyBackend()
         elif backend_name == "jax":
             try:

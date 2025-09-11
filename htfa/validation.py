@@ -14,8 +14,8 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
-from sklearn.utils.validation import check_array
 from sklearn.utils import check_random_state
+from sklearn.utils.validation import check_array
 
 
 class ValidationError(ValueError):
@@ -429,17 +429,17 @@ def validate_bids_path(path: Union[str, Path]) -> Path:
 
 def validate_n_levels(n_levels: int) -> int:
     """Validate n_levels parameter for HTFA.
-    
+
     Parameters
     ----------
     n_levels : int
         Number of hierarchical levels.
-    
+
     Returns
     -------
     n_levels : int
         Validated n_levels value.
-        
+
     Raises
     ------
     ValidationError
@@ -456,36 +456,36 @@ def validate_n_levels(n_levels: int) -> int:
                 "description": "Number of hierarchical levels (HTFA only)",
             },
         )
-    
+
     if n_levels < 1:
         raise ValidationError(
             f"n_levels must be >= 1, got {n_levels}",
             error_type="value_range_error",
             context={
-                "parameter": "n_levels", 
+                "parameter": "n_levels",
                 "value": n_levels,
                 "min_allowed": 1,
                 "max_allowed": None,
                 "description": "Number of hierarchical levels (HTFA only)",
             },
         )
-    
+
     return n_levels
 
 
 def validate_backend(backend: Optional[str]) -> Optional[str]:
     """Validate backend parameter for HTFA.
-    
+
     Parameters
     ----------
     backend : str or None
         Computational backend name.
-        
+
     Returns
     -------
     backend : str or None
         Validated backend value.
-        
+
     Raises
     ------
     ValidationError
@@ -493,7 +493,7 @@ def validate_backend(backend: Optional[str]) -> Optional[str]:
     """
     if backend is None:
         return None
-        
+
     if not isinstance(backend, str):
         raise ValidationError(
             f"backend must be a string or None, got {type(backend).__name__}",
@@ -505,7 +505,7 @@ def validate_backend(backend: Optional[str]) -> Optional[str]:
                 "description": "Computational backend for optimization",
             },
         )
-    
+
     valid_backends = ["numpy", "jax", "pytorch"]
     if backend not in valid_backends:
         raise ValidationError(
@@ -518,23 +518,25 @@ def validate_backend(backend: Optional[str]) -> Optional[str]:
                 "description": "Computational backend for optimization",
             },
         )
-    
+
     return backend
 
 
-def validate_random_state(random_state: Union[int, np.random.RandomState, None]) -> Optional[np.random.RandomState]:
+def validate_random_state(
+    random_state: Union[int, np.random.RandomState, None],
+) -> Optional[np.random.RandomState]:
     """Validate random_state parameter using sklearn's check_random_state.
-    
+
     Parameters
     ----------
     random_state : int, RandomState instance or None
         Random seed or RandomState instance.
-        
+
     Returns
     -------
     random_state : RandomState instance or None
         Validated RandomState instance.
-        
+
     Raises
     ------
     ValidationError
@@ -559,17 +561,17 @@ def validate_random_state(random_state: Union[int, np.random.RandomState, None])
 
 def validate_max_iter(max_iter: int) -> int:
     """Validate max_iter parameter for HTFA.
-    
+
     Parameters
     ----------
     max_iter : int
         Maximum number of iterations.
-    
+
     Returns
     -------
     max_iter : int
         Validated max_iter value.
-        
+
     Raises
     ------
     ValidationError
@@ -586,7 +588,7 @@ def validate_max_iter(max_iter: int) -> int:
                 "description": "Maximum number of optimization iterations",
             },
         )
-    
+
     if max_iter < 1:
         raise ValidationError(
             f"max_iter must be >= 1, got {max_iter}",
@@ -599,7 +601,7 @@ def validate_max_iter(max_iter: int) -> int:
                 "description": "Maximum number of optimization iterations",
             },
         )
-    
+
     return max_iter
 
 
@@ -1010,7 +1012,7 @@ __all__ = [
     "validate_bids_path",
     "validate_parameters",
     "validate_n_levels",
-    "validate_backend", 
+    "validate_backend",
     "validate_random_state",
     "validate_max_iter",
     "format_validation_error",

@@ -9,7 +9,7 @@ from ..backend_base import HTFABackend
 
 class NumPyBackend(HTFABackend):
     """NumPy backend for HTFA operations.
-    
+
     This backend wraps standard NumPy operations to provide a consistent
     interface for the HTFA algorithm. It serves as the reference implementation
     and fallback option when more advanced backends (JAX, PyTorch) are not available.
@@ -17,12 +17,12 @@ class NumPyBackend(HTFABackend):
 
     def array(self, data: Any) -> np.ndarray:
         """Create array from data.
-        
+
         Parameters
         ----------
         data : array-like
             Input data to convert to numpy array.
-            
+
         Returns
         -------
         np.ndarray
@@ -32,14 +32,14 @@ class NumPyBackend(HTFABackend):
 
     def zeros(self, shape: Tuple[int, ...], dtype: Any = None) -> np.ndarray:
         """Create zeros array.
-        
+
         Parameters
         ----------
         shape : tuple of int
             Shape of the array.
         dtype : data-type, optional
             Data type of the array. Defaults to float32.
-            
+
         Returns
         -------
         np.ndarray
@@ -49,14 +49,14 @@ class NumPyBackend(HTFABackend):
 
     def ones(self, shape: Tuple[int, ...], dtype: Any = None) -> np.ndarray:
         """Create ones array.
-        
+
         Parameters
         ----------
         shape : tuple of int
             Shape of the array.
         dtype : data-type, optional
             Data type of the array.
-            
+
         Returns
         -------
         np.ndarray
@@ -66,14 +66,14 @@ class NumPyBackend(HTFABackend):
 
     def random(self, shape: Tuple[int, ...], dtype: Any = None) -> np.ndarray:
         """Create random array.
-        
+
         Parameters
         ----------
         shape : tuple of int
             Shape of the array.
         dtype : data-type, optional
             Data type of the array. Defaults to float32.
-            
+
         Returns
         -------
         np.ndarray
@@ -83,14 +83,14 @@ class NumPyBackend(HTFABackend):
 
     def matmul(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
         """Matrix multiplication.
-        
+
         Parameters
         ----------
         a : np.ndarray
             First input array.
         b : np.ndarray
             Second input array.
-            
+
         Returns
         -------
         np.ndarray
@@ -102,14 +102,14 @@ class NumPyBackend(HTFABackend):
         self, a: np.ndarray, axes: Optional[Tuple[int, ...]] = None
     ) -> np.ndarray:
         """Transpose array.
-        
+
         Parameters
         ----------
         a : np.ndarray
             Input array.
         axes : tuple of ints, optional
             If specified, permute the axes according to this tuple.
-            
+
         Returns
         -------
         np.ndarray
@@ -121,14 +121,14 @@ class NumPyBackend(HTFABackend):
         self, a: np.ndarray, full_matrices: bool = True
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Singular Value Decomposition.
-        
+
         Parameters
         ----------
         a : np.ndarray
             Input array to decompose.
         full_matrices : bool, default=True
             If False, return reduced SVD.
-            
+
         Returns
         -------
         u : np.ndarray
@@ -144,7 +144,7 @@ class NumPyBackend(HTFABackend):
         self, a: np.ndarray, axis: Optional[int] = None, keepdims: bool = False
     ) -> np.ndarray:
         """Compute norm.
-        
+
         Parameters
         ----------
         a : np.ndarray
@@ -153,7 +153,7 @@ class NumPyBackend(HTFABackend):
             Axis along which to compute norm. If None, compute over all axes.
         keepdims : bool, default=False
             If True, retain reduced dimensions as size-1 dimensions.
-            
+
         Returns
         -------
         np.ndarray
@@ -165,7 +165,7 @@ class NumPyBackend(HTFABackend):
         self, a: np.ndarray, axis: Optional[int] = None, keepdims: bool = False
     ) -> np.ndarray:
         """Compute mean.
-        
+
         Parameters
         ----------
         a : np.ndarray
@@ -174,7 +174,7 @@ class NumPyBackend(HTFABackend):
             Axis along which to compute mean. If None, compute over all axes.
         keepdims : bool, default=False
             If True, retain reduced dimensions as size-1 dimensions.
-            
+
         Returns
         -------
         np.ndarray
@@ -184,14 +184,14 @@ class NumPyBackend(HTFABackend):
 
     def to_numpy(self, a: np.ndarray) -> np.ndarray:
         """Convert to numpy array.
-        
+
         For NumPy backend, this is a no-op since arrays are already numpy arrays.
-        
+
         Parameters
         ----------
         a : np.ndarray
             Input array (already numpy).
-            
+
         Returns
         -------
         np.ndarray

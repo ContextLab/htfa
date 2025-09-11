@@ -10,9 +10,9 @@ def test_tfa_fit_performance(benchmark, sample_neuroimaging_data):
     """Benchmark TFA fitting performance."""
     from htfa.core.tfa import TFA
 
-    # Use first subject's data
-    X = list(sample_neuroimaging_data.values())[0]
-    coords = np.random.randn(X.shape[1], 3)
+    # Use first subject's data and transpose to (n_voxels, n_timepoints)
+    X = list(sample_neuroimaging_data.values())[0].T
+    coords = np.random.randn(X.shape[0], 3)
 
     def run_tfa_fit():
         tfa = TFA(K=10)
@@ -30,9 +30,9 @@ def test_htfa_fit_performance(benchmark, sample_neuroimaging_data):
     """Benchmark HTFA fitting performance for multiple subjects."""
     from htfa.core.htfa import HTFA
 
-    # Prepare multi-subject data
-    subjects_data = list(sample_neuroimaging_data.values())[:3]
-    coords = np.random.randn(subjects_data[0].shape[1], 3)
+    # Prepare multi-subject data, transpose to (n_voxels, n_timepoints)
+    subjects_data = [data.T for data in list(sample_neuroimaging_data.values())[:3]]
+    coords = np.random.randn(subjects_data[0].shape[0], 3)
 
     def run_htfa_fit():
         htfa = HTFA(K=10, max_global_iter=2, max_local_iter=5)

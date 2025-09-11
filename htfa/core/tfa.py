@@ -5,6 +5,7 @@ which serves as the base for Hierarchical TFA.
 """
 
 from typing import Any, Dict, Optional, Tuple, Union
+
 import warnings
 
 import numpy as np
@@ -83,6 +84,7 @@ class TFA(BaseEstimator):
         elif backend is None:
             # Auto-select optimal backend
             from htfa.backends.selector import select_backend
+
             selected = select_backend(None)
             self.backend = self._create_backend(selected)
             if self.verbose:
@@ -104,6 +106,7 @@ class TFA(BaseEstimator):
         elif backend_name == "jax":
             try:
                 from htfa.backends.jax_backend import JAXBackend
+
                 return JAXBackend()
             except ImportError:
                 raise ImportError(
@@ -112,6 +115,7 @@ class TFA(BaseEstimator):
         elif backend_name == "pytorch":
             try:
                 from htfa.backends.pytorch_backend import PyTorchBackend
+
                 return PyTorchBackend()
             except ImportError:
                 raise ImportError(
@@ -144,13 +148,17 @@ class TFA(BaseEstimator):
 
         # Subsample if requested
         if self.max_num_voxel is not None and n_voxels > self.max_num_voxel:
-            voxel_idx = self.random_state.choice(n_voxels, self.max_num_voxel, replace=False)
+            voxel_idx = self.random_state.choice(
+                n_voxels, self.max_num_voxel, replace=False
+            )
             X = X[voxel_idx]
             if coords is not None:
                 coords = coords[voxel_idx]
 
         if self.max_num_tr is not None and n_timepoints > self.max_num_tr:
-            tr_idx = self.random_state.choice(n_timepoints, self.max_num_tr, replace=False)
+            tr_idx = self.random_state.choice(
+                n_timepoints, self.max_num_tr, replace=False
+            )
             X = X[:, tr_idx]
 
         # Initialize parameters using k-means clustering
@@ -231,9 +239,9 @@ class TFA(BaseEstimator):
             if center_diff < self.tol and width_diff < self.tol:
                 converged = True
                 self.convergence_info_ = {
-                    'converged': True,
-                    'n_iterations': iteration + 1,
-                    'final_tolerance': max(center_diff, width_diff)
+                    "converged": True,
+                    "n_iterations": iteration + 1,
+                    "final_tolerance": max(center_diff, width_diff),
                 }
                 if self.verbose:
                     print(f"TFA converged at iteration {iteration}")
@@ -242,14 +250,16 @@ class TFA(BaseEstimator):
         # Record convergence status if not converged
         if not converged:
             self.convergence_info_ = {
-                'converged': False,
-                'n_iterations': self.max_iter,
-                'final_tolerance': max(center_diff, width_diff) if 'center_diff' in locals() else None
+                "converged": False,
+                "n_iterations": self.max_iter,
+                "final_tolerance": (
+                    max(center_diff, width_diff) if "center_diff" in locals() else None
+                ),
             }
             warnings.warn(
                 f"TFA did not converge after {self.max_iter} iterations. "
                 f"Consider increasing max_iter or adjusting tolerance.",
-                UserWarning
+                UserWarning,
             )
 
         if self.verbose:

@@ -5,16 +5,17 @@ based on the BrainIAK implementation but with minimal dependencies.
 """
 
 from typing import Any, Dict, List, Optional, Tuple, Union
+
 import warnings
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 from sklearn.base import BaseEstimator
 
-from htfa.core.tfa import TFA
-from htfa.validation import validate_random_state
 from htfa.backend_base import HTFABackend
 from htfa.backends.numpy_backend import NumPyBackend
+from htfa.core.tfa import TFA
+from htfa.validation import validate_random_state
 
 
 class HTFA(BaseEstimator):
@@ -69,7 +70,7 @@ class HTFA(BaseEstimator):
         # Allow n_factors as alias for K (backward compatibility)
         if n_factors is not None:
             K = n_factors
-        
+
         # Store all parameters as instance attributes
         self.K = K
         self.max_num_voxel = max_num_voxel
@@ -89,6 +90,7 @@ class HTFA(BaseEstimator):
         elif backend is None:
             # Auto-select optimal backend
             from htfa.backends.selector import select_backend
+
             selected = select_backend(None)
             self.backend = self._create_backend(selected)
             if self.verbose:
@@ -110,6 +112,7 @@ class HTFA(BaseEstimator):
         elif backend_name == "jax":
             try:
                 from htfa.backends.jax_backend import JAXBackend
+
                 return JAXBackend()
             except ImportError:
                 raise ImportError(
@@ -118,6 +121,7 @@ class HTFA(BaseEstimator):
         elif backend_name == "pytorch":
             try:
                 from htfa.backends.pytorch_backend import PyTorchBackend
+
                 return PyTorchBackend()
             except ImportError:
                 raise ImportError(
@@ -231,25 +235,33 @@ class HTFA(BaseEstimator):
             if self._check_convergence(old_template, self.global_template_):
                 converged = True
                 self.convergence_info_ = {
-                    'converged': True,
-                    'n_iterations': global_iter + 1,
-                    'subject_convergence': [m.convergence_info_ for m in self.subject_models_ if hasattr(m, 'convergence_info_')]
+                    "converged": True,
+                    "n_iterations": global_iter + 1,
+                    "subject_convergence": [
+                        m.convergence_info_
+                        for m in self.subject_models_
+                        if hasattr(m, "convergence_info_")
+                    ],
                 }
                 if self.verbose:
                     print(f"Converged after {global_iter + 1} global iterations")
                 break
-        
+
         # Record convergence status if not converged
         if not converged:
             self.convergence_info_ = {
-                'converged': False,
-                'n_iterations': self.max_global_iter,
-                'subject_convergence': [m.convergence_info_ for m in self.subject_models_ if hasattr(m, 'convergence_info_')]
+                "converged": False,
+                "n_iterations": self.max_global_iter,
+                "subject_convergence": [
+                    m.convergence_info_
+                    for m in self.subject_models_
+                    if hasattr(m, "convergence_info_")
+                ],
             }
             warnings.warn(
                 f"HTFA did not converge after {self.max_global_iter} global iterations. "
                 f"Consider increasing max_global_iter or adjusting tolerance.",
-                UserWarning
+                UserWarning,
             )
 
         # Extract final parameters
