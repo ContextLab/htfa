@@ -1,7 +1,6 @@
 """Test BrainIAK algorithm implementations."""
 
 import numpy as np
-import pytest
 
 from htfa.core.htfa import HTFA
 from htfa.core.tfa import TFA
@@ -192,7 +191,7 @@ class TestHTFA:
         }
 
         # Same templates should converge
-        assert htfa._check_convergence(template1, template2) == True
+        assert htfa._check_convergence(template1, template2)
 
         template3 = {
             "centers": np.array([[0.5, 0.5], [2, 2]]),
@@ -200,7 +199,7 @@ class TestHTFA:
         }
 
         # Different templates should not converge
-        assert htfa._check_convergence(template1, template3) == False
+        assert not htfa._check_convergence(template1, template3)
 
 
 if __name__ == "__main__":

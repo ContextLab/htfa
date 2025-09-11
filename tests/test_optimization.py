@@ -276,8 +276,8 @@ class TestOptimizationWithRealData:
         )
 
         # Sparse results should have more values close to zero
-        sparse_factors_zeros = np.sum(np.abs(result_sparse.factors) < 0.01)
-        no_sparse_factors_zeros = np.sum(np.abs(result_no_sparse.factors) < 0.01)
+        np.sum(np.abs(result_sparse.factors) < 0.01)
+        np.sum(np.abs(result_no_sparse.factors) < 0.01)
 
         # Not a strict requirement due to randomness, but typically true
         # assert sparse_factors_zeros >= no_sparse_factors_zeros

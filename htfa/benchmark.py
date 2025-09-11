@@ -104,7 +104,7 @@ class HTFABenchmark:
             update_peak()
 
             # Transform data
-            transformed = model.transform(data)
+            model.transform(data)
             update_peak()
 
             end_time = time.perf_counter()

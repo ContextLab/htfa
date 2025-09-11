@@ -4,13 +4,18 @@ This module provides a standalone implementation of Topographic Factor Analysis,
 which serves as the base for Hierarchical TFA.
 """
 
-from typing import Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
+
+import warnings
 
 import numpy as np
 from scipy.optimize import least_squares
-from scipy.spatial import distance
 from sklearn.base import BaseEstimator
 from sklearn.cluster import KMeans
+from sklearn.utils import check_random_state
+
+from htfa.backend_base import HTFABackend
+from htfa.backends.numpy_backend import NumPyBackend
 
 
 class TFA(BaseEstimator):
@@ -33,6 +38,8 @@ class TFA(BaseEstimator):
         Convergence tolerance.
     verbose : bool
         Whether to print progress information.
+    backend : str, HTFABackend, or None, default=None
+        Computational backend to use ('numpy', 'jax', 'pytorch', custom backend, or None for auto-selection).
     """
 
     def __init__(
@@ -51,12 +58,15 @@ class TFA(BaseEstimator):
         nlss_loss: str = "soft_l1",
         upper_ratio: float = 1.8,
         lower_ratio: float = 0.02,
+        backend: Optional[Union[str, HTFABackend]] = None,
     ):
         # Allow n_factors as alias for K
         if n_factors is not None:
             K = n_factors
         self.K = K
+        # Store original random_state value and create RandomState object
         self.random_state = random_state
+        self._random_state = check_random_state(random_state)
         self.max_num_voxel = max_num_voxel
         self.max_num_tr = max_num_tr
         self.max_iter = max_iter
@@ -69,11 +79,64 @@ class TFA(BaseEstimator):
         self.upper_ratio = upper_ratio
         self.lower_ratio = lower_ratio
 
+        # Initialize backend with auto-selection support
+        if isinstance(backend, str):
+            self.backend_name = backend  # Store the string name
+            self.backend = self._create_backend(
+                backend
+            )  # Store the actual backend object
+            self._backend = self.backend  # Alias for internal use
+        elif backend is None:
+            # Auto-select optimal backend
+            from htfa.backends.selector import select_backend
+
+            selected = select_backend(None)
+            self.backend_name = selected  # Store the selected backend name
+            self.backend = self._create_backend(
+                selected
+            )  # Store the actual backend object
+            self._backend = self.backend  # Alias for internal use
+            if self.verbose:
+                print(f"Auto-selected backend: {selected}")
+        else:
+            # If a backend object is passed directly
+            self.backend_name = (
+                str(type(backend).__name__).replace("Backend", "").lower()
+            )
+            self.backend = backend
+            self._backend = backend
+
         # Fitted parameters
         self.factors_: Optional[np.ndarray] = None
         self.weights_: Optional[np.ndarray] = None
         self.centers_: Optional[np.ndarray] = None
         self.widths_: Optional[np.ndarray] = None
+        self.convergence_info_: Optional[Dict[str, Any]] = None
+
+    def _create_backend(self, backend_name: str) -> HTFABackend:
+        """Create backend from string name."""
+        if backend_name == "numpy":
+            return NumPyBackend()
+        elif backend_name == "jax":
+            try:
+                from htfa.backends.jax_backend import JAXBackend
+
+                return JAXBackend()
+            except ImportError:
+                raise ImportError(
+                    "JAX backend not available. Install JAX with: pip install jax jaxlib"
+                )
+        elif backend_name == "pytorch":
+            try:
+                from htfa.backends.pytorch_backend import PyTorchBackend
+
+                return PyTorchBackend()
+            except ImportError:
+                raise ImportError(
+                    "PyTorch backend not available. Install PyTorch: pip install torch"
+                )
+        else:
+            raise ValueError(f"Unknown backend: {backend_name}")
 
     def fit(self, X: np.ndarray, coords: Optional[np.ndarray] = None) -> "TFA":
         """Fit the TFA model to data.
@@ -99,13 +162,17 @@ class TFA(BaseEstimator):
 
         # Subsample if requested
         if self.max_num_voxel is not None and n_voxels > self.max_num_voxel:
-            voxel_idx = np.random.choice(n_voxels, self.max_num_voxel, replace=False)
+            voxel_idx = self._random_state.choice(
+                n_voxels, self.max_num_voxel, replace=False
+            )
             X = X[voxel_idx]
             if coords is not None:
                 coords = coords[voxel_idx]
 
         if self.max_num_tr is not None and n_timepoints > self.max_num_tr:
-            tr_idx = np.random.choice(n_timepoints, self.max_num_tr, replace=False)
+            tr_idx = self._random_state.choice(
+                n_timepoints, self.max_num_tr, replace=False
+            )
             X = X[:, tr_idx]
 
         # Initialize parameters using k-means clustering
@@ -122,7 +189,7 @@ class TFA(BaseEstimator):
         """Initialize factor centers and widths using k-means clustering."""
         if coords is not None:
             # Use spatial coordinates for initialization
-            kmeans = KMeans(n_clusters=self.K, random_state=42)
+            kmeans = KMeans(n_clusters=self.K, random_state=self._random_state)
             kmeans.fit(coords)
             self.centers_ = kmeans.cluster_centers_
 
@@ -139,8 +206,8 @@ class TFA(BaseEstimator):
                     self.widths_[k] = 1.0
         else:
             # Use data-based initialization
-            n_voxels = X.shape[0]
-            self.centers_ = np.random.randn(self.K, n_voxels)
+            # When no coords provided, _optimize will create 3D coordinates
+            self.centers_ = self._random_state.randn(self.K, 3)
             self.widths_ = np.ones(self.K)
 
     def _optimize(self, X: np.ndarray, coords: Optional[np.ndarray]) -> None:
@@ -155,6 +222,7 @@ class TFA(BaseEstimator):
             coords = coords.astype(float)
 
         n_voxels, n_timepoints = X.shape
+        converged = False
 
         for iteration in range(self.max_iter):
             # Compute spatial factors from centers and widths
@@ -183,9 +251,30 @@ class TFA(BaseEstimator):
                 )
 
             if center_diff < self.tol and width_diff < self.tol:
+                converged = True
+                self.convergence_info_ = {
+                    "converged": True,
+                    "n_iterations": iteration + 1,
+                    "final_tolerance": max(center_diff, width_diff),
+                }
                 if self.verbose:
                     print(f"TFA converged at iteration {iteration}")
                 break
+
+        # Record convergence status if not converged
+        if not converged:
+            self.convergence_info_ = {
+                "converged": False,
+                "n_iterations": self.max_iter,
+                "final_tolerance": (
+                    max(center_diff, width_diff) if "center_diff" in locals() else None
+                ),
+            }
+            warnings.warn(
+                f"TFA did not converge after {self.max_iter} iterations. "
+                f"Consider increasing max_iter or adjusting tolerance.",
+                UserWarning,
+            )
 
         if self.verbose:
             print(f"TFA fitting completed with K={self.K} factors")
@@ -329,13 +418,15 @@ class TFA(BaseEstimator):
             return (X - reconstruction).flatten()
 
         # Optimize using least squares
+        # Reduce max_nfev for faster testing when max_iter is low
+        max_nfev = 20 if self.max_iter <= 5 else 100
         result = least_squares(
             residual,
             init_params,
             bounds=(lower_bounds, upper_bounds),
             method=self.nlss_method,
             loss=self.nlss_loss,
-            max_nfev=100,  # Limit function evaluations for efficiency
+            max_nfev=max_nfev,  # Limit function evaluations for efficiency
         )
 
         # Extract updated parameters

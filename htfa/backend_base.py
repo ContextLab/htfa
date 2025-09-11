@@ -4,7 +4,7 @@ This module provides the main HTFA algorithm with support for modern ML backends
 and performance optimizations.
 """
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
 from abc import ABC, abstractmethod
 
@@ -65,48 +65,6 @@ class HTFABackend(ABC):
         pass
 
 
-class NumPyBackend(HTFABackend):
-    """NumPy backend for HTFA."""
-
-    def array(self, data: Any) -> np.ndarray:
-        return np.array(data)
-
-    def zeros(self, shape: Tuple[int, ...], dtype: Any = None) -> np.ndarray:
-        return np.zeros(shape, dtype=dtype)
-
-    def ones(self, shape: Tuple[int, ...], dtype: Any = None) -> np.ndarray:
-        return np.ones(shape, dtype=dtype)
-
-    def random(self, shape: Tuple[int, ...], dtype: Any = None) -> np.ndarray:
-        return np.random.random(shape).astype(dtype if dtype else np.float32)
-
-    def matmul(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        return np.matmul(a, b)
-
-    def transpose(
-        self, a: np.ndarray, axes: Optional[Tuple[int, ...]] = None
-    ) -> np.ndarray:
-        return np.transpose(a, axes)
-
-    def svd(
-        self, a: np.ndarray, full_matrices: bool = True
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        return np.linalg.svd(a, full_matrices=full_matrices)
-
-    def norm(
-        self, a: np.ndarray, axis: Optional[int] = None, keepdims: bool = False
-    ) -> np.ndarray:
-        return np.linalg.norm(a, axis=axis, keepdims=keepdims)
-
-    def mean(
-        self, a: np.ndarray, axis: Optional[int] = None, keepdims: bool = False
-    ) -> np.ndarray:
-        return np.mean(a, axis=axis, keepdims=keepdims)
-
-    def to_numpy(self, a: np.ndarray) -> np.ndarray:
-        return a
-
-
 class HTFA:
     """Hierarchical Topographic Factor Analysis.
 
@@ -150,9 +108,12 @@ class HTFA:
 
         # Set up backend
         if isinstance(backend, str):
-            self.backend = self._create_backend(backend)
+            self._backend = self._create_backend(backend)
         else:
-            self.backend = backend
+            self._backend = backend
+
+        # Expose backend as property for compatibility
+        self.backend = self._backend
 
         # Initialize state
         self.is_fitted_ = False
@@ -167,6 +128,8 @@ class HTFA:
     def _create_backend(self, backend_name: str) -> HTFABackend:
         """Create backend from string name."""
         if backend_name == "numpy":
+            from .backends.numpy_backend import NumPyBackend
+
             return NumPyBackend()
         elif backend_name == "jax":
             try:
@@ -204,7 +167,7 @@ class HTFA:
         self : HTFA
             Returns the instance itself.
         """
-        X = self.backend.array(X)
+        X = self._backend.array(X)
         n_samples, n_features = X.shape
 
         # Initialize factors and loadings for each level
@@ -219,11 +182,11 @@ class HTFA:
                 np.random.seed(self.random_state + level)  # Different seed per level
 
             # Initialize random factors and loadings
-            factors = self.backend.random(
+            factors = self._backend.random(
                 (n_samples, self.n_factors),
                 dtype=X.dtype if hasattr(X, "dtype") else np.float32,
             )
-            loadings = self.backend.random(
+            loadings = self._backend.random(
                 (self.n_factors, current_data.shape[1]),
                 dtype=X.dtype if hasattr(X, "dtype") else np.float32,
             )
@@ -239,8 +202,8 @@ class HTFA:
                 loadings = self._update_loadings(current_data, factors)
 
                 # Compute reconstruction error
-                reconstruction = self.backend.matmul(factors, loadings)
-                error = self.backend.norm(current_data - reconstruction)
+                reconstruction = self._backend.matmul(factors, loadings)
+                error = self._backend.norm(current_data - reconstruction)
 
                 # Check for convergence
                 if abs(prev_error - error) < self.tol:
@@ -264,51 +227,51 @@ class HTFA:
     def _update_factors(self, X: Any, loadings: Any) -> Any:
         """Update factors using least squares with regularization."""
         # F = X @ L^T @ (L @ L^T + λI)^{-1}
-        LLT = self.backend.matmul(loadings, self.backend.transpose(loadings))
+        LLT = self._backend.matmul(loadings, self._backend.transpose(loadings))
 
         # Add regularization
-        reg_term = self.regularization * self.backend.array(np.eye(LLT.shape[0]))
+        reg_term = self.regularization * self._backend.array(np.eye(LLT.shape[0]))
         LLT_reg = LLT + reg_term
 
         # Solve for factors
-        XLT = self.backend.matmul(X, self.backend.transpose(loadings))
+        XLT = self._backend.matmul(X, self._backend.transpose(loadings))
 
         # Use SVD for numerical stability (pseudo-inverse)
-        U, s, Vt = self.backend.svd(LLT_reg, full_matrices=False)
+        U, s, Vt = self._backend.svd(LLT_reg, full_matrices=False)
         s_inv = 1.0 / (s + 1e-12)  # Add small value for numerical stability
-        LLT_inv = self.backend.matmul(
-            self.backend.matmul(
-                self.backend.transpose(Vt), self.backend.array(np.diag(s_inv))
+        LLT_inv = self._backend.matmul(
+            self._backend.matmul(
+                self._backend.transpose(Vt), self._backend.array(np.diag(s_inv))
             ),
-            self.backend.transpose(U),
+            self._backend.transpose(U),
         )
 
-        factors = self.backend.matmul(XLT, LLT_inv)
+        factors = self._backend.matmul(XLT, LLT_inv)
         return factors
 
     def _update_loadings(self, X: Any, factors: Any) -> Any:
         """Update loadings using least squares with regularization."""
         # L = (F^T @ F + λI)^{-1} @ F^T @ X
-        FTF = self.backend.matmul(self.backend.transpose(factors), factors)
+        FTF = self._backend.matmul(self._backend.transpose(factors), factors)
 
         # Add regularization
-        reg_term = self.regularization * self.backend.array(np.eye(FTF.shape[0]))
+        reg_term = self.regularization * self._backend.array(np.eye(FTF.shape[0]))
         FTF_reg = FTF + reg_term
 
         # Solve for loadings
-        FTX = self.backend.matmul(self.backend.transpose(factors), X)
+        FTX = self._backend.matmul(self._backend.transpose(factors), X)
 
         # Use SVD for numerical stability
-        U, s, Vt = self.backend.svd(FTF_reg, full_matrices=False)
+        U, s, Vt = self._backend.svd(FTF_reg, full_matrices=False)
         s_inv = 1.0 / (s + 1e-12)
-        FTF_inv = self.backend.matmul(
-            self.backend.matmul(
-                self.backend.transpose(Vt), self.backend.array(np.diag(s_inv))
+        FTF_inv = self._backend.matmul(
+            self._backend.matmul(
+                self._backend.transpose(Vt), self._backend.array(np.diag(s_inv))
             ),
-            self.backend.transpose(U),
+            self._backend.transpose(U),
         )
 
-        loadings = self.backend.matmul(FTF_inv, FTX)
+        loadings = self._backend.matmul(FTF_inv, FTX)
         return loadings
 
     def _compute_reconstruction_error(self, X: Any) -> None:
@@ -316,10 +279,10 @@ class HTFA:
         # Direct reconstruction from fitted factors and loadings
         # Start from bottom level and work upward
         reconstruction = self.factors_[0]  # Bottom level factors
-        reconstruction = self.backend.matmul(reconstruction, self.loadings_[0])
+        reconstruction = self._backend.matmul(reconstruction, self.loadings_[0])
 
-        error = self.backend.norm(X - reconstruction)
-        self.reconstruction_error_ = self.backend.to_numpy(error).item()
+        error = self._backend.norm(X - reconstruction)
+        self.reconstruction_error_ = self._backend.to_numpy(error).item()
 
     def transform(self, X: np.ndarray, inverse: bool = False) -> np.ndarray:
         """Transform data using fitted HTFA model.
@@ -343,11 +306,11 @@ class HTFA:
             # Reconstruct original data from fitted factors
             # Use bottom-level factors to reconstruct original data
             reconstruction = self.factors_[0]  # Bottom level factors
-            reconstruction = self.backend.matmul(reconstruction, self.loadings_[0])
-            return self.backend.to_numpy(reconstruction)
+            reconstruction = self._backend.matmul(reconstruction, self.loadings_[0])
+            return self._backend.to_numpy(reconstruction)
         else:
             # Transform new data to hierarchical factors
-            X = self.backend.array(X)
+            X = self._backend.array(X)
             current_data = X
 
             for level in range(len(self.loadings_)):
@@ -355,7 +318,7 @@ class HTFA:
                 factors = self._update_factors(current_data, self.loadings_[level])
                 current_data = factors
 
-            return self.backend.to_numpy(current_data)  # Return top-level factors
+            return self._backend.to_numpy(current_data)  # Return top-level factors
 
     def fit_transform(
         self, X: np.ndarray, y: Optional[np.ndarray] = None
@@ -386,10 +349,10 @@ class HTFA:
         """Get factors from all hierarchical levels."""
         if not self.is_fitted_:
             raise ValueError("Model must be fitted first.")
-        return [self.backend.to_numpy(factors) for factors in self.factors_]
+        return [self._backend.to_numpy(factors) for factors in self.factors_]
 
     def get_loadings_all_levels(self) -> List[np.ndarray]:
         """Get loadings from all hierarchical levels."""
         if not self.is_fitted_:
             raise ValueError("Model must be fitted first.")
-        return [self.backend.to_numpy(loadings) for loadings in self.loadings_]
+        return [self._backend.to_numpy(loadings) for loadings in self.loadings_]

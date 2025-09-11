@@ -4,13 +4,18 @@ This module provides a standalone implementation of Hierarchical Topographic Fac
 based on the BrainIAK implementation but with minimal dependencies.
 """
 
-from typing import List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
+
+import warnings
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 from sklearn.base import BaseEstimator
 
+from htfa.backend_base import HTFABackend
+from htfa.backends.numpy_backend import NumPyBackend
 from htfa.core.tfa import TFA
+from htfa.validation import validate_random_state
 
 
 class HTFA(BaseEstimator):
@@ -37,6 +42,14 @@ class HTFA(BaseEstimator):
         Convergence tolerance.
     verbose : bool
         Whether to print progress information.
+    n_levels : int, default=2
+        Number of hierarchical levels in the model.
+    backend : str, HTFABackend, or None, default=None
+        Computational backend to use ('numpy', 'jax', 'pytorch', custom backend, or None for auto-selection).
+    random_state : int, RandomState instance or None, default=None
+        Random state for reproducible results.
+    max_iter : int, default=100
+        Maximum number of iterations for optimization.
     """
 
     def __init__(
@@ -48,30 +61,88 @@ class HTFA(BaseEstimator):
         max_local_iter: int = 50,
         tol: float = 1e-6,
         verbose: bool = False,
+        n_levels: int = 2,
+        backend: Optional[Union[str, HTFABackend]] = None,
+        random_state: Optional[Union[int, np.random.RandomState]] = None,
+        max_iter: int = 100,
         n_factors: Optional[int] = None,
-        max_iter: Optional[int] = None,
-        random_state: Optional[int] = None,
     ):
-        # Allow n_factors as alias for K
+        # Allow n_factors as alias for K (backward compatibility)
         if n_factors is not None:
             K = n_factors
-        # Allow max_iter as alias for max_local_iter
-        if max_iter is not None:
-            max_local_iter = max_iter
+
+        # Store all parameters as instance attributes
         self.K = K
-        self.random_state = random_state
         self.max_num_voxel = max_num_voxel
         self.max_num_tr = max_num_tr
         self.max_global_iter = max_global_iter
         self.max_local_iter = max_local_iter
         self.tol = tol
         self.verbose = verbose
+        self.n_levels = n_levels
+        # Store original random_state value and create RandomState object
+        self.random_state = random_state
+        self._random_state = validate_random_state(random_state)
+        self.max_iter = max_iter
+
+        # Initialize backend with auto-selection support
+        if isinstance(backend, str):
+            self.backend_name = backend  # Store the string name
+            self.backend = self._create_backend(
+                backend
+            )  # Store the actual backend object
+            self._backend = self.backend  # Alias for internal use
+        elif backend is None:
+            # Auto-select optimal backend
+            from htfa.backends.selector import select_backend
+
+            selected = select_backend(None)
+            self.backend_name = selected  # Store the selected backend name
+            self.backend = self._create_backend(
+                selected
+            )  # Store the actual backend object
+            self._backend = self.backend  # Alias for internal use
+            if self.verbose:
+                print(f"Auto-selected backend: {selected}")
+        else:
+            # If a backend object is passed directly
+            self.backend_name = (
+                str(type(backend).__name__).replace("Backend", "").lower()
+            )
+            self.backend = backend
+            self._backend = backend
 
         # Fitted parameters
         self.global_template_: Optional[np.ndarray] = None
         self.factors_: Optional[List[np.ndarray]] = None
         self.weights_: Optional[List[np.ndarray]] = None
         self.subject_templates_: Optional[List[np.ndarray]] = None
+        self.convergence_info_: Optional[Dict[str, Any]] = None
+
+    def _create_backend(self, backend_name: str) -> HTFABackend:
+        """Create backend from string name."""
+        if backend_name == "numpy":
+            return NumPyBackend()
+        elif backend_name == "jax":
+            try:
+                from htfa.backends.jax_backend import JAXBackend
+
+                return JAXBackend()
+            except ImportError:
+                raise ImportError(
+                    "JAX backend not available. Install JAX with: pip install jax jaxlib"
+                )
+        elif backend_name == "pytorch":
+            try:
+                from htfa.backends.pytorch_backend import PyTorchBackend
+
+                return PyTorchBackend()
+            except ImportError:
+                raise ImportError(
+                    "PyTorch backend not available. Install PyTorch: pip install torch"
+                )
+        else:
+            raise ValueError(f"Unknown backend: {backend_name}")
 
     def fit(
         self, X: List[np.ndarray], coords: Optional[List[np.ndarray]] = None
@@ -133,6 +204,8 @@ class HTFA(BaseEstimator):
                 max_iter=self.max_local_iter,
                 tol=self.tol,
                 verbose=False,  # Suppress individual subject verbose output
+                random_state=self._random_state,
+                backend=self.backend,  # Pass backend to TFA
             )
 
             tfa.fit(subject_data, subject_coords)
@@ -145,12 +218,13 @@ class HTFA(BaseEstimator):
         self, X: List[np.ndarray], coords: Optional[List[np.ndarray]]
     ) -> None:
         """Run the hierarchical optimization algorithm."""
-        n_subjects = len(X)
+        len(X)
 
         # Initialize global template
         self._compute_global_template()
 
         # Main hierarchical optimization loop
+        converged = False
         for global_iter in range(self.max_global_iter):
             if self.verbose:
                 print(f"Global iteration {global_iter + 1}/{self.max_global_iter}")
@@ -173,9 +247,36 @@ class HTFA(BaseEstimator):
 
             # Check convergence
             if self._check_convergence(old_template, self.global_template_):
+                converged = True
+                self.convergence_info_ = {
+                    "converged": True,
+                    "n_iterations": global_iter + 1,
+                    "subject_convergence": [
+                        m.convergence_info_
+                        for m in self.subject_models_
+                        if hasattr(m, "convergence_info_")
+                    ],
+                }
                 if self.verbose:
                     print(f"Converged after {global_iter + 1} global iterations")
                 break
+
+        # Record convergence status if not converged
+        if not converged:
+            self.convergence_info_ = {
+                "converged": False,
+                "n_iterations": self.max_global_iter,
+                "subject_convergence": [
+                    m.convergence_info_
+                    for m in self.subject_models_
+                    if hasattr(m, "convergence_info_")
+                ],
+            }
+            warnings.warn(
+                f"HTFA did not converge after {self.max_global_iter} global iterations. "
+                f"Consider increasing max_global_iter or adjusting tolerance.",
+                UserWarning,
+            )
 
         # Extract final parameters
         self._extract_final_parameters()
@@ -213,7 +314,7 @@ class HTFA(BaseEstimator):
             self.template_widths_var_ = np.var(all_widths, axis=0)
 
             # Store as global template
-            n_dims = self.template_centers_.shape[1]
+            self.template_centers_.shape[1]
             self.global_template_ = {
                 "centers": self.template_centers_,
                 "widths": self.template_widths_,
