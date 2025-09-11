@@ -55,6 +55,10 @@ gh issue edit $ARGUMENTS --body-file {updated_task_file}
 
 If labels changed:
 ```bash
+# Ensure labels exist
+for label in {new_labels}; do
+  gh label create "$label" --force 2>/dev/null || true
+done
 gh issue edit $ARGUMENTS --add-label "{new_labels}"
 gh issue edit $ARGUMENTS --remove-label "{removed_labels}"
 ```

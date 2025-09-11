@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "📅 Daily Standup - $(date '+%Y-%m-%d')"
+echo "DAILY STANDUP - $(date '+%Y-%m-%d')"
 echo "================================"
 echo ""
 
@@ -10,7 +10,7 @@ echo "Getting status..."
 echo ""
 echo ""
 
-echo "📝 Today's Activity:"
+echo "TODAY'S ACTIVITY:"
 echo "===================="
 echo ""
 
@@ -33,7 +33,7 @@ else
 fi
 
 echo ""
-echo "🔄 Currently In Progress:"
+echo "CURRENTLY IN PROGRESS:"
 # Show active work items
 for updates_dir in .claude/epics/*/updates/*/; do
   [ -d "$updates_dir" ] || continue
@@ -46,7 +46,7 @@ for updates_dir in .claude/epics/*/updates/*/; do
 done
 
 echo ""
-echo "⏭️ Next Available Tasks:"
+echo "NEXT AVAILABLE TASKS:"
 # Show top 3 available tasks
 count=0
 for epic_dir in .claude/epics/*/; do
@@ -68,7 +68,7 @@ for epic_dir in .claude/epics/*/; do
 done
 
 echo ""
-echo "📊 Quick Stats:"
+echo "QUICK STATS:"
 total_tasks=$(find .claude/epics -name "[0-9]*.md" 2>/dev/null | wc -l)
 open_tasks=$(find .claude/epics -name "[0-9]*.md" -exec grep -l "^status: *open" {} \; 2>/dev/null | wc -l)
 closed_tasks=$(find .claude/epics -name "[0-9]*.md" -exec grep -l "^status: *closed" {} \; 2>/dev/null | wc -l)

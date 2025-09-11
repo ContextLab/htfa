@@ -127,6 +127,8 @@ Task:
 
 ```bash
 # Assign to self and mark in-progress
+# Ensure label exists
+gh label create "in-progress" --force 2>/dev/null || true
 gh issue edit $ARGUMENTS --add-assignee @me --add-label "in-progress"
 ```
 

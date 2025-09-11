@@ -7,7 +7,7 @@ echo ""
 epic_name="$1"
 
 if [ -z "$epic_name" ]; then
-  echo "❌ Please specify an epic name"
+  echo "ERROR Please specify an epic name"
   echo "Usage: /pm:epic-status <epic-name>"
   echo ""
   echo "Available epics:"
@@ -21,7 +21,7 @@ else
   epic_file="$epic_dir/epic.md"
 
   if [ ! -f "$epic_file" ]; then
-    echo "❌ Epic not found: $epic_name"
+    echo "ERROR Epic not found: $epic_name"
     echo ""
     echo "Available epics:"
     for dir in .claude/epics/*/; do
@@ -30,7 +30,7 @@ else
     exit 1
   fi
 
-  echo "📚 Epic Status: $epic_name"
+  echo "EPIC Epic Status: $epic_name"
   echo "================================"
   echo ""
 
@@ -69,22 +69,22 @@ else
     empty=$((20 - filled))
 
     echo -n "Progress: ["
-    [ $filled -gt 0 ] && printf '%0.s█' $(seq 1 $filled)
-    [ $empty -gt 0 ] && printf '%0.s░' $(seq 1 $empty)
+    [ $filled -gt 0 ] && printf '%0.s#' $(seq 1 $filled)
+    [ $empty -gt 0 ] && printf '%0.s-' $(seq 1 $empty)
     echo "] $percent%"
   else
     echo "Progress: No tasks created"
   fi
 
   echo ""
-  echo "📊 Breakdown:"
+  echo "STATUS Breakdown:"
   echo "  Total tasks: $total"
-  echo "  ✅ Completed: $closed"
-  echo "  🔄 Available: $open"
-  echo "  ⏸️ Blocked: $blocked"
+  echo "  OK Completed: $closed"
+  echo "  IN-PROGRESS Available: $open"
+  echo "  BLOCKED: $blocked"
 
   [ -n "$github" ] && echo ""
-  [ -n "$github" ] && echo "🔗 GitHub: $github"
+  [ -n "$github" ] && echo "GitHub: $github"
 fi
 
 exit 0
