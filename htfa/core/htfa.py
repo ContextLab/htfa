@@ -80,23 +80,28 @@ class HTFA(BaseEstimator):
         self.tol = tol
         self.verbose = verbose
         self.n_levels = n_levels
-        # Validate and store random_state
-        self.random_state = validate_random_state(random_state)
+        # Store original random_state value and create RandomState object
+        self.random_state = random_state
+        self._random_state = validate_random_state(random_state)
         self.max_iter = max_iter
 
         # Initialize backend with auto-selection support
         if isinstance(backend, str):
-            self.backend = self._create_backend(backend)
+            self.backend = backend  # Store the string name
+            self._backend = self._create_backend(backend)  # Store the actual backend object
         elif backend is None:
             # Auto-select optimal backend
             from htfa.backends.selector import select_backend
 
             selected = select_backend(None)
-            self.backend = self._create_backend(selected)
+            self.backend = selected  # Store the selected backend name
+            self._backend = self._create_backend(selected)  # Store the actual backend object
             if self.verbose:
                 print(f"Auto-selected backend: {selected}")
         else:
-            self.backend = backend
+            # If a backend object is passed directly
+            self.backend = str(type(backend).__name__).replace("Backend", "").lower()
+            self._backend = backend
 
         # Fitted parameters
         self.global_template_: Optional[np.ndarray] = None
@@ -190,7 +195,7 @@ class HTFA(BaseEstimator):
                 max_iter=self.max_local_iter,
                 tol=self.tol,
                 verbose=False,  # Suppress individual subject verbose output
-                random_state=self.random_state,
+                random_state=self._random_state,
                 backend=self.backend,  # Pass backend to TFA
             )
 

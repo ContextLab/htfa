@@ -65,7 +65,9 @@ class TFA(BaseEstimator):
         if n_factors is not None:
             K = n_factors
         self.K = K
-        self.random_state = check_random_state(random_state)
+        # Store original random_state value and create RandomState object
+        self.random_state = random_state
+        self._random_state = check_random_state(random_state)
         self.max_num_voxel = max_num_voxel
         self.max_num_tr = max_num_tr
         self.max_iter = max_iter
@@ -80,17 +82,21 @@ class TFA(BaseEstimator):
 
         # Initialize backend with auto-selection support
         if isinstance(backend, str):
-            self.backend = self._create_backend(backend)
+            self.backend = backend  # Store the string name
+            self._backend = self._create_backend(backend)  # Store the actual backend object
         elif backend is None:
             # Auto-select optimal backend
             from htfa.backends.selector import select_backend
 
             selected = select_backend(None)
-            self.backend = self._create_backend(selected)
+            self.backend = selected  # Store the selected backend name
+            self._backend = self._create_backend(selected)  # Store the actual backend object
             if self.verbose:
                 print(f"Auto-selected backend: {selected}")
         else:
-            self.backend = backend
+            # If a backend object is passed directly
+            self.backend = str(type(backend).__name__).replace("Backend", "").lower()
+            self._backend = backend
 
         # Fitted parameters
         self.factors_: Optional[np.ndarray] = None
@@ -148,7 +154,7 @@ class TFA(BaseEstimator):
 
         # Subsample if requested
         if self.max_num_voxel is not None and n_voxels > self.max_num_voxel:
-            voxel_idx = self.random_state.choice(
+            voxel_idx = self._random_state.choice(
                 n_voxels, self.max_num_voxel, replace=False
             )
             X = X[voxel_idx]
@@ -156,7 +162,7 @@ class TFA(BaseEstimator):
                 coords = coords[voxel_idx]
 
         if self.max_num_tr is not None and n_timepoints > self.max_num_tr:
-            tr_idx = self.random_state.choice(
+            tr_idx = self._random_state.choice(
                 n_timepoints, self.max_num_tr, replace=False
             )
             X = X[:, tr_idx]
@@ -175,7 +181,7 @@ class TFA(BaseEstimator):
         """Initialize factor centers and widths using k-means clustering."""
         if coords is not None:
             # Use spatial coordinates for initialization
-            kmeans = KMeans(n_clusters=self.K, random_state=self.random_state)
+            kmeans = KMeans(n_clusters=self.K, random_state=self._random_state)
             kmeans.fit(coords)
             self.centers_ = kmeans.cluster_centers_
 
@@ -193,7 +199,7 @@ class TFA(BaseEstimator):
         else:
             # Use data-based initialization
             # When no coords provided, _optimize will create 3D coordinates
-            self.centers_ = self.random_state.randn(self.K, 3)
+            self.centers_ = self._random_state.randn(self.K, 3)
             self.widths_ = np.ones(self.K)
 
     def _optimize(self, X: np.ndarray, coords: Optional[np.ndarray]) -> None:
