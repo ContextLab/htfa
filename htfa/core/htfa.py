@@ -88,14 +88,18 @@ class HTFA(BaseEstimator):
         # Initialize backend with auto-selection support
         if isinstance(backend, str):
             self.backend = backend  # Store the string name
-            self._backend = self._create_backend(backend)  # Store the actual backend object
+            self._backend = self._create_backend(
+                backend
+            )  # Store the actual backend object
         elif backend is None:
             # Auto-select optimal backend
             from htfa.backends.selector import select_backend
 
             selected = select_backend(None)
             self.backend = selected  # Store the selected backend name
-            self._backend = self._create_backend(selected)  # Store the actual backend object
+            self._backend = self._create_backend(
+                selected
+            )  # Store the actual backend object
             if self.verbose:
                 print(f"Auto-selected backend: {selected}")
         else:

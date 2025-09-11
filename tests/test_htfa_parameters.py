@@ -46,6 +46,7 @@ class TestHTFAParameterAcceptance:
             # Check that backend instance is accessible via _backend
             if hasattr(htfa_model, "_backend"):
                 from htfa.backends.numpy_backend import NumPyBackend
+
                 assert isinstance(htfa_model._backend, NumPyBackend)
         else:
             pytest.skip("backend parameter not yet implemented in HTFA.__init__")
