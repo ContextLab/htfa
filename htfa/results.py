@@ -80,6 +80,74 @@ class HTFAResults:
             UserWarning,
         )
 
+    @property
+    def is_converged(self) -> bool:
+        """Check if the model converged during fitting.
+        
+        Returns
+        -------
+        bool
+            True if model converged, False otherwise.
+        """
+        return self.fit_info.get('convergence_info', {}).get('converged', False)
+    
+    @property
+    def n_iterations(self) -> Optional[int]:
+        """Get the number of iterations used during fitting.
+        
+        Returns
+        -------
+        int or None
+            Number of iterations if available, None otherwise.
+        """
+        return self.fit_info.get('convergence_info', {}).get('n_iterations')
+    
+    @property
+    def convergence_info(self) -> Dict[str, Any]:
+        """Get full convergence information.
+        
+        Returns
+        -------
+        dict
+            Complete convergence information including per-subject details.
+        """
+        return self.fit_info.get('convergence_info', {})
+    
+    def get_convergence_summary(self) -> Dict[str, Any]:
+        """Get a comprehensive convergence summary.
+        
+        Returns
+        -------
+        dict
+            Summary containing:
+            - converged: bool indicating if global model converged
+            - n_iterations: number of global iterations
+            - warnings: any convergence warnings
+            - subject_convergence: per-subject convergence details if available
+        """
+        conv_info = self.convergence_info
+        summary = {
+            'converged': conv_info.get('converged', 'Unknown'),
+            'n_iterations': conv_info.get('n_iterations', 'Unknown'),
+        }
+        
+        # Add subject-specific convergence if available
+        if 'subject_convergence' in conv_info:
+            subject_conv = conv_info['subject_convergence']
+            summary['n_subjects_converged'] = sum(
+                1 for s in subject_conv if s and s.get('converged', False)
+            )
+            summary['total_subjects'] = len(subject_conv)
+            summary['subject_details'] = subject_conv
+        
+        # Add any warnings
+        if not conv_info.get('converged', True):
+            summary['warnings'] = [
+                'Model did not converge. Consider increasing max_iter or adjusting tolerance.'
+            ]
+        
+        return summary
+
     def plot_global_factors(
         self,
         factors: Optional[List[int]] = None,
@@ -219,11 +287,17 @@ class HTFAResults:
             if self.global_template is not None
             else "Unknown"
         )
+        
+        # Get convergence status
+        converged = "Yes" if self.is_converged else "No"
+        if not self.convergence_info:
+            converged = "Unknown"
 
         return (
             f"HTFAResults(\n"
             f"  n_subjects={n_subjects},\n"
             f"  n_factors={n_factors},\n"
+            f"  converged={converged},\n"
             f"  bids_dataset='{self.bids_info.get('dataset_name', 'Unknown')}'\n"
             f")"
         )

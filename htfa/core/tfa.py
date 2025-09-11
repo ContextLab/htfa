@@ -4,7 +4,8 @@ This module provides a standalone implementation of Topographic Factor Analysis,
 which serves as the base for Hierarchical TFA.
 """
 
-from typing import Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
+import warnings
 
 import numpy as np
 from scipy.optimize import least_squares
@@ -89,6 +90,7 @@ class TFA(BaseEstimator):
         self.weights_: Optional[np.ndarray] = None
         self.centers_: Optional[np.ndarray] = None
         self.widths_: Optional[np.ndarray] = None
+        self.convergence_info_: Optional[Dict[str, Any]] = None
 
     def _create_backend(self, backend_name: str) -> HTFABackend:
         """Create backend from string name."""
@@ -193,6 +195,7 @@ class TFA(BaseEstimator):
             coords = coords.astype(float)
 
         n_voxels, n_timepoints = X.shape
+        converged = False
 
         for iteration in range(self.max_iter):
             # Compute spatial factors from centers and widths
@@ -221,9 +224,28 @@ class TFA(BaseEstimator):
                 )
 
             if center_diff < self.tol and width_diff < self.tol:
+                converged = True
+                self.convergence_info_ = {
+                    'converged': True,
+                    'n_iterations': iteration + 1,
+                    'final_tolerance': max(center_diff, width_diff)
+                }
                 if self.verbose:
                     print(f"TFA converged at iteration {iteration}")
                 break
+
+        # Record convergence status if not converged
+        if not converged:
+            self.convergence_info_ = {
+                'converged': False,
+                'n_iterations': self.max_iter,
+                'final_tolerance': max(center_diff, width_diff) if 'center_diff' in locals() else None
+            }
+            warnings.warn(
+                f"TFA did not converge after {self.max_iter} iterations. "
+                f"Consider increasing max_iter or adjusting tolerance.",
+                UserWarning
+            )
 
         if self.verbose:
             print(f"TFA fitting completed with K={self.K} factors")

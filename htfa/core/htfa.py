@@ -4,7 +4,8 @@ This module provides a standalone implementation of Hierarchical Topographic Fac
 based on the BrainIAK implementation but with minimal dependencies.
 """
 
-from typing import List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
+import warnings
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
@@ -95,6 +96,7 @@ class HTFA(BaseEstimator):
         self.factors_: Optional[List[np.ndarray]] = None
         self.weights_: Optional[List[np.ndarray]] = None
         self.subject_templates_: Optional[List[np.ndarray]] = None
+        self.convergence_info_: Optional[Dict[str, Any]] = None
 
     def _create_backend(self, backend_name: str) -> HTFABackend:
         """Create backend from string name."""
@@ -199,6 +201,7 @@ class HTFA(BaseEstimator):
         self._compute_global_template()
 
         # Main hierarchical optimization loop
+        converged = False
         for global_iter in range(self.max_global_iter):
             if self.verbose:
                 print(f"Global iteration {global_iter + 1}/{self.max_global_iter}")
@@ -221,9 +224,28 @@ class HTFA(BaseEstimator):
 
             # Check convergence
             if self._check_convergence(old_template, self.global_template_):
+                converged = True
+                self.convergence_info_ = {
+                    'converged': True,
+                    'n_iterations': global_iter + 1,
+                    'subject_convergence': [m.convergence_info_ for m in self.subject_models_ if hasattr(m, 'convergence_info_')]
+                }
                 if self.verbose:
                     print(f"Converged after {global_iter + 1} global iterations")
                 break
+        
+        # Record convergence status if not converged
+        if not converged:
+            self.convergence_info_ = {
+                'converged': False,
+                'n_iterations': self.max_global_iter,
+                'subject_convergence': [m.convergence_info_ for m in self.subject_models_ if hasattr(m, 'convergence_info_')]
+            }
+            warnings.warn(
+                f"HTFA did not converge after {self.max_global_iter} global iterations. "
+                f"Consider increasing max_global_iter or adjusting tolerance.",
+                UserWarning
+            )
 
         # Extract final parameters
         self._extract_final_parameters()
