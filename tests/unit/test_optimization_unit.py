@@ -240,7 +240,9 @@ class TestMiniBatchOptimizer:
 
         # Should converge early (or at least improve)
         # Relaxed check - either converged or significantly reduced loss
-        assert result.converged or (len(result.losses) > 0 and result.losses[-1] < result.losses[0] * 0.5)
+        assert result.converged or (
+            len(result.losses) > 0 and result.losses[-1] < result.losses[0] * 0.5
+        )
 
 
 class TestSparseOptimizer:
