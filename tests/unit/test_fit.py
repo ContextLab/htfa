@@ -19,47 +19,47 @@ class TestFitFunction:
         """Test fit with single subject array input."""
         data = np.random.randn(100, 50)  # 100 voxels, 50 timepoints
         coords = np.random.randn(100, 3)
-        
+
         model = fit(data, coords=coords, n_factors=5, max_iter=5)
-        
+
         assert isinstance(model, TFA)
         assert model.K == 5
-        assert hasattr(model, 'coords_')
+        assert hasattr(model, "coords_")
         assert np.array_equal(model.coords_, coords)
 
     def test_fit_with_multi_subject_arrays(self):
         """Test fit with multi-subject array input."""
         data = [np.random.randn(100, 50) for _ in range(3)]
         coords = np.random.randn(100, 3)
-        
+
         model = fit(data, coords=coords, n_factors=5, max_iter=5)
-        
+
         assert isinstance(model, HTFA)
         assert model.K == 5
-        assert hasattr(model, 'coords_')
+        assert hasattr(model, "coords_")
         assert np.array_equal(model.coords_, coords)
 
     def test_fit_single_array_force_multi_subject(self):
         """Test forcing HTFA for single subject."""
         data = np.random.randn(100, 50)
         coords = np.random.randn(100, 3)
-        
+
         model = fit(data, coords=coords, n_factors=5, multi_subject=True, max_iter=5)
-        
+
         assert isinstance(model, HTFA)
         assert model.K == 5
 
     def test_fit_without_coords_raises_error(self):
         """Test that array input without coords raises error."""
         data = np.random.randn(100, 50)
-        
+
         with pytest.raises(TypeError, match="coords parameter is required"):
             fit(data)
 
     def test_fit_multi_array_without_coords_raises_error(self):
         """Test that multi-array input without coords raises error."""
         data = [np.random.randn(100, 50) for _ in range(3)]
-        
+
         with pytest.raises(TypeError, match="coords parameter is required"):
             fit(data)
 
@@ -72,32 +72,32 @@ class TestFitFunction:
         """Test that n_factors is inferred when not provided."""
         data = np.random.randn(100, 50)
         coords = np.random.randn(100, 3)
-        
+
         model = fit(data, coords=coords, max_iter=5)
-        
+
         assert isinstance(model, TFA)
         assert model.K > 0
         assert model.K <= 50  # Should be capped
 
-    @patch('htfa.fit._fit_bids_dataset')
+    @patch("htfa.fit._fit_bids_dataset")
     def test_fit_routes_to_bids_for_path(self, mock_bids):
         """Test that path input routes to BIDS handler."""
         mock_bids.return_value = MagicMock(spec=TFA)
-        
+
         fit("/path/to/dataset", n_factors=10)
-        
+
         mock_bids.assert_called_once()
         args = mock_bids.call_args
         assert str(args[0][0]) == "/path/to/dataset"
-        assert args[1]['n_factors'] == 10
+        assert args[1]["n_factors"] == 10
 
-    @patch('htfa.fit._fit_bids_dataset')
+    @patch("htfa.fit._fit_bids_dataset")
     def test_fit_routes_to_bids_for_pathlike(self, mock_bids):
         """Test that PathLike input routes to BIDS handler."""
         mock_bids.return_value = MagicMock(spec=TFA)
-        
+
         fit(Path("/path/to/dataset"), n_factors=10)
-        
+
         mock_bids.assert_called_once()
 
 
@@ -108,9 +108,9 @@ class TestFitArrays:
         """Test fitting single subject array."""
         data = np.random.randn(100, 50)
         coords = np.random.randn(100, 3)
-        
+
         model = _fit_arrays(data, coords, n_factors=5, multi_subject=False, max_iter=5)
-        
+
         assert isinstance(model, TFA)
         assert model.K == 5
         assert np.array_equal(model.coords_, coords)
@@ -119,16 +119,16 @@ class TestFitArrays:
         """Test fitting multi-subject arrays."""
         data = [np.random.randn(100, 50) for _ in range(3)]
         coords = np.random.randn(100, 3)
-        
+
         model = _fit_arrays(data, coords, n_factors=5, max_iter=5)
-        
+
         assert isinstance(model, HTFA)
         assert model.K == 5
 
     def test_fit_arrays_empty_list_raises_error(self):
         """Test that empty data list raises error."""
         coords = np.random.randn(100, 3)
-        
+
         with pytest.raises(ValueError, match="Empty data list"):
             _fit_arrays([], coords)
 
@@ -136,10 +136,10 @@ class TestFitArrays:
         """Test that mismatched voxel counts raise error."""
         data = [
             np.random.randn(100, 50),
-            np.random.randn(90, 50)  # Different number of voxels
+            np.random.randn(90, 50),  # Different number of voxels
         ]
         coords = np.random.randn(100, 3)
-        
+
         with pytest.raises(ValueError, match="expected 100 voxels, got 90"):
             _fit_arrays(data, coords)
 
@@ -147,7 +147,7 @@ class TestFitArrays:
         """Test that wrong array dimensions raise error."""
         data = np.random.randn(100, 50, 10)  # 3D array
         coords = np.random.randn(100, 3)
-        
+
         with pytest.raises(ValueError, match="expected 2D array, got 3D"):
             _fit_arrays(data, coords)
 
@@ -155,18 +155,15 @@ class TestFitArrays:
         """Test that coordinate shape mismatch raises error."""
         data = np.random.randn(100, 50)
         coords = np.random.randn(90, 3)  # Wrong number of coordinates
-        
+
         with pytest.raises(ValueError, match="Coordinates shape 90 doesn't match"):
             _fit_arrays(data, coords)
 
     def test_fit_arrays_multi_subject_wrong_dims(self):
         """Test multi-subject with wrong dimensions."""
-        data = [
-            np.random.randn(100, 50, 10),  # 3D array
-            np.random.randn(100, 50)
-        ]
+        data = [np.random.randn(100, 50, 10), np.random.randn(100, 50)]  # 3D array
         coords = np.random.randn(100, 3)
-        
+
         with pytest.raises(ValueError, match="Subject 0: expected 2D array"):
             _fit_arrays(data, coords)
 
@@ -185,28 +182,28 @@ class TestFitBidsDataset:
             with pytest.raises(ValueError, match="Single file must be NIfTI format"):
                 _fit_bids_dataset(tmp.name)
 
-    @patch('htfa.fit._load_nifti_file')
+    @patch("htfa.fit._load_nifti_file")
     def test_fit_bids_single_nifti_file(self, mock_load):
         """Test fitting a single NIfTI file."""
         mock_load.return_value = (np.random.randn(100, 50), np.random.randn(100, 3))
-        
+
         with tempfile.NamedTemporaryFile(suffix=".nii") as tmp:
             # File exists, so should attempt to load
             model = _fit_bids_dataset(tmp.name, n_factors=5, max_iter=5)
-            
+
             # Should call load function
             mock_load.assert_called_once()
 
-    @patch('htfa.fit._load_nifti_file')
+    @patch("htfa.fit._load_nifti_file")
     def test_fit_bids_single_nifti_gz_file(self, mock_load):
         """Test fitting a single .nii.gz file."""
         mock_load.return_value = (np.random.randn(100, 50), np.random.randn(100, 3))
-        
+
         with tempfile.NamedTemporaryFile(suffix=".nii.gz") as tmp:
             model = _fit_bids_dataset(tmp.name, n_factors=5, max_iter=5)
             mock_load.assert_called_once()
 
-    @patch('htfa.validation.validate_bids_path')
+    @patch("htfa.validation.validate_bids_path")
     def test_fit_bids_directory_not_implemented(self, mock_validate):
         """Test that BIDS directory raises NotImplementedError."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -220,7 +217,7 @@ class TestFitBidsDataset:
         with tempfile.TemporaryDirectory() as tmpdir:
             fifo_path = Path(tmpdir) / "test.fifo"
             os.mkfifo(fifo_path)
-            
+
             with pytest.raises(ValueError, match="Invalid path type"):
                 _fit_bids_dataset(fifo_path)
 
@@ -231,52 +228,52 @@ class TestInferParameters:
     def test_infer_parameters_basic(self):
         """Test basic parameter inference."""
         data = np.random.randn(100, 50)
-        
+
         params = _infer_parameters(data)
-        
-        assert 'n_factors' in params
-        assert 'max_iter' in params
-        assert 'tol' in params
-        assert params['n_factors'] > 0
-        assert params['n_factors'] <= 50
-        assert params['max_iter'] == 100
-        assert params['tol'] == 1e-6
+
+        assert "n_factors" in params
+        assert "max_iter" in params
+        assert "tol" in params
+        assert params["n_factors"] > 0
+        assert params["n_factors"] <= 50
+        assert params["max_iter"] == 100
+        assert params["tol"] == 1e-6
 
     def test_infer_parameters_large_data(self):
         """Test parameter inference with large data."""
         data = np.random.randn(10000, 500)
-        
+
         params = _infer_parameters(data)
-        
+
         # Should be capped at 50
-        assert params['n_factors'] == 50
+        assert params["n_factors"] == 50
 
     def test_infer_parameters_small_timepoints(self):
         """Test with very few timepoints."""
         data = np.random.randn(1000, 5)
-        
+
         params = _infer_parameters(data)
-        
+
         # Should be max(1, 5//10) = 1
-        assert params['n_factors'] >= 1
+        assert params["n_factors"] >= 1
 
     def test_infer_parameters_override(self):
         """Test that kwargs override inferred values."""
         data = np.random.randn(100, 50)
-        
+
         params = _infer_parameters(data, n_factors=15, max_iter=200)
-        
-        assert params['n_factors'] == 15
-        assert params['max_iter'] == 200
-        assert params['tol'] == 1e-6  # Not overridden
+
+        assert params["n_factors"] == 15
+        assert params["max_iter"] == 200
+        assert params["tol"] == 1e-6  # Not overridden
 
     def test_infer_parameters_ignore_extra_kwargs(self):
         """Test that extra kwargs are ignored."""
         data = np.random.randn(100, 50)
-        
+
         params = _infer_parameters(data, extra_param=123)
-        
-        assert 'extra_param' not in params
+
+        assert "extra_param" not in params
 
 
 class TestLoadNiftiFile:
@@ -285,6 +282,6 @@ class TestLoadNiftiFile:
     def test_load_nifti_not_implemented(self):
         """Test that _load_nifti_file raises NotImplementedError."""
         from htfa.fit import _load_nifti_file
-        
+
         with pytest.raises(NotImplementedError, match="NIfTI file loading"):
             _load_nifti_file(Path("/fake/path.nii"))
