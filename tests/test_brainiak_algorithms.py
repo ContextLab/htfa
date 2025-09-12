@@ -150,18 +150,22 @@ class TestHTFA:
         """Test global template estimation."""
         htfa = HTFA(K=2)
 
-        # Create mock subject models
-        from unittest.mock import Mock
+        # Create test subject models
+        class TestSubject:
+            def __init__(self, centers, widths):
+                self.centers_ = centers
+                self.widths_ = widths
 
-        subject1 = Mock()
-        subject1.centers_ = np.array([[0, 0], [1, 1]])
-        subject1.widths_ = np.array([1.0, 1.5])
-        subject1.get_factors = lambda: np.random.randn(2, 10)
+            def get_factors(self):
+                return np.random.randn(2, 10)
 
-        subject2 = Mock()
-        subject2.centers_ = np.array([[0.1, 0.1], [0.9, 0.9]])
-        subject2.widths_ = np.array([0.9, 1.6])
-        subject2.get_factors = lambda: np.random.randn(2, 10)
+        subject1 = TestSubject(
+            centers=np.array([[0, 0], [1, 1]]), widths=np.array([1.0, 1.5])
+        )
+
+        subject2 = TestSubject(
+            centers=np.array([[0.1, 0.1], [0.9, 0.9]]), widths=np.array([0.9, 1.6])
+        )
 
         htfa.subject_models_ = [subject1, subject2]
         htfa._compute_global_template()
