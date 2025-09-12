@@ -215,20 +215,28 @@ def extract_bids_metadata(
     if isinstance(layout_or_files, BIDSLayout):
         layout = layout_or_files
         # Get files based on filters
-        files = layout.get(return_type='object', **filters) if filters else layout.get(return_type='object')
-        
+        files = (
+            layout.get(return_type="object", **filters)
+            if filters
+            else layout.get(return_type="object")
+        )
+
         # Return dict format for layout input (matches test expectations)
         metadata = {
-            'n_subjects': len(layout.get_subjects()),
-            'n_sessions': len(layout.get_sessions()),
-            'n_tasks': len(layout.get_tasks()),
-            'n_runs': len(layout.get_runs()) if hasattr(layout, 'get_runs') else 0,
-            'subjects': layout.get_subjects(),
-            'tasks': layout.get_tasks(),
-            'dataset_name': layout.description.get('Name', 'Unknown') if layout.description else 'Unknown'
+            "n_subjects": len(layout.get_subjects()),
+            "n_sessions": len(layout.get_sessions()),
+            "n_tasks": len(layout.get_tasks()),
+            "n_runs": len(layout.get_runs()) if hasattr(layout, "get_runs") else 0,
+            "subjects": layout.get_subjects(),
+            "tasks": layout.get_tasks(),
+            "dataset_name": (
+                layout.description.get("Name", "Unknown")
+                if layout.description
+                else "Unknown"
+            ),
         }
         return metadata
-    
+
     # Otherwise handle as list of files
     files = layout_or_files
     if not files:

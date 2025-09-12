@@ -155,18 +155,16 @@ class TestHTFA:
             def __init__(self, centers, widths):
                 self.centers_ = centers
                 self.widths_ = widths
-            
+
             def get_factors(self):
                 return np.random.randn(2, 10)
 
         subject1 = TestSubject(
-            centers=np.array([[0, 0], [1, 1]]),
-            widths=np.array([1.0, 1.5])
+            centers=np.array([[0, 0], [1, 1]]), widths=np.array([1.0, 1.5])
         )
 
         subject2 = TestSubject(
-            centers=np.array([[0.1, 0.1], [0.9, 0.9]]),
-            widths=np.array([0.9, 1.6])
+            centers=np.array([[0.1, 0.1], [0.9, 0.9]]), widths=np.array([0.9, 1.6])
         )
 
         htfa.subject_models_ = [subject1, subject2]

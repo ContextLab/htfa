@@ -346,45 +346,35 @@ def _load_nifti_file(
         If the NIfTI file is not 4D.
     """
     import nibabel as nib
-    
+
     # Load the NIfTI image
     img = nib.load(str(path))
     data = img.get_fdata()
-    
+
     # Check that it's 4D data (x, y, z, time)
     if data.ndim != 4:
-        raise ValueError(
-            f"Expected 4D NIfTI file (x, y, z, time), got {data.ndim}D"
-        )
-    
+        raise ValueError(f"Expected 4D NIfTI file (x, y, z, time), got {data.ndim}D")
+
     # Get dimensions
     nx, ny, nz, n_timepoints = data.shape
-    
+
     # Reshape to (n_voxels, n_timepoints)
     n_voxels = nx * ny * nz
     data_2d = data.reshape(n_voxels, n_timepoints)
-    
+
     # Generate voxel coordinates in MNI space using the affine matrix
     affine = img.affine
-    
+
     # Create voxel indices
-    i, j, k = np.meshgrid(
-        np.arange(nx), 
-        np.arange(ny), 
-        np.arange(nz),
-        indexing='ij'
-    )
-    
+    i, j, k = np.meshgrid(np.arange(nx), np.arange(ny), np.arange(nz), indexing="ij")
+
     # Flatten the indices
-    voxel_indices = np.column_stack([
-        i.ravel(),
-        j.ravel(), 
-        k.ravel(),
-        np.ones(n_voxels)  # Homogeneous coordinates
-    ])
-    
+    voxel_indices = np.column_stack(
+        [i.ravel(), j.ravel(), k.ravel(), np.ones(n_voxels)]  # Homogeneous coordinates
+    )
+
     # Transform to MNI coordinates
     mni_coords = voxel_indices @ affine.T
     coords = mni_coords[:, :3]  # Drop the homogeneous coordinate
-    
+
     return data_2d, coords

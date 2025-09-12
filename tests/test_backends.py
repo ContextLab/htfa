@@ -1,6 +1,5 @@
 """Comprehensive tests for HTFA backend functionality."""
 
-
 import numpy as np
 import pytest
 
@@ -134,6 +133,7 @@ class TestBackendFactory:
         # We'll check if JAX is available and skip if it is
         try:
             import jax
+
             pytest.skip("JAX is available, cannot test unavailable case")
         except ImportError:
             # JAX is not available, test should work
@@ -146,6 +146,7 @@ class TestBackendFactory:
         # We'll check if PyTorch is available and skip if it is
         try:
             import torch
+
             pytest.skip("PyTorch is available, cannot test unavailable case")
         except ImportError:
             # PyTorch is not available, test should work
