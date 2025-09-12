@@ -179,21 +179,22 @@ class TestFitBidsDataset:
         # Now that NIfTI loading is implemented, test with a proper NIfTI file
         # For unit test, we'll create a minimal NIfTI file
         import nibabel as nib
-        
+
         with tempfile.NamedTemporaryFile(suffix=".nii", delete=False) as tmp:
             try:
                 # Create a minimal 4D NIfTI file
                 data = np.random.randn(10, 10, 10, 20)  # Small 4D array
                 img = nib.Nifti1Image(data, np.eye(4))
                 nib.save(img, tmp.name)
-                
+
                 # Now fit should work
                 model = _fit_bids_dataset(tmp.name, n_factors=3, max_iter=5)
                 assert model is not None
-                assert hasattr(model, 'factors_')
+                assert hasattr(model, "factors_")
             finally:
                 # Clean up
                 import os
+
                 if os.path.exists(tmp.name):
                     os.unlink(tmp.name)
 
@@ -201,21 +202,22 @@ class TestFitBidsDataset:
         """Test fitting a single .nii.gz file."""
         # Now that NIfTI loading is implemented, test with a proper NIfTI file
         import nibabel as nib
-        
+
         with tempfile.NamedTemporaryFile(suffix=".nii.gz", delete=False) as tmp:
             try:
                 # Create a minimal 4D NIfTI file
                 data = np.random.randn(10, 10, 10, 20)  # Small 4D array
                 img = nib.Nifti1Image(data, np.eye(4))
                 nib.save(img, tmp.name)
-                
+
                 # Now fit should work
                 model = _fit_bids_dataset(tmp.name, n_factors=3, max_iter=5)
                 assert model is not None
-                assert hasattr(model, 'factors_')
+                assert hasattr(model, "factors_")
             finally:
                 # Clean up
                 import os
+
                 if os.path.exists(tmp.name):
                     os.unlink(tmp.name)
 

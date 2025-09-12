@@ -160,7 +160,9 @@ def validate_bids_structure(path: Union[str, Path]) -> Dict[str, Any]:
 
     try:
         # Use pybids validation if available
-        layout = BIDSLayout(str(path), validate=False)  # Don't enforce strict validation
+        layout = BIDSLayout(
+            str(path), validate=False
+        )  # Don't enforce strict validation
 
         # Collect summary statistics
         report["summary"] = {
@@ -174,15 +176,19 @@ def validate_bids_structure(path: Union[str, Path]) -> Dict[str, Any]:
         # If no subjects found via BIDSLayout, check directories manually
         if report["summary"]["n_subjects"] == 0:
             # Count subject directories manually
-            subject_dirs = [d for d in path.iterdir() if d.is_dir() and d.name.startswith("sub-")]
+            subject_dirs = [
+                d for d in path.iterdir() if d.is_dir() and d.name.startswith("sub-")
+            ]
             report["summary"]["n_subjects"] = len(subject_dirs)
 
     except Exception as e:
         # Fallback to manual validation if BIDSLayout fails
         report["warnings"].append(f"BIDSLayout validation failed: {e}")
-        
+
         # Do manual directory scan for basic summary
-        subject_dirs = [d for d in path.iterdir() if d.is_dir() and d.name.startswith("sub-")]
+        subject_dirs = [
+            d for d in path.iterdir() if d.is_dir() and d.name.startswith("sub-")
+        ]
         report["summary"] = {
             "n_subjects": len(subject_dirs),
             "n_sessions": 0,  # Can't easily determine without parsing
