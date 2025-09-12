@@ -140,7 +140,7 @@ class TestFitArrays:
         data = np.random.randn(100, 50, 10)  # 3D array
         coords = np.random.randn(100, 3)
 
-        with pytest.raises(ValueError, match="expected 2D array, got 3D"):
+        with pytest.raises(ValueError, match="Expected 2D array, got 3D"):
             _fit_arrays(data, coords)
 
     def test_fit_arrays_coords_mismatch_raises_error(self):
@@ -176,18 +176,48 @@ class TestFitBidsDataset:
 
     def test_fit_bids_single_nifti_file(self):
         """Test fitting a single NIfTI file."""
-        # Test that loading NIfTI raises NotImplementedError
-        # since nibabel integration is not complete
-        with tempfile.NamedTemporaryFile(suffix=".nii") as tmp:
-            with pytest.raises(NotImplementedError, match="NIfTI file loading"):
-                _fit_bids_dataset(tmp.name, n_factors=5, max_iter=5)
+        # Now that NIfTI loading is implemented, test with a proper NIfTI file
+        # For unit test, we'll create a minimal NIfTI file
+        import nibabel as nib
+        
+        with tempfile.NamedTemporaryFile(suffix=".nii", delete=False) as tmp:
+            try:
+                # Create a minimal 4D NIfTI file
+                data = np.random.randn(10, 10, 10, 20)  # Small 4D array
+                img = nib.Nifti1Image(data, np.eye(4))
+                nib.save(img, tmp.name)
+                
+                # Now fit should work
+                model = _fit_bids_dataset(tmp.name, n_factors=3, max_iter=5)
+                assert model is not None
+                assert hasattr(model, 'factors_')
+            finally:
+                # Clean up
+                import os
+                if os.path.exists(tmp.name):
+                    os.unlink(tmp.name)
 
     def test_fit_bids_single_nifti_gz_file(self):
         """Test fitting a single .nii.gz file."""
-        # Test that loading NIfTI.gz raises NotImplementedError
-        with tempfile.NamedTemporaryFile(suffix=".nii.gz") as tmp:
-            with pytest.raises(NotImplementedError, match="NIfTI file loading"):
-                _fit_bids_dataset(tmp.name, n_factors=5, max_iter=5)
+        # Now that NIfTI loading is implemented, test with a proper NIfTI file
+        import nibabel as nib
+        
+        with tempfile.NamedTemporaryFile(suffix=".nii.gz", delete=False) as tmp:
+            try:
+                # Create a minimal 4D NIfTI file
+                data = np.random.randn(10, 10, 10, 20)  # Small 4D array
+                img = nib.Nifti1Image(data, np.eye(4))
+                nib.save(img, tmp.name)
+                
+                # Now fit should work
+                model = _fit_bids_dataset(tmp.name, n_factors=3, max_iter=5)
+                assert model is not None
+                assert hasattr(model, 'factors_')
+            finally:
+                # Clean up
+                import os
+                if os.path.exists(tmp.name):
+                    os.unlink(tmp.name)
 
     def test_fit_bids_directory_not_implemented(self):
         """Test that BIDS directory raises NotImplementedError."""

@@ -46,7 +46,7 @@ class TestValidateBidsStructure:
         """Test validation with missing dataset_description.json."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir)
-            (path / "participants.tsv").touch()
+            # Don't create participants.tsv to test the warning
             (path / "sub-01").mkdir()
 
             result = validate_bids_structure(path)
