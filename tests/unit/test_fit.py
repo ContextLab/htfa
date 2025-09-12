@@ -226,6 +226,8 @@ class TestFitBidsDataset:
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create minimal BIDS structure
             Path(tmpdir, "dataset_description.json").write_text('{"Name": "Test"}')
+            # Create a subject directory to pass validation
+            Path(tmpdir, "sub-01").mkdir()
             with pytest.raises(NotImplementedError, match="BIDS dataset parsing"):
                 _fit_bids_dataset(tmpdir)
 
