@@ -1,6 +1,5 @@
 """Comprehensive tests for HTFA validation framework."""
 
-
 import json
 import tempfile
 from pathlib import Path

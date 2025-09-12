@@ -5,8 +5,6 @@ including real data flows, parameter inference, and model fitting
 without mocks to ensure the entire pipeline works correctly.
 """
 
-
-
 import numpy as np
 import pytest
 

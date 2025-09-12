@@ -5,7 +5,7 @@ for accessing HTFA analysis results, including built-in visualization methods
 and NIfTI reconstruction capabilities.
 """
 
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import warnings
 
