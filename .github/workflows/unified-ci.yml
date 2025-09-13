@@ -2,22 +2,7 @@ name: Unified CI/CD Pipeline
 
 on:
   push:
-    branches: [main, develop, 'epic-*']
-  pull_request:
-    branches: [main, develop]
-  workflow_dispatch:
-    inputs:
-      epic:
-        description: 'Epic to build (all, core, scalability, deployment, integration)'
-        required: false
-        default: 'all'
-        type: choice
-        options:
-          - all
-          - core
-          - scalability
-          - deployment
-          - integration
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

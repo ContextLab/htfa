@@ -1,19 +1,9 @@
 name: Quality Gates
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-  workflow_call:
-    inputs:
-      threshold_coverage:
-        type: number
-        default: 90
-      threshold_complexity:
-        type: number
-        default: 10
-      threshold_duplication:
-        type: number
-        default: 5
+  push:
+    branches:
+      - main
 
 jobs:
   code-quality:
