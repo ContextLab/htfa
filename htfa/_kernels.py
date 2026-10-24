@@ -15,7 +15,7 @@ from scipy.optimize import least_squares
 from scipy.sparse.linalg import LinearOperator
 from sklearn.cluster import KMeans
 
-from htfa._engines import NumpyEngine
+from htfa._engines import Engine
 
 Array = NDArray[np.float64]
 
@@ -125,7 +125,7 @@ class ResidualProblem:
         X: Array,
         W: Array,
         R: Array,
-        engine: NumpyEngine,
+        engine: Engine,
         prior: Prior | None = None,
         compress: bool = False,
     ) -> None:
