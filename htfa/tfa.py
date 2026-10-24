@@ -25,14 +25,18 @@ from htfa._kernels import (
     ridge_weights,
     solve_centers_widths,
 )
-from htfa.synthetic import match_factors
+from htfa._matching import match_factors
 
 Array = NDArray[np.float64]
 
 INIT_METHODS = ("ncorr", "power", "kmeans")
-# 'power' weights this close to uniform (coefficient of variation) would only
-# duplicate the unweighted 'kmeans' start, so 'power' is skipped when both are asked.
+# Per-voxel power sum_t X**2 this close to uniform (coefficient of variation, before
+# median subtraction) makes 'power' weights rounding noise -- always the case for
+# z-scored rows -- so 'power' is skipped when 'kmeans' runs too.
 UNIFORM_CV = 1e-3
+# With subsampling, stop when the scaled change has not reached a new minimum for
+# this many consecutive iterations (a fresh sample keeps it above the threshold).
+PLATEAU_PATIENCE = 5
 # Relative floor added to the K-means sample weights so that every voxel counts.
 TINY_WEIGHT = 1e-12
 # scipy.optimize.least_squares losses rho(z) of the squared residual z (f_scale=1).
@@ -146,10 +150,9 @@ def _floor(p: Array) -> Array:
     return p + TINY_WEIGHT * (float(np.max(p)) or 1.0)
 
 
-def _power_weights(X: Array) -> Array:
-    """Voxel weights ``clip(sum_t X**2 - median, 0)`` plus a tiny floor."""
-    p = np.sum(X * X, axis=1)
-    return _floor(np.clip(p - np.median(p), 0.0, None))
+def _power_weights(power: Array) -> Array:
+    """Voxel weights ``clip(power - median, 0)`` plus a tiny floor."""
+    return _floor(np.clip(power - np.median(power), 0.0, None))
 
 
 def _ncorr_weights(X: Array, R: Array) -> Array:
@@ -195,22 +198,29 @@ def _initial_starts(
     w_lo: float,
     w_hi: float,
 ) -> dict[str, tuple[Array, Array]]:
-    """Candidate starts ``name -> (centers, widths)``; one K-means seed per name."""
+    """Candidate starts ``name -> (centers, widths)``.
+
+    One K-means seed is drawn per entry of `INIT_METHODS` in a fixed order, so a
+    start is the same whether it runs alone or among others.
+    """
+    seeds = {name: int(rng.integers(np.iinfo(np.int32).max)) for name in INIT_METHODS}
+    power = np.sum(X * X, axis=1)
+    power_uniform = np.std(power) < UNIFORM_CV * np.mean(power)
     starts = {}
     for name in names:
-        seed = int(rng.integers(np.iinfo(np.int32).max))
         if name == "kmeans":
-            starts[name] = init_centers_widths(R, K, seed)
+            with threadpool_limits(limits=1, user_api="openmp"):
+                starts[name] = init_centers_widths(R, K, seeds[name])
             continue
         if name == "ncorr" and X.shape[1] > 1:
             weights = _ncorr_weights(X, R)
         elif name == "ncorr" and "power" in names:
             continue  # T == 1: 'ncorr' falls back to 'power', which runs anyway
+        elif "kmeans" in names and power_uniform:
+            continue
         else:
-            weights = _power_weights(X)
-            if "kmeans" in names and np.std(weights) < UNIFORM_CV * np.mean(weights):
-                continue
-        starts[name] = _weighted_start(R, K, seed, weights, w_lo, w_hi)
+            weights = _power_weights(power)
+        starts[name] = _weighted_start(R, K, seeds[name], weights, w_lo, w_hi)
     return starts
 
 
@@ -236,7 +246,11 @@ class TFA(BaseEstimator):
     threshold : float, default=1e-3
         Convergence threshold on the scaled change between iterations,
         ``max(max|dc| / L, max|dw| / w)`` with ``L = sqrt(max_sigma(R) / 2)``.
-        BrainIAK instead thresholds the raw largest change at 1.0.
+        BrainIAK instead thresholds the raw largest change at 1.0. With subsampling
+        (any ratio < 1 or a cap below the data size) the fresh sample of every
+        iteration keeps the change from settling, so the fit also stops when the
+        change has not reached a new minimum for 5 consecutive iterations
+        ("plateau").
     nlss_method : {'trf', 'dogbox'}, default='trf'
         ``scipy.optimize.least_squares`` method.
     nlss_loss : {'soft_l1', 'linear', 'huber', 'cauchy', 'arctan'}, default='soft_l1'
@@ -269,7 +283,9 @@ class TFA(BaseEstimator):
         T == 1), and start each width at ``4 / D`` times its cluster's weighted
         mean squared distance to the center. Weights use the standardized data.
         ``'auto'`` is ``('ncorr', 'power', 'kmeans')``; ``'power'`` is skipped
-        when its weights are uniform (it would repeat ``'kmeans'``). Ignored when
+        when ``sum_t X**2`` is uniform across voxels, as after per-voxel
+        z-scoring (it would repeat ``'kmeans'``). Each start gets its own fixed
+        K-means seed, so it is identical alone or within ``'auto'``. Ignored when
         a ``prior`` is passed to `fit`.
     backend : {'auto', 'numpy', 'cpu', 'torch', 'cuda', 'mps'}, default='auto'
         Compute engine for the data-term products; see
@@ -290,7 +306,11 @@ class TFA(BaseEstimator):
     n_iter_ : int
         Number of outer iterations run for the winning start.
     converged_ : bool
-        Whether the scaled change fell to ``threshold`` within ``max_iter``.
+        Whether the fit stopped before ``max_iter`` (``converged_reason_`` is not
+        ``'max_iter'``).
+    converged_reason_ : {'threshold', 'plateau', 'max_iter'}
+        Why the winning start stopped: the scaled change fell to ``threshold``,
+        it plateaued under subsampling, or ``max_iter`` was reached.
     cost_ : float
         Final objective of the winning start: ``0.5 * sum(rho(r**2))`` over the
         full-data residual ``r`` (with the prior penalties when a prior is given).
@@ -306,7 +326,8 @@ class TFA(BaseEstimator):
     Warns
     -----
     ConvergenceWarning
-        When the winning start reaches ``max_iter`` (>= 1) without converging.
+        When the winning start reaches ``max_iter`` (>= 1) without stopping on the
+        threshold or a plateau.
 
     Examples
     --------
@@ -405,11 +426,13 @@ class TFA(BaseEstimator):
         bnds: tuple[Array, Array],
         sizes: tuple[int, int],
         label: str,
-    ) -> tuple[Array, int, bool]:
-        """Outer loop from ``x``; returns the final x, iterations and convergence."""
+    ) -> tuple[Array, int, str]:
+        """Outer loop from ``x``; returns the final x, iterations and stop reason."""
         (V, T), (Vs, Ts) = X.shape, sizes
         K, D = self.K, R.shape[1]
         length = np.sqrt(max_sigma(R) / 2.0)
+        subsampled = Vs < V or Ts < T
+        best, stale = np.inf, 0
         for n_iter in range(1, self.max_iter + 1):
             vi = np.sort(rng.choice(V, Vs, replace=False)) if Vs < V else slice(None)
             ti = np.sort(rng.choice(T, Ts, replace=False)) if Ts < T else slice(None)
@@ -438,8 +461,11 @@ class TFA(BaseEstimator):
             if self.verbose:
                 print(f"TFA {label} iteration {n_iter}: scaled change {change:.6g}")
             if change <= self.threshold:
-                return x, n_iter, True
-        return x, self.max_iter, False
+                return x, n_iter, "threshold"
+            best, stale = (change, 0) if change < best else (best, stale + 1)
+            if subsampled and stale >= PLATEAU_PATIENCE:
+                return x, n_iter, "plateau"
+        return x, self.max_iter, "max_iter"
 
     def fit(self, X: ArrayLike, coords: ArrayLike, prior: Prior | None = None) -> "TFA":
         """Fit centers, widths and weights.
@@ -498,7 +524,7 @@ class TFA(BaseEstimator):
         runs = {}
         for name, (centers, widths) in starts.items():
             x0 = np.clip(np.concatenate([np.ravel(centers), np.ravel(widths)]), lb, ub)
-            x, n_iter, converged = self._iterate(
+            x, n_iter, reason = self._iterate(
                 X,
                 R,
                 x0,
@@ -510,10 +536,12 @@ class TFA(BaseEstimator):
                 name,
             )
             objective, W = self._objective(X, R, x, engine, full_prior)
-            runs[name] = (objective, x, W, n_iter, converged)
+            runs[name] = (objective, x, W, n_iter, reason)
         self.init_ = min(runs, key=lambda n: runs[n][0])
         self.init_objectives_ = {n: run[0] for n, run in runs.items()}
-        self.cost_, x, self.weights_, self.n_iter_, self.converged_ = runs[self.init_]
+        self.cost_, x, self.weights_, self.n_iter_, reason = runs[self.init_]
+        self.converged_reason_ = reason
+        self.converged_ = reason != "max_iter"
         if self.max_iter > 0 and not self.converged_:
             warnings.warn(
                 f"TFA did not converge in max_iter={self.max_iter} iterations "

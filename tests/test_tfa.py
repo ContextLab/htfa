@@ -1,6 +1,7 @@
 """Tests for the single-subject TFA estimator and data standardization."""
 
 import time
+import warnings
 
 import numpy as np
 import pytest
@@ -17,8 +18,8 @@ CENTER_TOL_3D = 0.04  # measured: 0.0164 (seed 0)
 WIDTH_RTOL_3D = 0.008  # measured: 0.00312 (seed 0)
 CENTER_TOL_2D = 0.03  # measured: 0.0120 (seed 0)
 WIDTH_RTOL_2D = 0.025  # measured: 0.0101 (seed 0)
-CENTER_TOL_SUB = 0.15  # measured: 0.0615 (seed 0)
-WIDTH_RTOL_SUB = 0.05  # measured: 0.0209 (seed 0)
+CENTER_TOL_SUB = 0.25  # measured: 0.100 (seed 0; stops on plateau after 20 iter)
+WIDTH_RTOL_SUB = 0.025  # measured: 0.00995 (seed 0)
 MIN_WEIGHT_R = 0.95  # brief: every matched weight row correlates at r > 0.95
 EXACT_ATOL = 1e-6  # layout/dtype invariance (controller ruling)
 IMPROVEMENT = (
@@ -26,6 +27,11 @@ IMPROVEMENT = (
 )
 TRUTH_OBJ_RTOL = 1e-3  # final vs truth-started objective; measured: 1.2e-5 (seed 0)
 NEGLIGIBLE_COV = 1e12  # prior (co)variance that makes the penalty negligible
+# (30,30) K=2 helper data, seed 0:
+VARIANT_CENTER_TOL = 0.1  # linear loss / ols weights; measured: 0.0452 (seed 0)
+VARIANT_WIDTH_RTOL = 0.03  # linear loss / ols weights; measured: 0.0133 (seed 0)
+RECON_STD_MAX = 1.0  # z-scored data have std 1; measured reconstruction: 0.395
+PRIOR_PULL_RATIO = 1e-5  # tight-prior / free distance to template; measured: 1.7e-6
 
 
 def _errors(centers, widths, truth):
@@ -59,6 +65,8 @@ def _fit_and_score(X, R, truth, **kwargs):
         K=truth["centers"].shape[0], standardize=False, random_state=0, **kwargs
     ).fit(X, R)
     print(f"fit time {time.perf_counter() - start:.2f} s")
+    assert model.converged_reason_ in ("threshold", "plateau")
+    assert model.converged_
     return _recovery_errors(model, truth)
 
 
@@ -97,8 +105,10 @@ def test_tfa_recovers_known_parameters_2d():
 
 def test_tfa_subsampling_still_recovers():
     X, R, truth = make_tfa_data((20, 20, 20), 100, K=8, noise=0.1, random_state=0)
-    # A fresh subsample every iteration keeps the scaled change above 1e-3.
-    with pytest.warns(ConvergenceWarning):
+    # A fresh subsample every iteration keeps the scaled change above 1e-3, so the
+    # fit stops on a plateau instead; it must not warn.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ConvergenceWarning)
         c_err, w_err, r = _fit_and_score(X, R, truth, voxel_ratio=0.25, tr_ratio=0.5)
     assert c_err < CENTER_TOL_SUB
     assert w_err < WIDTH_RTOL_SUB
@@ -182,6 +192,9 @@ def test_init_auto_records_objectives():
     single = TFA(K=2, standardize=False, random_state=0, max_iter=1, threshold=1e9)
     single.fit(X[:, :1], R)
     assert list(single.init_objectives_) == ["power", "kmeans"]
+    # Per-voxel z-scoring makes every sum_t X**2 equal T: 'power' is skipped.
+    zscored = TFA(K=2, random_state=0, max_iter=1, threshold=1e9).fit(X, R)
+    assert list(zscored.init_objectives_) == ["ncorr", "kmeans"]
     alone = TFA(K=2, init="ncorr", standardize=False, max_iter=0, random_state=0)
     assert list(alone.fit(X[:, :1], R).init_objectives_) == ["ncorr"]
     for bad in ("random", ["kmeans", "kmeans"], [], 3):
@@ -307,6 +320,18 @@ def test_standardize_modes():
         standardize_data(X, "zscore")
 
 
+@pytest.mark.parametrize("name", ["ncorr", "power", "kmeans"])
+def test_init_alone_matches_its_auto_candidate(name):
+    X, R, _ = _small_data()
+    kw = {"K": 2, "standardize": False, "random_state": 0}
+    auto = TFA(**kw).fit(X, R)
+    alone = TFA(init=name, **kw).fit(X, R)
+    print(name, "alone", alone.cost_, "in auto", auto.init_objectives_[name])
+    assert alone.cost_ == auto.init_objectives_[name]
+    if name == auto.init_:
+        np.testing.assert_array_equal(alone.centers_, auto.centers_)
+
+
 def test_tfa_standardized_path_runs():
     X, R, _ = _small_data()
     model = TFA(K=2, random_state=0).fit(5.0 + 3.0 * X, R)
@@ -318,7 +343,7 @@ def test_tfa_standardized_path_runs():
     assert np.all(x >= lb) and np.all(x <= ub)
     # reconstruct() is in the standardized space: same scale as the z-scored data.
     rec = model.reconstruct()
-    assert rec.shape == X.shape and np.std(rec) < 1.5
+    assert rec.shape == X.shape and np.std(rec) < RECON_STD_MAX
 
 
 def test_brainiak_bug_sampling_clip():
@@ -338,7 +363,7 @@ def test_tfa_fitted_attributes_and_factors():
     assert model.centers_.shape == (2, 2) and model.widths_.shape == (2,)
     assert model.weights_.shape == (2, X.shape[1])
     assert isinstance(model.n_iter_, int) and 1 <= model.n_iter_ <= model.max_iter
-    assert model.converged_ is True
+    assert model.converged_ is True and model.converged_reason_ == "threshold"
     assert isinstance(model.cost_, float) and model.cost_ > 0
     assert model.init_ in ("ncorr", "power", "kmeans")
     assert model.engine_ == "numpy"
@@ -385,6 +410,7 @@ def test_tfa_threshold_and_max_iter_control_stopping():
     with pytest.warns(ConvergenceWarning, match="did not converge in max_iter=2"):
         strict = TFA(K=2, threshold=0.0, max_iter=2, random_state=0).fit(X, R)
     assert strict.n_iter_ == 2 and not strict.converged_
+    assert strict.converged_reason_ == "max_iter"
 
 
 def test_tfa_linear_loss_and_ols():
@@ -393,7 +419,7 @@ def test_tfa_linear_loss_and_ols():
         model = TFA(K=2, standardize=False, random_state=0, **kw).fit(X, R)
         c_err, w_err = _errors(model.centers_, model.widths_, truth)
         print(kw, "max center err", c_err, "median width rel err", w_err)
-        assert c_err < CENTER_TOL_2D * 5 and w_err < WIDTH_RTOL_2D * 5
+        assert c_err < VARIANT_CENTER_TOL and w_err < VARIANT_WIDTH_RTOL
 
 
 def test_tfa_with_prior_initializes_from_and_shrinks_to_template():
@@ -412,7 +438,7 @@ def test_tfa_with_prior_initializes_from_and_shrinks_to_template():
     assert prior.scale == 123.0  # the caller's prior is not modified
     assert one.init_ == "prior" and list(one.init_objectives_) == ["prior"]
     # Initialized at the template: factors stay in template order.
-    assert np.all(np.linalg.norm(one.centers_ - prior.centers, axis=1) < 3.0)
+    np.testing.assert_array_equal(match_factors(prior.centers, one.centers_), [0, 1])
     free = TFA(**kw).fit(X, R)
     tight = Prior(
         prior.centers, prior.widths, 1e-8 * prior.centers_cov, prior.widths_var, 1.0
@@ -422,7 +448,7 @@ def test_tfa_with_prior_initializes_from_and_shrinks_to_template():
     d_free = np.linalg.norm(free.centers_[perm] - prior.centers, axis=1)
     d_pulled = np.linalg.norm(pulled.centers_ - prior.centers, axis=1)
     print("distance to template: free", d_free, "with tight prior", d_pulled)
-    assert np.all(d_pulled < 0.1 * d_free)
+    assert np.all(d_pulled < PRIOR_PULL_RATIO * d_free)
 
 
 def test_tfa_verbose_reports_iterations(capsys):
