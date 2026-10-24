@@ -85,6 +85,7 @@ Optional dependencies are installed with pip the first time they are needed, usi
 
 ```python
 import htfa
+
 htfa.set_autoinstall(False)
 ```
 
@@ -98,7 +99,7 @@ from htfa.synthetic import make_tfa_data, match_factors
 
 # Simulate X = F @ W + noise: 20 x 20 pixel grid, 50 time points, 4 factors
 X, R, truth = make_tfa_data(grid_shape=(20, 20), n_samples=50, K=4, random_state=0)
-print(X.shape, R.shape)                      # (400, 50) (400, 2)
+print(X.shape, R.shape)  # (400, 50) (400, 2)
 print(truth["centers"].shape, truth["widths"].shape, truth["weights"].shape)
 
 # Match a shuffled copy of the true centers back to the originals
