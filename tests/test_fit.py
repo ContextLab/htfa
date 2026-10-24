@@ -11,7 +11,6 @@ from htfa.synthetic import make_htfa_data, make_tfa_data
 
 TFA_FAST = dict(standardize=False, random_state=0)
 FAST = dict(max_global_iter=6, max_local_iter=10, **TFA_FAST)
-# measured: filled in from the first green run (see comments at each use)
 NIFTI_GLOBAL_CENTER_TOL_MM = 0.6  # measured: 0.212 (max over 3 factors, seed 1)
 PNG_CENTER_TOL_PX = 1.5  # measured: 0.593 (max over 3 factors, seed 2)
 
@@ -24,6 +23,8 @@ def test_fit_numpy_single_subject_returns_tfa():
     assert res.reconstruct().shape == X.shape
 
 
+# HTFA is deliberately stopped after a few iterations to keep the test fast
+@pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
 def test_fit_numpy_multi_subject_returns_htfa():
     Xs, Rs, _ = make_htfa_data(2, (8, 8, 8), n_samples=20, K=2, random_state=0)
     res = fit(Xs, K=2, coords=Rs, **FAST)
@@ -44,6 +45,7 @@ def _write_nifti_folder(tmp_path, grid, affine, Xs):
         nib.save(img, tmp_path / f"sub-{i:02d}.nii.gz")
 
 
+@pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
 def test_fit_nifti_folder_end_to_end(tmp_path):
     grid = (12, 12, 12)
     Xs, Rs, truth = make_htfa_data(
@@ -80,3 +82,22 @@ def test_fit_png_stack_end_to_end(tmp_path):
     print("center errors (px):", err)
     assert err.max() < PNG_CENTER_TOL_PX
     assert res.to_image(0, "factors").shape == (*grid, 3)
+
+
+def test_fit_single_subject_rejects_htfa_kwarg():
+    X, R, _ = make_tfa_data((6, 6, 6), n_samples=10, K=2, random_state=0)
+    with pytest.raises(TypeError, match="max_global_iter"):
+        fit(X, K=2, coords=R, max_global_iter=3)
+
+
+def test_public_api():
+    import htfa
+
+    names = [
+        "HTFA", "HTFAResults", "Subject", "TFA", "dynamic_connectivity", "fit",
+        "isfc", "load", "make_htfa_data", "make_tfa_data", "set_autoinstall",
+        "static_connectivity",
+    ]  # fmt: skip
+    for name in names:
+        assert hasattr(htfa, name), name
+        assert name in htfa.__all__, name

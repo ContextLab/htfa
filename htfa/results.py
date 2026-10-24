@@ -144,6 +144,9 @@ class HTFAResults:
                 colors = plt.get_cmap("Spectral")(np.linspace(0, 1, len(self.centers)))
                 for c, col in zip(self.centers, colors, strict=True):
                     disp.add_markers(c, marker_color=[col], marker_size=20)
+                disp.add_markers(
+                    self.global_centers, marker_color="black", marker_size=50
+                )
             else:
                 disp = plotting.plot_connectome(
                     none, self.centers[subject], axes=ax, colorbar=False, **kwargs
@@ -155,10 +158,10 @@ class HTFAResults:
         if glob:
             colors = plt.get_cmap("Spectral")(np.linspace(0, 1, len(self.centers)))
             for c, col in zip(self.centers, colors, strict=True):
-                ax.scatter(c[:, 1], c[:, 0], color=[col], s=20)
+                ax.scatter(c[:, 1], c[:, 0], color=[col], s=20, zorder=3)
             gc = self.global_centers
             assert gc is not None
-            ax.scatter(gc[:, 1], gc[:, 0], c="k", s=50)
+            ax.scatter(gc[:, 1], gc[:, 0], c="k", s=50, zorder=4)
         else:
             ax.scatter(
                 self.centers[subject][:, 1], self.centers[subject][:, 0], c="r", s=30

@@ -1,13 +1,17 @@
 """Tests for HTFAResults: factors, reconstruction, export, connectivity, plots."""
 
 import matplotlib
+import matplotlib.pyplot as plt
 
 matplotlib.use("Agg")
+
+import warnings  # noqa: E402
 
 import nibabel as nib  # noqa: E402
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 from PIL import Image  # noqa: E402
+from sklearn.exceptions import ConvergenceWarning  # noqa: E402
 
 from htfa import fit  # noqa: E402
 from htfa.synthetic import make_htfa_data, make_tfa_data  # noqa: E402
@@ -17,6 +21,19 @@ AFFINE = np.array([[2.0, 0, 0, -10], [0, 2.0, 0, -12], [0, 0, 2.0, -8], [0, 0, 0
 OPTS = dict(max_global_iter=3, max_local_iter=5, standardize=False, random_state=0, K=3)
 
 
+def _fit_quiet(*args, **kwargs):
+    """Fit with few iterations on purpose (speed); silence the expected warning."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        return fit(*args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _close_figures():
+    yield
+    plt.close("all")
+
+
 @pytest.fixture(scope="module")
 def res3d(tmp_path_factory):
     d = tmp_path_factory.mktemp("nii")
@@ -24,14 +41,14 @@ def res3d(tmp_path_factory):
     Xs, _, _ = make_htfa_data(2, grid, n_samples=40, K=3, noise=0.05, random_state=1)
     for i, X in enumerate(Xs):
         nib.save(nib.Nifti1Image(X.reshape(*grid, -1), AFFINE), d / f"s{i}.nii.gz")
-    return fit(d, **OPTS)
+    return _fit_quiet(d, **OPTS)
 
 
 @pytest.fixture(scope="module")
 def res2d():
     """Two 2D subjects given as (V, T) + coords (no image space)."""
     Xs, Rs, _ = make_htfa_data(2, (14, 14), n_samples=30, K=3, random_state=3)
-    return fit(Xs, coords=Rs, **OPTS)
+    return _fit_quiet(Xs, coords=Rs, **OPTS)
 
 
 @pytest.fixture(scope="module")
