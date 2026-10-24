@@ -127,6 +127,9 @@ For subject *s* with voxel coordinates `R` (V×D, D=2 or 3) and data `X` (V×T):
 6. `np.random.choice(n, max_num_voxel, replace=False)` crashes when there are fewer
    voxels than the cap. Sample sizes are now clipped to what is available.
 7. The factor kernel is hardcoded to 3D. It now works for any D.
+8. `utils.from_tri_2_sym` fills only the upper triangle of the (co)variance matrix and
+   never mirrors it, so the HTFA center prior uses `triu(Σ)⁻¹` instead of `Σ⁻¹`. Found
+   by the BrainIAK cross-check (Task 10). Full symmetric covariances are now used.
 
 ## Performance design
 
