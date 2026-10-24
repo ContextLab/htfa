@@ -23,10 +23,6 @@ pytestmark = pytest.mark.brainiak
 brainiak_tfa = pytest.importorskip(
     "brainiak.factoranalysis.tfa", reason="the BrainIAK cross-check needs brainiak"
 )
-brainiak_htfa = pytest.importorskip(
-    "brainiak.factoranalysis.htfa",
-    reason="BrainIAK's HTFA needs brainiak with mpi4py",
-)
 brainiak_utils = pytest.importorskip(
     "brainiak.utils.utils", reason="the BrainIAK cross-check needs brainiak"
 )
@@ -37,8 +33,25 @@ RESIDUAL_RTOL = 1e-5
 FACTORS_RTOL = 1e-12
 # Ours may be at most 10% worse than BrainIAK on the same data (spec).
 NOT_WORSE = 1.1
+# Absolute bound on our max center error (mm); measured ~0.02 (TFA), ~0.06 (HTFA).
+MAX_CENTER_ERR = 0.1
 # Small problems keep each BrainIAK fit to seconds (a 20^3 grid, K=8 took ~280 s).
 GRID, K, T = (12, 12, 12), 4, 50
+
+
+def _brainiak_htfa():
+    """BrainIAK's HTFA module; skips when mpi4py or its MPI library is missing.
+
+    Importing mpi4py without an MPI library raises RuntimeError, not ImportError,
+    which ``pytest.importorskip`` would not turn into a skip.
+    """
+    try:
+        return pytest.importorskip(
+            "brainiak.factoranalysis.htfa",
+            reason="BrainIAK's HTFA needs brainiak with mpi4py",
+        )
+    except RuntimeError as err:
+        pytest.skip(f"BrainIAK's HTFA needs an MPI library for mpi4py: {err}")
 
 
 def _max_center_error(est: np.ndarray, true: np.ndarray) -> float:
@@ -180,6 +193,7 @@ def test_tfa_recovery_not_worse_than_brainiak(seed: int) -> None:
         f"{ours.init_}), BrainIAK {err_theirs:.4f} ({t_theirs:.1f} s)"
     )
     assert err_ours <= NOT_WORSE * err_theirs
+    assert err_ours < MAX_CENTER_ERR
 
 
 # BrainIAK's own NumPy 1.25 deprecation (size-1 array to scalar), not ours.
@@ -188,6 +202,7 @@ def test_tfa_recovery_not_worse_than_brainiak(seed: int) -> None:
 )
 @pytest.mark.parametrize("seed", [0, 1, 2])
 def test_htfa_global_recovery_not_worse_than_brainiak(seed: int) -> None:
+    brainiak_htfa = _brainiak_htfa()
     Xs, Rs, truth = make_htfa_data(3, GRID, T, K=K, noise=0.1, random_state=seed)
     target = np.mean(truth["centers"], axis=0)
     V = Xs[0].shape[0]
@@ -211,3 +226,4 @@ def test_htfa_global_recovery_not_worse_than_brainiak(seed: int) -> None:
         f"{ours.n_iter_} global iter), BrainIAK {err_theirs:.4f} ({t_theirs:.1f} s)"
     )
     assert err_ours <= NOT_WORSE * err_theirs
+    assert err_ours < MAX_CENTER_ERR
