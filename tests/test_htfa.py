@@ -16,6 +16,7 @@ GLOBAL_CENTER_TOL_MM = 0.3  # measured: 0.119 (seed 0, mixed T; 3D 0.050, 2D 0.0
 LOCAL_CENTER_TOL_MM = 0.1  # measured: 0.034 (seed 0, 2D subject 0)
 LOCAL_CENTER_TOL_T1_MM = 1.0  # measured: 0.369 (seed 0, the T=1 subject)
 WEIGHT_MIN_R = 0.995  # measured: 0.9981 (seed 0, 3D subject 3); 1 - r has 2.5x room
+PARALLEL_RTOL = 1e-10  # measured: 1.04e-13 max relative diff, serial vs n_jobs=2 (CI)
 
 
 def test_map_update_matches_closed_form() -> None:
@@ -138,11 +139,15 @@ def test_htfa_parallel_equals_serial() -> None:
     )
     a = HTFA(K=4, standardize=False, n_jobs=1, random_state=3).fit(Xs, Rs)
     b = HTFA(K=4, standardize=False, n_jobs=2, random_state=3).fit(Xs, Rs)
-    np.testing.assert_array_equal(a.global_centers_, b.global_centers_)
-    np.testing.assert_array_equal(a.global_widths_, b.global_widths_)
+    # Workers run BLAS with fewer threads than the serial path, so reductions are
+    # ordered differently: results agree to rounding, not bit for bit (measured:
+    # max relative difference 1e-13 on ubuntu CI).
+    close = {"rtol": PARALLEL_RTOL, "atol": 0.0}
+    np.testing.assert_allclose(a.global_centers_, b.global_centers_, **close)
+    np.testing.assert_allclose(a.global_widths_, b.global_widths_, **close)
     for s in range(3):
-        np.testing.assert_array_equal(a.centers_[s], b.centers_[s])
-        np.testing.assert_array_equal(a.weights_[s], b.weights_[s])
+        np.testing.assert_allclose(a.centers_[s], b.centers_[s], **close)
+        np.testing.assert_allclose(a.weights_[s], b.weights_[s], **close)
 
 
 def test_htfa_different_voxel_counts_per_subject() -> None:
