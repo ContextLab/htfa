@@ -1,208 +1,96 @@
-# Poetry pyproject.toml: https://python-poetry.org/docs/pyproject/
 [build-system]
-requires = ["poetry_core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
 
-[tool.poetry]
+[project]
 name = "htfa"
 version = "0.1.0"
 description = "Hierarchical Topographic Factor Analysis"
 readme = "README.md"
-authors = ["Contextual Dynamics Lab <contextualdynamics@gmail.com>"]
+requires-python = ">=3.10"
 license = "MIT"
-repository = "https://github.com/jeremymanning/htfa"
-homepage = "https://github.com/jeremymanning/htfa"
-
-# Keywords description https://python-poetry.org/docs/pyproject/#keywords
-keywords = [
-  "neuroimaging", 
-  "factor-analysis", 
-  "dimensionality-reduction", 
-  "neuroscience", 
-  "fmri", 
-  "brain-networks"
-]
-
-# Pypi classifiers: https://pypi.org/classifiers/
+license-files = ["LICENSE"]
+authors = [{ name = "Contextual Dynamics Lab", email = "contextualdynamics@gmail.com" }]
+keywords = ["neuroimaging", "factor-analysis", "dimensionality-reduction", "neuroscience", "fmri", "brain-networks"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
-  "Intended Audience :: Developers",
   "Operating System :: OS Independent",
   "Topic :: Scientific/Engineering",
   "Topic :: Scientific/Engineering :: Information Analysis",
-  "Topic :: Software Development :: Libraries :: Python Modules",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "scikit-learn>=1.3",
+  "nibabel>=5",
+  "joblib>=1.3",
+  "threadpoolctl>=3",
+  "torch>=2.2; sys_platform=='darwin' and platform_machine=='arm64'",
 ]
 
+[project.optional-dependencies]
+plot = ["matplotlib>=3.7", "nilearn>=0.10"]
+images = ["pillow>=10", "tifffile>=2023.1"]
+nilearn = ["nilearn>=0.10"]
+gpu = ["torch>=2.2"]
+dev = [
+  "pytest>=8",
+  "pytest-cov>=5",
+  "ruff>=0.5",
+  "mypy>=1.10",
+  "build>=1",
+  "twine>=5",
+  "nilearn>=0.10",
+  "matplotlib>=3.7",
+  "pillow>=10",
+  "tifffile>=2023.1",
+]
+docs = [
+  "sphinx>=7",
+  "furo",
+  "numpydoc",
+  "sphinx-gallery",
+  "nbsphinx",
+  "ipykernel",
+  "nbconvert",
+  "matplotlib>=3.7",
+  "nilearn>=0.10",
+  "pillow>=10",
+  "tifffile>=2023.1",
+]
 
+[project.urls]
+Homepage = "https://github.com/ContextLab/htfa"
+Repository = "https://github.com/ContextLab/htfa"
 
-[tool.poetry.dependencies]
-python = "^3.10"
-numpy = "^2.0.0"
-scipy = "^1.14.0"
-scikit-learn = "^1.5.0"
-nilearn = "^0.12.0"
-nibabel = "^5.0.0"
-pybids = "^0.19.0"
-pandas = "^2.0.0"
-# importlib_metadata not needed for Python 3.10+
-[tool.poetry.group.dev.dependencies]
-bandit = "^1.7.1"
-black = "^25.0.0"
-darglint = "^1.8.1"
-isort = {extras = ["colors"], version = "^6.0.0"}
-mypy = "^1.18.1"
-mypy-extensions = "^1.0.0"
-pre-commit = "^4.0.0"
-pydocstyle = "^6.1.1"
-pylint = "^3.3.0"
-pytest = "^8.4.0"
-pyupgrade = "^3.1.0"
-safety = "^3.6.1"
-coverage = "^7.6.0"
-genbadge = "^1.1.0"
-pytest-html = "^4.0.0"
-pytest-cov = "^7.0.0"
-jupyter = "^1.0.0"
-matplotlib = "^3.9.0"
-seaborn = "^0.13.0"
-plotly = "^6.0.0"
-sphinx = "^8.1.3"
-sphinx-rtd-theme = "^3.0.0"
-nbsphinx = "^0.9.0"
-
-[tool.poetry.group.test.dependencies]
-pytest-benchmark = "^4.0.0"
-pytest-xdist = "^3.5.0"
-pytest-timeout = "^2.2.0"
-psutil = "^6.0.0"
-radon = "^6.0.0"
-ruff = "^0.13.0"
-
-[tool.poetry.group.docs.dependencies]
-sphinx = "^8.1.3"
-sphinx-rtd-theme = "^3.0.0"
-sphinx-autodoc-typehints = "^3.0.1"
-myst-parser = "^4.0.1"
-
-[tool.poetry.group.benchmark.dependencies]
-pytest-benchmark = "^4.0.0"
-memory-profiler = "^0.61.0"
-line-profiler = "^4.0.0"
-
-[tool.black]
-# https://github.com/psf/black
-target-version = ["py310"]
-line-length = 88
-color = true
-
-exclude = '''
-/(
-    \.git
-    | \.hg
-    | \.mypy_cache
-    | \.tox
-    | \.venv
-    | _build
-    | buck-out
-    | build
-    | dist
-    | env
-    | venv
-)/
-'''
-
-[tool.isort]
-# https://github.com/timothycrosley/isort/
-py_version = 310
-line_length = 88
-
-known_typing = ["typing", "types", "typing_extensions", "mypy", "mypy_extensions"]
-sections = ["FUTURE", "TYPING", "STDLIB", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
-include_trailing_comma = true
-profile = "black"
-multi_line_output = 3
-indent = 4
-color_output = true
-
-[tool.mypy]
-# https://mypy.readthedocs.io/en/latest/config_file.html#using-a-pyproject-toml-file
-python_version = 3.10
-pretty = true
-show_traceback = true
-color_output = true
-
-allow_redefinition = false
-check_untyped_defs = true
-disallow_any_generics = true
-disallow_incomplete_defs = true
-ignore_missing_imports = true
-implicit_reexport = false
-no_implicit_optional = true
-show_column_numbers = true
-show_error_codes = true
-show_error_context = true
-strict_equality = true
-strict_optional = true
-warn_no_return = true
-warn_redundant_casts = true
-warn_return_any = true
-warn_unreachable = true
-warn_unused_configs = true
-warn_unused_ignores = true
-
+[tool.setuptools.packages.find]
+include = ["htfa*"]
 
 [tool.pytest.ini_options]
-# https://docs.pytest.org/en/6.2.x/customize.html#pyproject-toml
-# Directories that are not visited by pytest collector:
-norecursedirs =["hooks", "*.egg", ".eggs", "dist", "build", "docs", ".tox", ".git", "__pycache__"]
-doctest_optionflags = ["NUMBER", "NORMALIZE_WHITESPACE", "IGNORE_EXCEPTION_DETAIL"]
-
-# Markers for test categorization
+testpaths = ["tests"]
+addopts = "-m 'not brainiak and not network'"
 markers = [
-  "unit: Unit tests for individual components",
-  "integration: Integration tests for component interactions",
-  "e2e: End-to-end tests for complete workflows",
-  "slow: Slow tests that should be skipped in CI",
-  "benchmark: Performance benchmark tests",
-  "slow: Tests that take >5 seconds to run",
-  "epic_core: Tests for core HTFA functionality",
-  "epic_scalability: Tests for scalability features",
-  "epic_deployment: Tests for deployment infrastructure",
-  "epic_integration: Tests for ecosystem integration",
-  "gpu: Tests requiring GPU resources",
-  "hpc: Tests requiring HPC resources",
+  "brainiak: compares against the reference BrainIAK implementation (requires brainiak)",
+  "network: requires network access (downloads data)",
+  "gpu: requires a GPU backend (torch with CUDA or MPS)",
+  "slow: long-running test",
 ]
 
-# Extra options:
-addopts = [
-  "--strict-markers",
-  "--tb=short",
-  "--doctest-modules",
-  "--doctest-continue-on-failure",
-]
+[tool.ruff]
+line-length = 88
 
-# Benchmark plugin settings
-benchmark_only = false
-benchmark_disable = false
-benchmark_max_time = 60
-benchmark_min_rounds = 5
-benchmark_sort = "mean"
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "NPY"]
 
-[tool.coverage.run]
-source = ["tests"]
-
-[coverage.paths]
-source = "htfa"
-
-[coverage.run]
-branch = true
-
-[coverage.report]
-fail_under = 50
-show_missing = true
+[tool.mypy]
+files = ["htfa"]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = true

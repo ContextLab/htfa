@@ -8,74 +8,41 @@ Hierarchical Topographic Factor Analysis (HTFA) - A lightweight Python implement
 
 ## Commands
 
-### Development
 ```bash
-# Install dependencies and setup environment
-make install
+make install   # uv venv (.venv, Python 3.12) + pip install -e ".[dev,docs]"
+make test      # .venv/bin/pytest -q
+make lint      # ruff check, ruff format --check, mypy
+make docs      # sphinx-build -> docs/_build/html
 
-# Run full test suite with coverage
-make test
-
-# Run specific test
-poetry run pytest tests/unit/test_basic.py::test_tfa_initialization -xvs
-
-# Format code (auto-fix)
-make codestyle  # or make formatting
-
-# Lint and check code quality (no auto-fix)
-make lint  # Runs: test, check-codestyle, mypy, check-safety
-
-# Individual checks
-make check-codestyle  # Style checking only
-make mypy            # Type checking
-make check-safety     # Security scan
+# Run a specific test
+.venv/bin/pytest tests/test_package.py::test_version -xvs
 ```
 
-### Before Committing
-Always run: `make lint`
+Markers: `brainiak`, `network` (deselected by default), `gpu`, `slow`.
+Run `make lint` and `make test` before committing.
 
 ## Architecture
 
-### Core Algorithm Structure
 ```
 htfa/
-├── core/
-│   ├── tfa.py     # Base TFA with K-means init, factor estimation
-│   └── htfa.py    # Hierarchical extension, multi-subject analysis
-├── htfa/          # Advanced implementations
-│   ├── optimization.py  # Adam, ALS, mini-batch optimizers
-│   ├── core.py         # Abstract backend interface
-│   └── backends/       # JAX/PyTorch acceleration
-├── bids.py        # BIDS dataset integration
-├── fit.py         # Main API entry point (htfa.fit_bids)
-├── results.py     # HTFAResults with plotting/NIfTI export
-└── validation.py  # Input validation framework
+├── __init__.py       # public API, __version__
+├── _kernels.py       # numerical kernels (RBF factors, weights, objective)
+├── _engines.py       # compute engines (NumPy / torch)
+├── _lazy.py          # lazy optional-dependency imports
+├── tfa.py            # single-subject TFA
+├── htfa.py           # hierarchical multi-subject HTFA
+├── io.py             # NIfTI / image loading
+├── fit.py            # main API entry point
+├── results.py        # results container, plotting, export
+├── connectivity.py   # factor-level connectivity
+└── synthetic.py      # synthetic data generation
+tests/                # pytest suite (real implementations, no mocks)
+docs/                 # Sphinx documentation
+examples/             # example scripts / gallery
 ```
 
-### Key Design Patterns
-
-1. **Scikit-learn Interface**: All estimators inherit from `BaseEstimator`
-2. **Factory Pattern**: `fit.py` auto-detects input type (BIDS vs numpy)
-3. **Strategy Pattern**: Swappable optimization backends (JAX/PyTorch/NumPy)
-4. **Builder Pattern**: HTFAResults incrementally builds visualization/export
-
-### Algorithm Flow
-
-1. **TFA** (single subject):
-   - K-means initialization on spatial coordinates
-   - Iterative factor/weight estimation
-   - Ridge regression for weights
-
-2. **HTFA** (multi-subject):
-   - Initialize per-subject TFA models
-   - Compute global template (average factors)
-   - Hierarchical optimization with MAP estimation
-   - Factor matching across subjects
-
-### Key Dependencies
-- Core: `numpy`, `scipy`, `scikit-learn`
-- Neuroimaging: `nilearn`, `nibabel`, `pybids`
-- Visualization: `matplotlib` (required), `seaborn`, `plotly` (dev)
+Dependencies: numpy, scipy, scikit-learn, nibabel, joblib, threadpoolctl (torch on
+Apple Silicon). Extras: `plot`, `images`, `nilearn`, `gpu`, `dev`, `docs`.
 
 ## Testing Strategy
 
