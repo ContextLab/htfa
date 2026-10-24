@@ -1,0 +1,21 @@
+name: brainiak
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  crosscheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv -p 3.11 .venv-brainiak
+      # BrainIAK 0.12's HTFA errors on NumPy >= 2.4 (size-1 array to scalar).
+      - run: VIRTUAL_ENV=.venv-brainiak uv pip install -e ".[dev]" brainiak "numpy<2.4"
+      - run: .venv-brainiak/bin/pytest -m brainiak -v -s
