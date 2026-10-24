@@ -2,7 +2,7 @@
 
 import dataclasses
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
 import numpy as np
@@ -275,7 +275,8 @@ class TFA(BaseEstimator):
         on high-variance data.
     init : {'auto', 'ncorr', 'power', 'kmeans'} or sequence of those, default='auto'
         Candidate starts; each is fitted on identical subsamples and the one with
-        the lowest final objective wins. ``'kmeans'`` is BrainIAK's start
+        the lowest full-data objective wins (after ``n_screen_iter`` iterations;
+        see there). ``'kmeans'`` is BrainIAK's start
         (K-means++ on the coordinates, widths ``max_sigma(R)``). ``'power'`` and
         ``'ncorr'`` run K-means++ weighted per voxel by
         ``clip(sum_t X**2 - median, 0)`` and by the squared positive mean
@@ -287,6 +288,17 @@ class TFA(BaseEstimator):
         z-scoring (it would repeat ``'kmeans'``). Each start gets its own fixed
         K-means seed, so it is identical alone or within ``'auto'``. Ignored when
         a ``prior`` is passed to `fit`.
+    n_screen_iter : int, default=0
+        With several candidate starts and ``n_screen_iter > 0``, run each start
+        for this many iterations, keep the one with the lowest full-data
+        objective and continue only that one to convergence (about 1/3 to 2/3 of
+        the time of full fits). ``0`` fits every candidate to convergence and
+        compares final objectives. Measured with 3 and 5 (`make_tfa_data` 3D
+        20^3, K=8 and 2D 40^2, K=6, T=100, seeds 0-5): on raw data screening
+        kept the full fits' winner every time, with identical final centers; on
+        per-voxel z-scored data it picked a different start in 6 of 12 cases,
+        where two starts had reached the same optimum (objectives within 1e-5
+        relative, matched centers within 0.03).
     backend : {'auto', 'numpy', 'cpu', 'torch', 'cuda', 'mps'}, default='auto'
         Compute engine for the data-term products; see
         `htfa._engines.select_engine`.
@@ -317,7 +329,9 @@ class TFA(BaseEstimator):
     init_ : str
         Name of the winning start (``'prior'`` when a prior was given).
     init_objectives_ : dict of str to float
-        Final objective of every candidate start that was run.
+        Full-data objective of every candidate start that was run: final for the
+        winner, and after ``n_screen_iter`` iterations for the others (final for
+        all with ``n_screen_iter=0`` or a single start).
     engine_ : str
         Name of the compute engine used.
     coords_ : ndarray, shape (V, D)
@@ -358,6 +372,7 @@ class TFA(BaseEstimator):
         max_trs: int | None = None,
         standardize: str | bool = "auto",
         init: str | Sequence[str] = "auto",
+        n_screen_iter: int = 0,
         backend: str = "auto",
         random_state: int | np.random.Generator | None = None,
         verbose: bool = False,
@@ -377,6 +392,7 @@ class TFA(BaseEstimator):
         self.max_trs = max_trs
         self.standardize = standardize
         self.init = init
+        self.n_screen_iter = n_screen_iter
         self.backend = backend
         self.random_state = random_state
         self.verbose = verbose
@@ -395,6 +411,12 @@ class TFA(BaseEstimator):
             raise ValueError(f"K={K} must be smaller than the number of voxels ({V})")
         if self.max_iter < 0:
             raise ValueError(f"max_iter must be >= 0, got {self.max_iter}")
+        if not isinstance(self.n_screen_iter, (int, np.integer)) or (
+            self.n_screen_iter < 0
+        ):
+            raise ValueError(
+                f"n_screen_iter must be an integer >= 0, got {self.n_screen_iter!r}"
+            )
         if self.weight_method not in ("rr", "ols"):
             raise ValueError(
                 f"weight method must be 'rr' or 'ols', got {self.weight_method!r}"
@@ -426,8 +448,12 @@ class TFA(BaseEstimator):
         bnds: tuple[Array, Array],
         sizes: tuple[int, int],
         label: str,
-    ) -> tuple[Array, int, str]:
-        """Outer loop from ``x``; returns the final x, iterations and stop reason."""
+    ) -> Iterator[tuple[Array, int, str | None]]:
+        """Outer loop from ``x``, one iteration per step.
+
+        Yields ``(x, n_iter, reason)`` after every iteration; ``reason`` is
+        ``None`` until the last one, which carries the stop reason.
+        """
         (V, T), (Vs, Ts) = X.shape, sizes
         K, D = self.K, R.shape[1]
         length = np.sqrt(max_sigma(R) / 2.0)
@@ -461,11 +487,13 @@ class TFA(BaseEstimator):
             if self.verbose:
                 print(f"TFA {label} iteration {n_iter}: scaled change {change:.6g}")
             if change <= self.threshold:
-                return x, n_iter, "threshold"
+                yield x, n_iter, "threshold"
+                return
             best, stale = (change, 0) if change < best else (best, stale + 1)
             if subsampled and stale >= PLATEAU_PATIENCE:
-                return x, n_iter, "plateau"
-        return x, self.max_iter, "max_iter"
+                yield x, n_iter, "plateau"
+                return
+            yield x, n_iter, "max_iter" if n_iter == self.max_iter else None
 
     def fit(
         self,
@@ -540,10 +568,12 @@ class TFA(BaseEstimator):
             starts = {"prior": (prior.centers, prior.widths)}
         else:
             starts = _initial_starts(X, R, K, names, rng, lb[-1], ub[-1])
-        runs = {}
+        runs: dict[str, tuple[Array, int, str | None]] = {}
+        loops = {}
         for name, (centers, widths) in starts.items():
             x0 = np.clip(np.concatenate([np.ravel(centers), np.ravel(widths)]), lb, ub)
-            x, n_iter, reason = self._iterate(
+            runs[name] = (x0, 0, None if self.max_iter > 0 else "max_iter")
+            loops[name] = self._iterate(
                 X,
                 R,
                 x0,
@@ -554,11 +584,27 @@ class TFA(BaseEstimator):
                 sizes,
                 name,
             )
-            objective, W = self._objective(X, R, x, engine, full_prior)
-            runs[name] = (objective, x, W, n_iter, reason)
-        self.init_ = min(runs, key=lambda n: runs[n][0])
-        self.init_objectives_ = {n: run[0] for n, run in runs.items()}
-        self.cost_, x, self.weights_, self.n_iter_, reason = runs[self.init_]
+
+        def advance(name: str, n_steps: int) -> None:
+            for _ in range(n_steps):
+                if runs[name][2] is not None:
+                    return
+                runs[name] = next(loops[name])
+
+        def objective(name: str) -> tuple[float, Array]:
+            return self._objective(X, R, runs[name][0], engine, full_prior)
+
+        screen = self.n_screen_iter if len(starts) > 1 else 0
+        for name in starts:
+            advance(name, screen if screen > 0 else self.max_iter)
+        scores = {name: objective(name) for name in starts}
+        self.init_ = min(scores, key=lambda n: scores[n][0])
+        if screen > 0:
+            advance(self.init_, self.max_iter)
+            scores[self.init_] = objective(self.init_)
+        self.init_objectives_ = {n: score[0] for n, score in scores.items()}
+        self.cost_, self.weights_ = scores[self.init_]
+        x, self.n_iter_, reason = runs[self.init_]
         self.converged_reason_ = reason
         self.converged_ = reason != "max_iter"
         if self.max_iter > 0 and not self.converged_:

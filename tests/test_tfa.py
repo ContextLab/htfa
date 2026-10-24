@@ -324,12 +324,37 @@ def test_standardize_modes():
 def test_init_alone_matches_its_auto_candidate(name):
     X, R, _ = _small_data()
     kw = {"K": 2, "standardize": False, "random_state": 0}
-    auto = TFA(**kw).fit(X, R)
+    auto = TFA(n_screen_iter=0, **kw).fit(X, R)
     alone = TFA(init=name, **kw).fit(X, R)
     print(name, "alone", alone.cost_, "in auto", auto.init_objectives_[name])
     assert alone.cost_ == auto.init_objectives_[name]
     if name == auto.init_:
         np.testing.assert_array_equal(alone.centers_, auto.centers_)
+
+
+def test_screening_keeps_the_full_multistart_winner():
+    X, R, _ = _small_data()
+    kw = {"K": 2, "standardize": False, "random_state": 0}
+    full = TFA(n_screen_iter=0, **kw).fit(X, R)
+    screened = TFA(n_screen_iter=3, **kw).fit(X, R)
+    print("full", full.init_objectives_, "screened", screened.init_objectives_)
+    assert screened.init_ == full.init_
+    # The winner continues from its screened state: the same trajectory, bit for bit.
+    np.testing.assert_array_equal(screened.centers_, full.centers_)
+    np.testing.assert_array_equal(screened.weights_, full.weights_)
+    assert screened.cost_ == full.cost_ == screened.init_objectives_[screened.init_]
+    assert screened.n_iter_ == full.n_iter_
+    for name, objective in screened.init_objectives_.items():
+        if name == screened.init_:
+            continue
+        # A screened-out candidate's objective is the one after 3 iterations.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ConvergenceWarning)
+            short = TFA(init=name, max_iter=3, **kw).fit(X, R)
+        assert objective == short.cost_
+        assert objective > screened.cost_
+    with pytest.raises(ValueError, match="n_screen_iter must be an integer >= 0"):
+        TFA(K=2, n_screen_iter=-1).fit(X, R)
 
 
 def test_tfa_standardized_path_runs():
@@ -392,13 +417,13 @@ def test_tfa_sklearn_params():
     params = model.get_params()
     assert params["K"] == 7 and params["voxel_ratio"] == 0.3
     assert params["random_state"] == 4 and params["standardize"] == "auto"
-    assert params["init"] == "auto"
+    assert params["init"] == "auto" and params["n_screen_iter"] == 0
     assert params["max_iter"] == 100 and params["threshold"] == 1e-3
     assert set(params) == {
         "K", "max_iter", "threshold", "nlss_method", "nlss_loss", "x_scale",
         "weight_method", "upper_ratio", "lower_ratio", "voxel_ratio", "tr_ratio",
-        "max_voxels", "max_trs", "standardize", "init", "backend", "random_state",
-        "verbose",
+        "max_voxels", "max_trs", "standardize", "init", "n_screen_iter", "backend",
+        "random_state", "verbose",
     }  # fmt: skip
     assert clone(model).get_params() == params
 

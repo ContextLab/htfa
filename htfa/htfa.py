@@ -121,8 +121,10 @@ class HTFA(BaseEstimator):
         Convergence threshold on the scaled template change
         ``max(max|dC| / length, max|dw| / w)``, as in `TFA`.
     nlss_method, nlss_loss, x_scale, weight_method, upper_ratio, lower_ratio,
-    voxel_ratio, tr_ratio, max_voxels, max_trs, standardize, backend, init
-        Passed to each subject's `TFA` (``init`` only for the template fit).
+    voxel_ratio, tr_ratio, max_voxels, max_trs, standardize, backend, init,
+    n_screen_iter
+        Passed to each subject's `TFA` (``init`` and ``n_screen_iter`` only matter
+        for the template fits, the only ones with several candidate starts).
     n_jobs : int, optional
         Number of joblib workers for the subject fits (numpy engines only).
     random_state : int, optional
@@ -172,6 +174,7 @@ class HTFA(BaseEstimator):
         max_trs: int | None = None,
         standardize: str | bool = "auto",
         init: str | Sequence[str] = "auto",
+        n_screen_iter: int = 0,
         backend: str = "auto",
         n_jobs: int | None = None,
         random_state: int | None = None,
@@ -193,6 +196,7 @@ class HTFA(BaseEstimator):
         self.max_trs = max_trs
         self.standardize = standardize
         self.init = init
+        self.n_screen_iter = n_screen_iter
         self.backend = backend
         self.n_jobs = n_jobs
         self.random_state = random_state
@@ -201,7 +205,8 @@ class HTFA(BaseEstimator):
     def _tfa_params(self, max_iter: int) -> dict[str, Any]:
         names = (
             "K nlss_method nlss_loss x_scale weight_method upper_ratio lower_ratio "
-            "voxel_ratio tr_ratio max_voxels max_trs standardize backend init verbose"
+            "voxel_ratio tr_ratio max_voxels max_trs standardize backend init "
+            "n_screen_iter verbose"
         ).split()
         params = {n: getattr(self, n) for n in names}
         params["max_iter"] = max_iter
