@@ -1,6 +1,7 @@
 """Tests for the HTFA estimator."""
 
 import time
+import warnings
 
 import numpy as np
 import pytest
@@ -16,6 +17,9 @@ GLOBAL_CENTER_TOL_MM = 0.3  # measured: 0.119 (seed 0, mixed T; 3D 0.050, 2D 0.0
 LOCAL_CENTER_TOL_MM = 0.1  # measured: 0.034 (seed 0, 2D subject 0)
 LOCAL_CENTER_TOL_T1_MM = 1.0  # measured: 0.369 (seed 0, the T=1 subject)
 WEIGHT_MIN_R = 0.995  # measured: 0.9981 (seed 0, 3D subject 3); 1 - r has 2.5x room
+# Measured (seed 0): the mixed-T and different-V cases converge after 11 global
+# iterations (scaled change 8.3e-4 and 8.6e-4; 1.02e-3 and 1.04e-3 after 10).
+SLOW_MAX_GLOBAL_ITER = 15
 PARALLEL_RTOL = 1e-10  # measured: 1.04e-13 max relative diff, serial vs n_jobs=2 (CI)
 
 
@@ -119,16 +123,32 @@ def test_htfa_2d() -> None:
     _check_recovery(model, Rs, truth, Xs)
 
 
+def _fit_converged(Xs: list, Rs: list) -> HTFA:
+    """HTFA fit that must converge within `SLOW_MAX_GLOBAL_ITER` global iterations.
+
+    The template change shrinks by ~0.8x per global iteration in the mixed-T and
+    different-V cases (seed 0), so they need 11 iterations, one past the default.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ConvergenceWarning)
+        model = HTFA(
+            K=6,
+            max_global_iter=SLOW_MAX_GLOBAL_ITER,
+            standardize=False,
+            random_state=0,
+        ).fit(Xs, Rs)
+    print(f"converged after {model.n_iter_} global iterations")
+    assert model.converged_
+    return model
+
+
 def test_htfa_mixed_sample_counts() -> None:
     Xs, Rs, truth = make_htfa_data(
         n_subjects=3, grid_shape=(15, 15, 15), n_samples=80, K=6, random_state=0
     )
     Xs[2] = Xs[2][:, :1]
     truth["weights"][2] = truth["weights"][2][:, :1]
-    # Measured (seed 0): the template is still moving after 10 global iterations,
-    # so exactly one HTFA-level ConvergenceWarning is expected; recovery is checked.
-    with pytest.warns(ConvergenceWarning, match="HTFA did not converge"):
-        model = HTFA(K=6, standardize=False, random_state=0).fit(Xs, Rs)
+    model = _fit_converged(Xs, Rs)
     assert model.weights_[2].shape == (6, 1)
     _check_recovery(model, Rs, truth, Xs)
 
@@ -159,10 +179,7 @@ def test_htfa_different_voxel_counts_per_subject() -> None:
         mask = keep(Rs[s][:, axis])
         Xs[s], Rs[s] = Xs[s][mask], Rs[s][mask]
     assert len({X.shape[0] for X in Xs}) == 3
-    # Measured (seed 0): the template is still moving after 10 global iterations,
-    # so exactly one HTFA-level ConvergenceWarning is expected; recovery is checked.
-    with pytest.warns(ConvergenceWarning, match="HTFA did not converge"):
-        model = HTFA(K=6, standardize=False, random_state=0).fit(Xs, Rs)
+    model = _fit_converged(Xs, Rs)
     _check_recovery(model, Rs, truth, Xs)
 
 
