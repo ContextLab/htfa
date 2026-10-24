@@ -467,7 +467,13 @@ class TFA(BaseEstimator):
                 return x, n_iter, "plateau"
         return x, self.max_iter, "max_iter"
 
-    def fit(self, X: ArrayLike, coords: ArrayLike, prior: Prior | None = None) -> "TFA":
+    def fit(
+        self,
+        X: ArrayLike,
+        coords: ArrayLike,
+        prior: Prior | None = None,
+        start: tuple[ArrayLike, ArrayLike] | None = None,
+    ) -> "TFA":
         """Fit centers, widths and weights.
 
         Parameters
@@ -482,6 +488,9 @@ class TFA(BaseEstimator):
             ``prior.widths`` (``init`` is ignored), and every solve is penalized
             towards the template with ``scale = 0.5 * (Vs * Ts) / (V * T)``
             (``prior.scale`` is ignored and the caller's prior is not modified).
+        start : tuple of (centers, widths), optional
+            Explicit starting point, shapes (K, D) and (K,). Overrides both
+            ``init`` and the prior start (the prior penalty still applies).
 
         Returns
         -------
@@ -512,15 +521,25 @@ class TFA(BaseEstimator):
         engine = select_engine(self.backend, *sizes, K)
         lb, ub = bounds(R, K, self.lower_ratio, self.upper_ratio)
         if prior is None:
-            starts = _initial_starts(X, R, K, names, rng, lb[-1], ub[-1])
             fit_prior = full_prior = None
         else:
-            starts = {"prior": (prior.centers, prior.widths)}
             fit_prior = dataclasses.replace(
                 prior, scale=0.5 * (sizes[0] * sizes[1]) / (V * T)
             )
             full_prior = dataclasses.replace(prior, scale=0.5)
-
+        if start is not None:
+            if np.shape(start[0]) != (K, D) or np.shape(start[1]) != (K,):
+                raise ValueError(
+                    f"start must be (centers ({K}, {D}), widths ({K},)), got "
+                    f"{np.shape(start[0])} and {np.shape(start[1])}"
+                )
+            starts: dict[str, tuple[Array, Array]] = {
+                "start": (np.asarray(start[0]), np.asarray(start[1]))
+            }
+        elif prior is not None:
+            starts = {"prior": (prior.centers, prior.widths)}
+        else:
+            starts = _initial_starts(X, R, K, names, rng, lb[-1], ub[-1])
         runs = {}
         for name, (centers, widths) in starts.items():
             x0 = np.clip(np.concatenate([np.ravel(centers), np.ravel(widths)]), lb, ub)

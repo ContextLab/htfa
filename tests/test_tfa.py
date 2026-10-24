@@ -456,3 +456,25 @@ def test_tfa_verbose_reports_iterations(capsys):
     TFA(K=2, init="kmeans", max_iter=2, threshold=1e9, verbose=True).fit(X, R)
     out = capsys.readouterr().out
     assert "TFA kmeans iteration 1: scaled change" in out
+
+
+def test_tfa_explicit_start_overrides_init_and_prior_start():
+    X, R, truth = _small_data()
+    K, D = truth["centers"].shape
+    start = (truth["centers"][::-1] + 0.5, truth["widths"][::-1])
+    prior = Prior(
+        centers=truth["centers"],
+        widths=truth["widths"],
+        centers_cov=np.tile(np.eye(D), (K, 1, 1)),
+        widths_var=np.full(K, max_sigma(R)),
+        scale=1.0,
+    )
+    kw = {"K": K, "standardize": False, "random_state": 0, "threshold": 1e9}
+    for p in (None, prior):
+        one = TFA(max_iter=1, **kw).fit(X, R, prior=p, start=start)
+        print("start fit:", one.init_, one.centers_)
+        assert one.init_ == "start" and list(one.init_objectives_) == ["start"]
+        # Started from the reversed order, factors stay in that order.
+        np.testing.assert_array_equal(match_factors(start[0], one.centers_), [0, 1])
+    with pytest.raises(ValueError, match="start must be"):
+        TFA(**kw).fit(X, R, start=(truth["centers"][:1], truth["widths"]))
