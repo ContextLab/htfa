@@ -38,7 +38,7 @@ def test_tfa_deterministic():
 def test_tfa_centers_separated_and_central():
     _, _, truth = make_tfa_data(GRID, n_samples=5, K=10, random_state=3)
     c, w = truth["centers"], truth["widths"]
-    assert pdist(c).min() >= 0.5 * np.sqrt(w.mean()) - 1e-12
+    assert pdist(c).min() >= 2.0 * np.sqrt(w.mean() / 2) - 1e-12
     assert c.min() >= 0.1 * 9 - 1e-12 and c.max() <= 0.9 * 9 + 1e-12
     sigma = np.sqrt(w / 2) / 9
     assert sigma.min() >= 0.06 - 1e-12 and sigma.max() <= 0.12 + 1e-12
@@ -91,3 +91,64 @@ def test_match_factors_recovers_shuffle():
     perm = match_factors(true_c, est)
     np.testing.assert_allclose(est[perm], true_c, atol=1e-2)
     assert sorted(perm.tolist()) == list(range(8))
+
+
+@pytest.mark.parametrize(
+    "grid, K", [((20, 20, 20), 10), ((40, 40), 6), ((15, 15, 15), 6), ((30, 30), 6)]
+)
+def test_default_separation_feasible(grid, K):
+    for seed in range(5):
+        _, _, truth = make_tfa_data(grid, n_samples=2, K=K, random_state=seed)
+        w = truth["widths"]
+        assert pdist(truth["centers"]).min() >= 2.0 * np.sqrt(w.mean() / 2) - 1e-12
+        make_htfa_data(2, grid, n_samples=2, K=K, random_state=seed)
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"K": 0}, "K"),
+        ({"n_samples": 0}, "n_samples"),
+        ({"spacing": 0.0}, "spacing"),
+        ({"spacing": -1.0}, "spacing"),
+        ({"noise": -0.1}, "noise"),
+        ({"grid_shape": (1, 5, 5)}, "grid_shape"),
+    ],
+)
+def test_input_validation(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        make_tfa_data(**{"grid_shape": GRID, "n_samples": 5, "K": 2, **kwargs})
+    with pytest.raises(ValueError, match=match):
+        make_htfa_data(**{"grid_shape": GRID, "n_samples": 5, "K": 2, **kwargs})
+
+
+def test_htfa_n_subjects_validation():
+    with pytest.raises(ValueError, match="n_subjects"):
+        make_htfa_data(n_subjects=0, grid_shape=GRID, n_samples=5, K=2)
+
+
+def test_htfa_noise_std_per_subject():
+    noise = 0.3
+    Xs, Rs, t = make_htfa_data(
+        3, GRID, n_samples=100, K=5, noise=noise, random_state=11
+    )
+    for s in range(3):
+        resid = (
+            Xs[s] - factors(Rs[s], t["centers"][s], t["widths"][s]) @ t["weights"][s]
+        )
+        assert abs(resid.std() / noise - 1) < 0.05
+
+
+def test_htfa_width_jitter_std():
+    _, _, t = make_htfa_data(
+        40, (6, 6), n_samples=2, K=10, width_jitter=0.2, random_state=12
+    )
+    logr = np.concatenate([np.log(w / t["global_widths"]) for w in t["widths"]])
+    assert abs(logr.std() / 0.2 - 1) < 0.25
+
+
+def test_htfa_float64():
+    Xs, Rs, t = make_htfa_data(2, GRID, n_samples=5, K=3, random_state=1)
+    for arr in [*Xs, *Rs, *t["centers"], *t["widths"], *t["weights"]]:
+        assert arr.dtype == np.float64
+    assert t["global_centers"].dtype == t["global_widths"].dtype == np.float64

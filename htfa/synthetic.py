@@ -30,13 +30,28 @@ def _grid(grid_shape: Sequence[int], spacing: float) -> tuple[Array, Array]:
     return R, np.array([a[-1] for a in axes])
 
 
+def _validate(
+    grid_shape: Sequence[int], n_samples: int, K: int, noise: float, spacing: float
+) -> None:
+    if any(n < 2 for n in grid_shape):
+        raise ValueError(f"every grid_shape dimension must be >= 2, got {grid_shape}")
+    if K < 1:
+        raise ValueError(f"K must be >= 1, got {K}")
+    if n_samples < 1:
+        raise ValueError(f"n_samples must be >= 1, got {n_samples}")
+    if spacing <= 0:
+        raise ValueError(f"spacing must be > 0, got {spacing}")
+    if noise < 0:
+        raise ValueError(f"noise must be >= 0, got {noise}")
+
+
 def _draw_centers_widths(
-    rng: np.random.Generator, extent: Array, K: int
+    rng: np.random.Generator, extent: Array, K: int, min_separation: float
 ) -> tuple[Array, Array]:
-    """Draw K widths, then K centers at least ``0.5 sqrt(mean width)`` apart."""
+    """Draw K widths, then K centers at least ``min_separation`` mean sigmas apart."""
     sigma = rng.uniform(*SIGMA_RANGE, size=K) * float(np.max(extent))
     widths = 2.0 * sigma**2
-    min_sep = 0.5 * np.sqrt(widths.mean())
+    min_sep = min_separation * np.sqrt(widths.mean() / 2.0)
     lo, hi = CENTER_MARGIN * extent, (1.0 - CENTER_MARGIN) * extent
     centers = np.empty((K, extent.size))
     for k in range(K):
@@ -60,6 +75,7 @@ def make_tfa_data(
     K: int = 10,
     noise: float = 0.1,
     spacing: float = 1.0,
+    min_separation: float = 2.0,
     random_state: int | None = None,
 ) -> tuple[Array, Array, dict[str, Array]]:
     """Simulate single-subject TFA data ``X = F W + noise``.
@@ -76,6 +92,9 @@ def make_tfa_data(
         Standard deviation of the additive Gaussian noise.
     spacing : float
         Distance between neighbouring grid points.
+    min_separation : float
+        Minimum distance between centers, in units of the mean sigma:
+        ``min_separation * sqrt(mean(w) / 2)``.
     random_state : int, optional
         Seed for ``numpy.random.default_rng``.
 
@@ -88,17 +107,18 @@ def make_tfa_data(
     truth : dict
         ``centers`` (K, D), ``widths`` (K,) with ``w = 2 sigma**2``, and
         ``weights`` (K, T). Centers lie in the central 80% of each axis and are at
-        least ``0.5 sqrt(mean width)`` apart; sigma is uniform in [0.06, 0.12] times
-        the largest axis extent.
+        least ``min_separation`` mean sigmas apart; sigma is uniform in
+        [0.06, 0.12] times the largest axis extent.
 
     Raises
     ------
     ValueError
         If centers cannot be placed with the required separation.
     """
+    _validate(grid_shape, n_samples, K, noise, spacing)
     rng = np.random.default_rng(random_state)
     R, extent = _grid(grid_shape, spacing)
-    centers, widths = _draw_centers_widths(rng, extent, K)
+    centers, widths = _draw_centers_widths(rng, extent, K, min_separation)
     weights = rng.standard_normal((K, n_samples))
     X = factors(R, centers, widths) @ weights
     X += noise * rng.standard_normal(X.shape)
@@ -114,6 +134,7 @@ def make_htfa_data(
     center_jitter: float = 1.0,
     width_jitter: float = 0.05,
     spacing: float = 1.0,
+    min_separation: float = 2.0,
     random_state: int | None = None,
 ) -> tuple[list[Array], list[Array], dict[str, Any]]:
     """Simulate multi-subject HTFA data around a global template.
@@ -121,14 +142,16 @@ def make_htfa_data(
     Each subject's centers are the global centers plus ``N(0, center_jitter**2)``
     (clipped to the grid) and its widths are the global widths times
     ``exp(N(0, width_jitter))``. Weights and noise are drawn independently per
-    subject. Global centers and widths are drawn as in `make_tfa_data`.
+    subject. Clipped subject centers are not re-checked for separation. Global
+    centers and widths are drawn as in `make_tfa_data`.
 
     Parameters
     ----------
     n_subjects : int
         Number of subjects.
     grid_shape, n_samples, K, noise, spacing, random_state
-        As in `make_tfa_data`; every subject shares the same grid.
+        As in `make_tfa_data` (``min_separation`` applies to the global centers);
+        every subject shares the same grid.
     center_jitter : float
         Standard deviation of subject center offsets, in coordinate units.
     width_jitter : float
@@ -149,9 +172,12 @@ def make_htfa_data(
     ValueError
         If global centers cannot be placed with the required separation.
     """
+    if n_subjects < 1:
+        raise ValueError(f"n_subjects must be >= 1, got {n_subjects}")
+    _validate(grid_shape, n_samples, K, noise, spacing)
     rng = np.random.default_rng(random_state)
     R, extent = _grid(grid_shape, spacing)
-    g_centers, g_widths = _draw_centers_widths(rng, extent, K)
+    g_centers, g_widths = _draw_centers_widths(rng, extent, K, min_separation)
     Xs, Rs = [], []
     truth: dict[str, Any] = {
         "global_centers": g_centers,
