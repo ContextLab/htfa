@@ -1,5 +1,6 @@
 """Tests for on-demand dependency installation (htfa._lazy)."""
 
+import os
 import shutil
 import subprocess
 import sys
@@ -85,6 +86,23 @@ def test_torch_index_url_parsing():
     assert _lazy.torch_index_url(smi("13.2"), "Darwin") is None
     assert _lazy.torch_index_url(None, "Linux") is None
     assert _lazy.torch_index_url("no gpu here", "Linux") is None
+
+
+def test_torch_index_url_is_silent(capsys):
+    _lazy.torch_index_url(smi("11.8"), "Linux")
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == ""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="uses a POSIX shell script")
+def test_find_nvidia_smi_ignores_cwd(tmp_path, monkeypatch):
+    fake = tmp_path / "nvidia-smi"
+    fake.write_text("#!/bin/sh\necho planted\n")
+    fake.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", os.pathsep.join(["", ".", str(tmp_path)]))
+    found = _lazy._find_nvidia_smi()
+    assert found is None or Path(found).resolve() != fake.resolve()
 
 
 def test_ensure_torch_disabled_message():

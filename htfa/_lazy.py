@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from types import ModuleType
 
 from packaging.requirements import Requirement
@@ -67,7 +68,12 @@ def _manual(extra: str) -> str:
 
 
 def _pip_install(args: list[str]) -> None:
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", *args], check=True)
+    # -I and a neutral cwd keep a planted pip.py in the caller's cwd off sys.path
+    subprocess.run(
+        [sys.executable, "-I", "-m", "pip", "install", "-q", *args],
+        check=True,
+        cwd=tempfile.gettempdir(),
+    )
     importlib.invalidate_caches()
 
 
@@ -106,12 +112,30 @@ def torch_index_url(nvidia_smi_output: str | None, system: str) -> str | None:
     for version in sorted(CUDA_WHEEL_TAGS, reverse=True):
         if version <= driver:
             return TORCH_INDEX + CUDA_WHEEL_TAGS[version]
-    print(
-        f"htfa: CUDA driver {driver[0]}.{driver[1]} is older than the oldest "
-        "supported wheels (12.6); installing CPU-only torch.",
-        file=sys.stderr,
-    )
     return TORCH_INDEX + "cpu"
+
+
+def _find_nvidia_smi() -> str | None:
+    """Locate nvidia-smi without searching the current directory."""
+    cwd = os.path.normcase(os.path.abspath(os.getcwd()))
+    safe = [
+        d
+        for d in os.environ.get("PATH", "").split(os.pathsep)
+        if d not in ("", ".") and os.path.normcase(os.path.abspath(d)) != cwd
+    ]
+    found = shutil.which("nvidia-smi", path=os.pathsep.join(safe))
+    if found:
+        return found
+    candidates = ["/usr/bin/nvidia-smi"]
+    root = os.environ.get("SystemRoot")
+    if root:
+        candidates.append(os.path.join(root, "System32", "nvidia-smi.exe"))
+    files = os.environ.get("ProgramFiles")
+    if files:
+        candidates.append(
+            os.path.join(files, "NVIDIA Corporation", "NVSMI", "nvidia-smi.exe")
+        )
+    return next((c for c in candidates if os.path.isfile(c)), None)
 
 
 def ensure_torch() -> ModuleType:
@@ -125,12 +149,22 @@ def ensure_torch() -> ModuleType:
             "(automatic installation is off)."
         )
     output = None
-    if shutil.which("nvidia-smi"):
-        run = subprocess.run(
-            ["nvidia-smi"], capture_output=True, text=True, check=False
-        )
-        output = run.stdout if run.returncode == 0 else None
+    exe = _find_nvidia_smi()
+    if exe:
+        try:
+            run = subprocess.run(
+                [exe], capture_output=True, text=True, check=False, timeout=10
+            )
+            output = run.stdout if run.returncode == 0 else None
+        except (subprocess.TimeoutExpired, OSError):
+            output = None
     url = torch_index_url(output, platform.system())
+    if url is not None and url.endswith("/cpu"):
+        print(
+            "htfa: CUDA driver is older than the oldest supported wheels (12.6); "
+            "installing CPU-only torch.",
+            file=sys.stderr,
+        )
     print(
         "htfa: installing torch (GPU backend; this can be a large download)...",
         file=sys.stderr,
