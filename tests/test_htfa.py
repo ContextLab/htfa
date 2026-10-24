@@ -3,6 +3,8 @@
 import time
 
 import numpy as np
+import pytest
+from sklearn.exceptions import ConvergenceWarning
 
 from htfa._matching import match_factors
 from htfa.htfa import HTFA, assign_posterior, map_update
@@ -13,7 +15,7 @@ from htfa.synthetic import make_htfa_data
 GLOBAL_CENTER_TOL_MM = 0.3  # measured: 0.119 (seed 0, mixed T; 3D 0.050, 2D 0.054)
 LOCAL_CENTER_TOL_MM = 0.1  # measured: 0.034 (seed 0, 2D subject 0)
 LOCAL_CENTER_TOL_T1_MM = 1.0  # measured: 0.369 (seed 0, the T=1 subject)
-WEIGHT_MIN_R = 0.9
+WEIGHT_MIN_R = 0.995  # measured: 0.9981 (seed 0, 3D subject 3); 1 - r has 2.5x room
 
 
 def test_map_update_matches_closed_form() -> None:
@@ -122,7 +124,10 @@ def test_htfa_mixed_sample_counts() -> None:
     )
     Xs[2] = Xs[2][:, :1]
     truth["weights"][2] = truth["weights"][2][:, :1]
-    model = HTFA(K=6, standardize=False, random_state=0).fit(Xs, Rs)
+    # Measured (seed 0): the template is still moving after 10 global iterations,
+    # so exactly one HTFA-level ConvergenceWarning is expected; recovery is checked.
+    with pytest.warns(ConvergenceWarning, match="HTFA did not converge"):
+        model = HTFA(K=6, standardize=False, random_state=0).fit(Xs, Rs)
     assert model.weights_[2].shape == (6, 1)
     _check_recovery(model, Rs, truth, Xs)
 
@@ -149,5 +154,43 @@ def test_htfa_different_voxel_counts_per_subject() -> None:
         mask = keep(Rs[s][:, axis])
         Xs[s], Rs[s] = Xs[s][mask], Rs[s][mask]
     assert len({X.shape[0] for X in Xs}) == 3
-    model = HTFA(K=6, standardize=False, random_state=0).fit(Xs, Rs)
+    # Measured (seed 0): the template is still moving after 10 global iterations,
+    # so exactly one HTFA-level ConvergenceWarning is expected; recovery is checked.
+    with pytest.warns(ConvergenceWarning, match="HTFA did not converge"):
+        model = HTFA(K=6, standardize=False, random_state=0).fit(Xs, Rs)
     _check_recovery(model, Rs, truth, Xs)
+
+
+def test_htfa_no_local_warning_spam() -> None:
+    Xs, Rs, _ = make_htfa_data(
+        n_subjects=3, grid_shape=(10, 10), n_samples=20, K=3, random_state=0
+    )
+    model = HTFA(
+        K=3,
+        max_global_iter=2,
+        max_local_iter=1,
+        threshold=0.0,
+        standardize=False,
+        random_state=0,
+    )
+    with pytest.warns(ConvergenceWarning) as record:
+        model.fit(Xs, Rs)
+    messages = [str(w.message) for w in record if w.category is ConvergenceWarning]
+    print("ConvergenceWarnings:", messages)
+    assert not model.converged_ and model.n_iter_ == 2
+    assert len(messages) == 1 and messages[0].startswith("HTFA did not converge")
+
+
+def test_htfa_validation_errors() -> None:
+    Xs, Rs, _ = make_htfa_data(
+        n_subjects=2, grid_shape=(10, 10), n_samples=20, K=3, random_state=0
+    )
+    with pytest.raises(ValueError, match="non-empty lists of equal length"):
+        HTFA(K=3).fit([], [])
+    with pytest.raises(ValueError, match="non-empty lists of equal length"):
+        HTFA(K=3).fit(Xs, Rs[:1])
+    R3 = np.column_stack([Rs[1], np.zeros(len(Rs[1]))])
+    with pytest.raises(ValueError, match="same dimension D"):
+        HTFA(K=3).fit(Xs, [Rs[0], R3])
+    with pytest.raises(ValueError, match="max_global_iter must be >= 1"):
+        HTFA(K=3, max_global_iter=0).fit(Xs, Rs)

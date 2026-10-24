@@ -1,13 +1,15 @@
 """Hierarchical Topographic Factor Analysis (HTFA)."""
 
 import os
+import warnings
 from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, effective_n_jobs
 from numpy.typing import ArrayLike, NDArray
 from sklearn.base import BaseEstimator
+from sklearn.exceptions import ConvergenceWarning
 from threadpoolctl import threadpool_limits
 
 from htfa._engines import select_engine
@@ -91,8 +93,12 @@ def _fit_subject(
     start: tuple[Array, Array] | None,
     seed: int,
     n_threads: int,
+    quiet: bool,
 ) -> TFA:
-    with threadpool_limits(n_threads):
+    # Filters are set here so that they also apply inside loky workers.
+    with threadpool_limits(n_threads), warnings.catch_warnings():
+        if quiet:
+            warnings.simplefilter("ignore", ConvergenceWarning)
         return TFA(**params, random_state=seed).fit(X, R, prior=prior, start=start)
 
 
@@ -212,22 +218,26 @@ class HTFA(BaseEstimator):
         seeds: NDArray[np.int64],
         parallel: bool,
     ) -> list[TFA]:
-        """Fit every subject's TFA; seeds are fixed per subject, not per worker."""
+        """Fit every subject's TFA; seeds are fixed per subject, not per worker.
+
+        Local (penalized) fits run with ``quiet=True``: their per-fit
+        ConvergenceWarnings are suppressed in favour of one HTFA-level warning.
+        """
         params = self._tfa_params(max_iter)
+        quiet = prior is not None
         n, n_cpu = len(Xs), os.cpu_count() or 1
         if not parallel:
             return [
                 _fit_subject(
-                    params, Xs[s], Rs[s], prior, starts[s], int(seeds[s]), n_cpu
+                    params, Xs[s], Rs[s], prior, starts[s], int(seeds[s]), n_cpu, quiet
                 )
                 for s in range(n)
             ]
-        n_jobs = n_cpu if self.n_jobs == -1 else int(self.n_jobs or 1)
-        n_workers = min(n, n_jobs)
+        n_workers = min(n, effective_n_jobs(self.n_jobs))
         n_threads = max(1, n_cpu // n_workers)
         fits: list[TFA] = Parallel(n_jobs=n_workers, backend="loky")(
             delayed(_fit_subject)(
-                params, Xs[s], Rs[s], prior, starts[s], int(seeds[s]), n_threads
+                params, Xs[s], Rs[s], prior, starts[s], int(seeds[s]), n_threads, quiet
             )
             for s in range(n)
         )
@@ -251,8 +261,19 @@ class HTFA(BaseEstimator):
         Raises
         ------
         ValueError
-            On mismatched list lengths or dimensionalities.
+            On empty or mismatched lists, mixed dimensionalities or
+            ``max_global_iter < 1``.
+
+        Warns
+        -----
+        ConvergenceWarning
+            Once, when the template has not converged after ``max_global_iter``
+            iterations (per-subject local warnings are suppressed).
         """
+        if self.max_global_iter < 1:
+            raise ValueError(
+                f"max_global_iter must be >= 1, got {self.max_global_iter}"
+            )
         if len(X) != len(coords) or len(X) == 0:
             raise ValueError(
                 f"X and coords must be non-empty lists of equal length, "
@@ -301,7 +322,9 @@ class HTFA(BaseEstimator):
 
         self.converged_ = False
         fits: list[TFA] = []
-        for n_iter in range(1, self.max_global_iter + 1):
+        n_iter = 0
+        while n_iter < self.max_global_iter:
+            n_iter += 1
             prior = Prior(C, w, C_cov, w_var, 1.0)
             seeds = rng.integers(seed_max, size=n_subj)
             fit_local = self.max_local_iter
@@ -311,14 +334,21 @@ class HTFA(BaseEstimator):
                 from_template = self._fit_subjects(
                     Xs, Rs, fit_local, prior, none, seeds, parallel
                 )
-                own = [(f.centers_, f.widths_) for f in free]
+                # The template subject's own start is the template: skip it.
+                others = [s for s in range(n_subj) if s != t]
                 from_own = self._fit_subjects(
-                    Xs, Rs, fit_local, prior, own, seeds, parallel
+                    [Xs[s] for s in others],
+                    [Rs[s] for s in others],
+                    fit_local,
+                    prior,
+                    [(free[s].centers_, free[s].widths_) for s in others],
+                    seeds[others],
+                    parallel,
                 )
-                fits = [
-                    a if a.cost_ <= b.cost_ else b
-                    for a, b in zip(from_template, from_own, strict=True)
-                ]
+                fits = list(from_template)
+                for s, b in zip(others, from_own, strict=True):
+                    if b.cost_ < fits[s].cost_:
+                        fits[s] = b
             else:
                 warm = [(f.centers_, f.widths_) for f in fits]
                 fits = self._fit_subjects(
@@ -352,11 +382,18 @@ class HTFA(BaseEstimator):
             if change <= self.threshold:
                 self.converged_ = True
                 break
-        self.n_iter_ = len(fits) and n_iter
+        self.n_iter_ = n_iter
+        if not self.converged_:
+            warnings.warn(
+                f"HTFA did not converge in max_global_iter={self.max_global_iter} "
+                "iterations; increase max_global_iter or threshold",
+                ConvergenceWarning,
+                stacklevel=2,
+            )
         self.global_centers_, self.global_widths_ = C, w
         self.global_centers_cov_, self.global_widths_var_ = C_cov, w_var
         self.centers_ = [f.centers_ for f in fits]
         self.widths_ = [f.widths_ for f in fits]
         self.weights_ = [f.weights_ for f in fits]
-        self.engine_ = fits[0].engine_ if fits else template.engine_
+        self.engine_ = fits[0].engine_
         return self
