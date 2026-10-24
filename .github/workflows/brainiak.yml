@@ -15,6 +15,8 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v5
+      # BrainIAK imports mpi4py, whose Linux wheel needs a system MPI library.
+      - run: sudo apt-get update && sudo apt-get install -y libopenmpi-dev openmpi-bin
       - run: uv venv -p 3.11 .venv-brainiak
       # BrainIAK 0.12's HTFA errors on NumPy >= 2.4 (size-1 array to scalar).
       - run: VIRTUAL_ENV=.venv-brainiak uv pip install -e ".[dev]" brainiak "numpy<2.4"
