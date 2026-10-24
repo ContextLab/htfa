@@ -1,0 +1,559 @@
+"""Single-subject Topographic Factor Analysis (TFA)."""
+
+import dataclasses
+import warnings
+from collections.abc import Callable, Sequence
+from typing import Any
+
+import numpy as np
+from numpy.typing import ArrayLike, NDArray
+from scipy.spatial import cKDTree
+from sklearn.base import BaseEstimator
+from sklearn.cluster import KMeans
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.utils.validation import check_is_fitted
+from threadpoolctl import threadpool_limits
+
+from htfa._engines import select_engine
+from htfa._kernels import (
+    Prior,
+    ResidualProblem,
+    bounds,
+    factors,
+    init_centers_widths,
+    max_sigma,
+    ridge_weights,
+    solve_centers_widths,
+)
+from htfa.synthetic import match_factors
+
+Array = NDArray[np.float64]
+
+INIT_METHODS = ("ncorr", "power", "kmeans")
+# 'power' weights this close to uniform (coefficient of variation) would only
+# duplicate the unweighted 'kmeans' start, so 'power' is skipped when both are asked.
+UNIFORM_CV = 1e-3
+# Relative floor added to the K-means sample weights so that every voxel counts.
+TINY_WEIGHT = 1e-12
+# scipy.optimize.least_squares losses rho(z) of the squared residual z (f_scale=1).
+LOSSES: dict[str, Callable[[Array], Array]] = {
+    "linear": lambda z: z,
+    "soft_l1": lambda z: 2.0 * (np.sqrt(1.0 + z) - 1.0),
+    "huber": lambda z: np.where(z <= 1.0, z, 2.0 * np.sqrt(z) - 1.0),
+    "cauchy": np.log1p,
+    "arctan": np.arctan,
+}
+
+
+def standardize_data(X: ArrayLike, mode: str | bool) -> Array:
+    """Z-score data (V, T) before fitting.
+
+    Parameters
+    ----------
+    X : array_like, shape (V, T)
+        Data, one row per voxel and one column per sample.
+    mode : {'auto', True, False}
+        ``'auto'`` z-scores each row (voxel) across columns when T > 1 and leaves
+        single-sample data unchanged. ``True`` z-scores each row when T > 1 and
+        z-scores across all voxels when T == 1. ``False`` leaves the data unchanged.
+        Constant rows (or a constant single column under ``True``) become 0.
+
+    Returns
+    -------
+    ndarray, shape (V, T)
+        The standardized data as float64.
+
+    Raises
+    ------
+    ValueError
+        If ``mode`` is not ``'auto'``, ``True`` or ``False``.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from htfa.tfa import standardize_data
+    >>> standardize_data(np.array([[1.0, 3.0], [2.0, 2.0]]), "auto")
+    array([[-1.,  1.],
+           [ 0.,  0.]])
+    >>> standardize_data(np.array([[1.0], [3.0]]), True)
+    array([[-1.],
+           [ 1.]])
+    """
+    is_bool = isinstance(mode, (bool, np.bool_))
+    if not is_bool and mode != "auto":
+        raise ValueError(f"standardize must be 'auto', True or False, got {mode!r}")
+    X = np.asarray(X, dtype=np.float64)
+    if is_bool and not mode:
+        return X
+    if X.shape[1] > 1:
+        axis = 1
+    elif is_bool:
+        axis = 0
+    else:
+        return X
+    mean = X.mean(axis=axis, keepdims=True)
+    std = X.std(axis=axis, keepdims=True)
+    # Exactly constant slices have a rounding-only std; zero them explicitly.
+    constant = np.ptp(X, axis=axis, keepdims=True) == 0
+    std[constant] = 1.0
+    Z: Array = (X - mean) / std
+    Z[np.broadcast_to(constant, Z.shape)] = 0.0
+    return Z
+
+
+def _sample_size(n: int, ratio: float, cap: int | None) -> int:
+    """BrainIAK's subsample size, clipped to the ``n`` items available."""
+    return min(n, cap if cap is not None else n, max(1, int(ratio * n)))
+
+
+def _check_coords(coords: ArrayLike, V: int | None, D: int | None) -> Array:
+    """Validate coordinates (V, D): 2D, matching shape, D in {2, 3}, finite."""
+    R = np.asarray(coords, dtype=np.float64)
+    if R.ndim != 2 or (V is not None and R.shape[0] != V):
+        raise ValueError(
+            f"coords must have shape ({V if V is not None else 'V'}, D), got {R.shape}"
+        )
+    if R.shape[1] not in (2, 3):
+        raise ValueError(f"coords must have 2 or 3 dimensions, got D={R.shape[1]}")
+    if D is not None and R.shape[1] != D:
+        raise ValueError(f"coords must have shape (V, {D}), got {R.shape}")
+    if not np.all(np.isfinite(R)):
+        raise ValueError("coords contains NaN or Inf")
+    return R
+
+
+def _init_names(init: str | Sequence[str]) -> tuple[str, ...]:
+    """Candidate start names for the ``init`` parameter."""
+    if isinstance(init, str):
+        names: tuple[str, ...] = INIT_METHODS if init == "auto" else (init,)
+    elif isinstance(init, (list, tuple)):
+        names = tuple(init)
+    else:
+        names = ()
+    if (
+        not names
+        or len(set(names)) != len(names)
+        or any(n not in INIT_METHODS for n in names)
+    ):
+        raise ValueError(
+            f"init must be 'auto', one of {INIT_METHODS} or a sequence of distinct "
+            f"names from it, got {init!r}"
+        )
+    return names
+
+
+def _floor(p: Array) -> Array:
+    return p + TINY_WEIGHT * (float(np.max(p)) or 1.0)
+
+
+def _power_weights(X: Array) -> Array:
+    """Voxel weights ``clip(sum_t X**2 - median, 0)`` plus a tiny floor."""
+    p = np.sum(X * X, axis=1)
+    return _floor(np.clip(p - np.median(p), 0.0, None))
+
+
+def _ncorr_weights(X: Array, R: Array) -> Array:
+    """Squared positive mean correlation of each voxel with its 2D nearest
+    spatial neighbours, plus a tiny floor (needs T > 1)."""
+    V, D = R.shape
+    Z = X - X.mean(axis=1, keepdims=True)
+    norm = np.linalg.norm(Z, axis=1, keepdims=True)
+    Z = np.divide(Z, norm, out=np.zeros_like(Z), where=norm > 0)
+    _, idx = cKDTree(R).query(R, k=min(2 * D + 1, V))
+    corr = np.zeros(V)
+    for j in range(1, idx.shape[1]):
+        corr += np.sum(Z * Z[idx[:, j]], axis=1)
+    corr /= idx.shape[1] - 1
+    return _floor(np.clip(corr, 0.0, None) ** 2)
+
+
+def _weighted_start(
+    R: Array, K: int, seed: int, weights: Array, w_lo: float, w_hi: float
+) -> tuple[Array, Array]:
+    """Weighted K-means++ centers and widths ``(4/D)`` times each cluster's
+    weighted mean squared distance to its center, clipped to the width bounds."""
+    km = KMeans(n_clusters=K, init="k-means++", n_init=10, random_state=seed)
+    # Multithreaded weighted K-means sums in a varying order (results differed by
+    # ~2e-15 between identical runs); one OpenMP thread makes it reproducible.
+    with threadpool_limits(limits=1, user_api="openmp"):
+        km.fit(R, sample_weight=weights)
+    C = np.asarray(km.cluster_centers_, dtype=np.float64)
+    w = np.empty(K)
+    for k in range(K):
+        m = km.labels_ == k
+        d2 = np.sum((R[m] - C[k]) ** 2, axis=1)
+        w[k] = 4.0 / R.shape[1] * np.average(d2, weights=weights[m])
+    return C, np.clip(w, w_lo, w_hi)
+
+
+def _initial_starts(
+    X: Array,
+    R: Array,
+    K: int,
+    names: tuple[str, ...],
+    rng: np.random.Generator,
+    w_lo: float,
+    w_hi: float,
+) -> dict[str, tuple[Array, Array]]:
+    """Candidate starts ``name -> (centers, widths)``; one K-means seed per name."""
+    starts = {}
+    for name in names:
+        seed = int(rng.integers(np.iinfo(np.int32).max))
+        if name == "kmeans":
+            starts[name] = init_centers_widths(R, K, seed)
+            continue
+        if name == "ncorr" and X.shape[1] > 1:
+            weights = _ncorr_weights(X, R)
+        elif name == "ncorr" and "power" in names:
+            continue  # T == 1: 'ncorr' falls back to 'power', which runs anyway
+        else:
+            weights = _power_weights(X)
+            if "kmeans" in names and np.std(weights) < UNIFORM_CV * np.mean(weights):
+                continue
+        starts[name] = _weighted_start(R, K, seed, weights, w_lo, w_hi)
+    return starts
+
+
+class TFA(BaseEstimator):
+    """Topographic Factor Analysis of one subject's data.
+
+    Models data ``X`` (V, T) as ``F @ W``, where ``F[v, k] =
+    exp(-||r_v - c_k||**2 / w_k)`` are radial basis factors with centers ``c_k``
+    and widths ``w_k = 2 sigma_k**2`` (BrainIAK's convention). The fit alternates
+    ridge-regression weights with a bounded nonlinear least-squares solve for the
+    centers and widths, from one or more candidate starts (see ``init``), and keeps
+    the candidate with the lowest final objective.
+
+    Parameters
+    ----------
+    K : int, default=50
+        Number of factors; must be smaller than the number of voxels.
+    max_iter : int, default=100
+        Maximum number of outer iterations per candidate start. ``0`` evaluates
+        the start itself (no iterations). BrainIAK's default of 10 together with
+        its 1.0 threshold stops after about 3 iterations with roughly 10% width
+        error, so both defaults depart from BrainIAK.
+    threshold : float, default=1e-3
+        Convergence threshold on the scaled change between iterations,
+        ``max(max|dc| / L, max|dw| / w)`` with ``L = sqrt(max_sigma(R) / 2)``.
+        BrainIAK instead thresholds the raw largest change at 1.0.
+    nlss_method : {'trf', 'dogbox'}, default='trf'
+        ``scipy.optimize.least_squares`` method.
+    nlss_loss : {'soft_l1', 'linear', 'huber', 'cauchy', 'arctan'}, default='soft_l1'
+        ``least_squares`` loss. ``'linear'`` enables an exact QR compression of
+        the data term.
+    x_scale : 'jac' or ndarray, default='jac'
+        ``least_squares`` variable scaling; ``'jac'`` uses the inverse Jacobian
+        column norms at the start of each solve.
+    weight_method : {'rr', 'ols'}, default='rr'
+        Ridge regression (penalty ``var(X)``) or ordinary least squares weights.
+    upper_ratio, lower_ratio : float, default=1.8, 0.02
+        Widths are bounded to ``[lower_ratio, upper_ratio] * 2 max(std(R))**2``.
+    voxel_ratio, tr_ratio : float, default=1.0
+        Fraction of voxels and samples drawn (anew each iteration) for the
+        center/width solve. 1.0 uses all data.
+    max_voxels, max_trs : int, optional
+        Caps on the subsample sizes; never more than the data has.
+    standardize : {'auto', True, False}, default='auto'
+        Applied to ``X`` before anything else; see `standardize_data`. With
+        ``False`` the raw values are fitted, and because the data residual is
+        divided by ``sqrt(2) std(X)``, an HTFA prior is then relatively stronger
+        on high-variance data.
+    init : {'auto', 'ncorr', 'power', 'kmeans'} or sequence of those, default='auto'
+        Candidate starts; each is fitted on identical subsamples and the one with
+        the lowest final objective wins. ``'kmeans'`` is BrainIAK's start
+        (K-means++ on the coordinates, widths ``max_sigma(R)``). ``'power'`` and
+        ``'ncorr'`` run K-means++ weighted per voxel by
+        ``clip(sum_t X**2 - median, 0)`` and by the squared positive mean
+        correlation with the ``2 D`` nearest spatial neighbours (``'power'`` when
+        T == 1), and start each width at ``4 / D`` times its cluster's weighted
+        mean squared distance to the center. Weights use the standardized data.
+        ``'auto'`` is ``('ncorr', 'power', 'kmeans')``; ``'power'`` is skipped
+        when its weights are uniform (it would repeat ``'kmeans'``). Ignored when
+        a ``prior`` is passed to `fit`.
+    backend : {'auto', 'numpy', 'cpu', 'torch', 'cuda', 'mps'}, default='auto'
+        Compute engine for the data-term products; see
+        `htfa._engines.select_engine`.
+    random_state : None, int or numpy.random.Generator, default=None
+        Seeds the K-means initializations and the subsampling.
+    verbose : bool, default=False
+        Print the scaled change of every iteration.
+
+    Attributes
+    ----------
+    centers_ : ndarray, shape (K, D)
+        Factor centers.
+    widths_ : ndarray, shape (K,)
+        Factor widths ``2 sigma**2``.
+    weights_ : ndarray, shape (K, T)
+        Weights fitted on the full (standardized) data.
+    n_iter_ : int
+        Number of outer iterations run for the winning start.
+    converged_ : bool
+        Whether the scaled change fell to ``threshold`` within ``max_iter``.
+    cost_ : float
+        Final objective of the winning start: ``0.5 * sum(rho(r**2))`` over the
+        full-data residual ``r`` (with the prior penalties when a prior is given).
+    init_ : str
+        Name of the winning start (``'prior'`` when a prior was given).
+    init_objectives_ : dict of str to float
+        Final objective of every candidate start that was run.
+    engine_ : str
+        Name of the compute engine used.
+    coords_ : ndarray, shape (V, D)
+        Coordinates the model was fitted on.
+
+    Warns
+    -----
+    ConvergenceWarning
+        When the winning start reaches ``max_iter`` (>= 1) without converging.
+
+    Examples
+    --------
+    >>> from htfa.synthetic import make_tfa_data
+    >>> from htfa.tfa import TFA
+    >>> X, R, truth = make_tfa_data((30, 30), 20, K=2, random_state=0)
+    >>> model = TFA(K=2, standardize=False, random_state=0).fit(X, R)
+    >>> model.centers_.shape, model.weights_.shape
+    ((2, 2), (2, 20))
+    >>> model.reconstruct().shape
+    (900, 20)
+    """
+
+    def __init__(
+        self,
+        K: int = 50,
+        max_iter: int = 100,
+        threshold: float = 1e-3,
+        nlss_method: str = "trf",
+        nlss_loss: str = "soft_l1",
+        x_scale: Any = "jac",
+        weight_method: str = "rr",
+        upper_ratio: float = 1.8,
+        lower_ratio: float = 0.02,
+        voxel_ratio: float = 1.0,
+        tr_ratio: float = 1.0,
+        max_voxels: int | None = None,
+        max_trs: int | None = None,
+        standardize: str | bool = "auto",
+        init: str | Sequence[str] = "auto",
+        backend: str = "auto",
+        random_state: int | np.random.Generator | None = None,
+        verbose: bool = False,
+    ) -> None:
+        self.K = K
+        self.max_iter = max_iter
+        self.threshold = threshold
+        self.nlss_method = nlss_method
+        self.nlss_loss = nlss_loss
+        self.x_scale = x_scale
+        self.weight_method = weight_method
+        self.upper_ratio = upper_ratio
+        self.lower_ratio = lower_ratio
+        self.voxel_ratio = voxel_ratio
+        self.tr_ratio = tr_ratio
+        self.max_voxels = max_voxels
+        self.max_trs = max_trs
+        self.standardize = standardize
+        self.init = init
+        self.backend = backend
+        self.random_state = random_state
+        self.verbose = verbose
+
+    def _validate(self, X: ArrayLike, coords: ArrayLike) -> tuple[Array, Array]:
+        X = np.asarray(X, dtype=np.float64)
+        if X.ndim != 2:
+            raise ValueError(f"X must be 2D (voxels, samples), got shape {X.shape}")
+        R = _check_coords(coords, X.shape[0], None)
+        if not np.all(np.isfinite(X)):
+            raise ValueError("X contains NaN or Inf")
+        K, V = self.K, X.shape[0]
+        if not isinstance(K, (int, np.integer)) or K < 1:
+            raise ValueError(f"K must be a positive integer, got {K!r}")
+        if K >= V:
+            raise ValueError(f"K={K} must be smaller than the number of voxels ({V})")
+        if self.max_iter < 0:
+            raise ValueError(f"max_iter must be >= 0, got {self.max_iter}")
+        if self.weight_method not in ("rr", "ols"):
+            raise ValueError(
+                f"weight method must be 'rr' or 'ols', got {self.weight_method!r}"
+            )
+        if self.nlss_loss not in LOSSES:
+            raise ValueError(
+                f"nlss_loss must be one of {tuple(LOSSES)}, got {self.nlss_loss!r}"
+            )
+        return X, R
+
+    def _objective(
+        self, X: Array, R: Array, x: Array, engine: Any, prior: Prior | None
+    ) -> tuple[float, Array]:
+        """Full-data objective at ``x`` and the full-data weights it uses."""
+        K, D = self.K, R.shape[1]
+        F = factors(R, x[: K * D].reshape(K, D), x[K * D :])
+        W = ridge_weights(X, F, self.weight_method)
+        r = ResidualProblem(X, W, R, engine, prior).residual(x)
+        return 0.5 * float(np.sum(LOSSES[self.nlss_loss](r * r))), W
+
+    def _iterate(
+        self,
+        X: Array,
+        R: Array,
+        x: Array,
+        rng: np.random.Generator,
+        engine: Any,
+        prior: Prior | None,
+        bnds: tuple[Array, Array],
+        sizes: tuple[int, int],
+        label: str,
+    ) -> tuple[Array, int, bool]:
+        """Outer loop from ``x``; returns the final x, iterations and convergence."""
+        (V, T), (Vs, Ts) = X.shape, sizes
+        K, D = self.K, R.shape[1]
+        length = np.sqrt(max_sigma(R) / 2.0)
+        for n_iter in range(1, self.max_iter + 1):
+            vi = np.sort(rng.choice(V, Vs, replace=False)) if Vs < V else slice(None)
+            ti = np.sort(rng.choice(T, Ts, replace=False)) if Ts < T else slice(None)
+            X_sub, R_sub = X[vi][:, ti], R[vi]
+            C, w = x[: K * D].reshape(K, D), x[K * D :]
+            W = ridge_weights(X_sub, factors(R_sub, C, w), self.weight_method)
+            problem = ResidualProblem(
+                X_sub, W, R_sub, engine, prior, compress=self.nlss_loss == "linear"
+            )
+            x_new, _ = solve_centers_widths(
+                problem,
+                x,
+                bnds,
+                method=self.nlss_method,
+                loss=self.nlss_loss,
+                x_scale=self.x_scale,
+            )
+            C_new = x_new[: K * D].reshape(K, D)
+            perm = match_factors(C, C_new)
+            C_new, w_new = C_new[perm], x_new[K * D :][perm]
+            change = max(
+                float(np.max(np.abs(C_new - C))) / length,
+                float(np.max(np.abs(w_new - w) / w)),
+            )
+            x = np.concatenate([C_new.ravel(), w_new])
+            if self.verbose:
+                print(f"TFA {label} iteration {n_iter}: scaled change {change:.6g}")
+            if change <= self.threshold:
+                return x, n_iter, True
+        return x, self.max_iter, False
+
+    def fit(self, X: ArrayLike, coords: ArrayLike, prior: Prior | None = None) -> "TFA":
+        """Fit centers, widths and weights.
+
+        Parameters
+        ----------
+        X : array_like, shape (V, T)
+            Data, one row per voxel. Any float dtype or memory layout; computed in
+            float64 after `standardize_data`.
+        coords : array_like, shape (V, D)
+            Voxel coordinates, D in {2, 3}.
+        prior : Prior, optional
+            HTFA template. When given, the fit starts from ``prior.centers`` and
+            ``prior.widths`` (``init`` is ignored), and every solve is penalized
+            towards the template with ``scale = 0.5 * (Vs * Ts) / (V * T)``
+            (``prior.scale`` is ignored and the caller's prior is not modified).
+
+        Returns
+        -------
+        TFA
+            The fitted estimator.
+
+        Raises
+        ------
+        ValueError
+            On invalid shapes, NaN/Inf values, ``K >= V`` or invalid parameters.
+        """
+        X, R = self._validate(X, coords)
+        names = _init_names(self.init)
+        X = standardize_data(X, self.standardize)
+        V, T = X.shape
+        K, D = self.K, R.shape[1]
+        if prior is not None and np.shape(prior.centers) != (K, D):
+            raise ValueError(
+                f"prior.centers must have shape ({K}, {D}), "
+                f"got {np.shape(prior.centers)}"
+            )
+        rng = np.random.default_rng(self.random_state)
+        sample_seed = int(rng.integers(np.iinfo(np.int32).max))
+        sizes = (
+            _sample_size(V, self.voxel_ratio, self.max_voxels),
+            _sample_size(T, self.tr_ratio, self.max_trs),
+        )
+        engine = select_engine(self.backend, *sizes, K)
+        lb, ub = bounds(R, K, self.lower_ratio, self.upper_ratio)
+        if prior is None:
+            starts = _initial_starts(X, R, K, names, rng, lb[-1], ub[-1])
+            fit_prior = full_prior = None
+        else:
+            starts = {"prior": (prior.centers, prior.widths)}
+            fit_prior = dataclasses.replace(
+                prior, scale=0.5 * (sizes[0] * sizes[1]) / (V * T)
+            )
+            full_prior = dataclasses.replace(prior, scale=0.5)
+
+        runs = {}
+        for name, (centers, widths) in starts.items():
+            x0 = np.clip(np.concatenate([np.ravel(centers), np.ravel(widths)]), lb, ub)
+            x, n_iter, converged = self._iterate(
+                X,
+                R,
+                x0,
+                np.random.default_rng(sample_seed),
+                engine,
+                fit_prior,
+                (lb, ub),
+                sizes,
+                name,
+            )
+            objective, W = self._objective(X, R, x, engine, full_prior)
+            runs[name] = (objective, x, W, n_iter, converged)
+        self.init_ = min(runs, key=lambda n: runs[n][0])
+        self.init_objectives_ = {n: run[0] for n, run in runs.items()}
+        self.cost_, x, self.weights_, self.n_iter_, self.converged_ = runs[self.init_]
+        if self.max_iter > 0 and not self.converged_:
+            warnings.warn(
+                f"TFA did not converge in max_iter={self.max_iter} iterations "
+                f"(init {self.init_!r}); increase max_iter or threshold",
+                ConvergenceWarning,
+                stacklevel=2,
+            )
+        self.centers_ = x[: K * D].reshape(K, D).copy()
+        self.widths_ = x[K * D :].copy()
+        self.coords_ = R
+        self.engine_ = engine.name
+        return self
+
+    def factors(self, coords: ArrayLike | None = None) -> Array:
+        """Factor images ``F`` (V, K) at ``coords`` (the fitted coords by default).
+
+        Parameters
+        ----------
+        coords : array_like, shape (V, D), optional
+            Coordinates to evaluate the fitted factors at.
+
+        Returns
+        -------
+        ndarray, shape (V, K)
+        """
+        check_is_fitted(self, "centers_")
+        D = self.centers_.shape[1]
+        R = self.coords_ if coords is None else _check_coords(coords, None, D)
+        return factors(R, self.centers_, self.widths_)
+
+    def reconstruct(self) -> Array:
+        """Reconstruction ``F @ weights_`` (V, T) at the fitted coords.
+
+        The result is in the standardized space the model was fitted in (see
+        ``standardize``), not in the units of the raw input.
+
+        Returns
+        -------
+        ndarray, shape (V, T)
+        """
+        check_is_fitted(self, "weights_")
+        result: Array = self.factors() @ self.weights_
+        return result
