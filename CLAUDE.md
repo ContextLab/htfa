@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Hierarchical Topographic Factor Analysis (HTFA) - A lightweight Python implementation for neuroimaging data analysis based on the BrainIAK algorithm. Uses Poetry for dependency management and provides minimal dependencies for easy installation.
+Hierarchical Topographic Factor Analysis (HTFA) - A lightweight Python implementation for neuroimaging data analysis based on the BrainIAK algorithm. Packaged with setuptools (`pyproject.toml`); the dev environment is managed with uv (`make install`). Dependencies are kept minimal.
 
 ## Commands
 
@@ -12,7 +12,7 @@ Hierarchical Topographic Factor Analysis (HTFA) - A lightweight Python implement
 make install   # uv venv (.venv, Python 3.12) + pip install -e ".[dev,docs]"
 make test      # .venv/bin/pytest -q
 make lint      # ruff check, ruff format --check, mypy
-make docs      # sphinx-build -> docs/_build/html
+make docs      # sphinx-build -> docs/_build/html (needs docs/conf.py, added in a later task)
 
 # Run a specific test
 .venv/bin/pytest tests/test_package.py::test_version -xvs
@@ -22,6 +22,8 @@ Markers: `brainiak`, `network` (deselected by default), `gpu`, `slow`.
 Run `make lint` and `make test` before committing.
 
 ## Architecture
+
+Planned layout (modules land task by task during the rewrite; see docs/superpowers/plans/2026-10-23-htfa-rewrite.md):
 
 ```
 htfa/
@@ -46,8 +48,10 @@ Apple Silicon). Extras: `plot`, `images`, `nilearn`, `gpu`, `dev`, `docs`.
 
 ## Testing Strategy
 
-- Unit tests in `tests/unit/` - Component isolation
-- Integration tests in `tests/integration/` - End-to-end flows
-- Optimization tests in `tests/test_optimization.py` - Algorithm validation
-- No mocks for core functionality - test real implementations
-- Coverage target: >90%
+- Flat `tests/test_*.py` files; shared fixtures in `tests/conftest.py`.
+- Real implementations only: no mocks.
+- Markers (registered, `--strict-markers`):
+  - `brainiak`: compares against the reference BrainIAK implementation (needs brainiak); deselected by default
+  - `network`: needs network access / downloads data; deselected by default
+  - `gpu`: needs a GPU backend (torch with CUDA or MPS)
+  - `slow`: long-running test

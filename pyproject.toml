@@ -75,7 +75,7 @@ include = ["htfa*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-m 'not brainiak and not network'"
+addopts = "--strict-markers -m 'not brainiak and not network'"
 markers = [
   "brainiak: compares against the reference BrainIAK implementation (requires brainiak)",
   "network: requires network access (downloads data)",
