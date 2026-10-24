@@ -10,7 +10,6 @@ import importlib.util
 import os
 import platform
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -115,17 +114,28 @@ def torch_index_url(nvidia_smi_output: str | None, system: str) -> str | None:
     return TORCH_INDEX + "cpu"
 
 
+def _under(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:  # different drives
+        return False
+
+
 def _find_nvidia_smi() -> str | None:
-    """Locate nvidia-smi without searching the current directory."""
-    cwd = os.path.normcase(os.path.abspath(os.getcwd()))
-    safe = [
-        d
-        for d in os.environ.get("PATH", "").split(os.pathsep)
-        if d not in ("", ".") and os.path.normcase(os.path.abspath(d)) != cwd
-    ]
-    found = shutil.which("nvidia-smi", path=os.pathsep.join(safe))
-    if found:
-        return found
+    """Locate nvidia-smi without ever consulting the current directory."""
+    cwd = os.path.realpath(os.getcwd())
+    exts = [""]
+    if sys.platform == "win32":
+        exts = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";")
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        if not d or not os.path.isabs(d) or _under(os.path.realpath(d), cwd):
+            continue
+        for ext in exts:
+            path = os.path.join(d, "nvidia-smi" + ext)
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                real = os.path.realpath(path)
+                if os.path.isabs(real) and not _under(real, cwd):
+                    return path
     candidates = ["/usr/bin/nvidia-smi"]
     root = os.environ.get("SystemRoot")
     if root:

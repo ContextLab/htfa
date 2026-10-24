@@ -94,15 +94,37 @@ def test_torch_index_url_is_silent(capsys):
     assert captured.out == "" and captured.err == ""
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="uses a POSIX shell script")
-def test_find_nvidia_smi_ignores_cwd(tmp_path, monkeypatch):
-    fake = tmp_path / "nvidia-smi"
+def _plant(directory: Path) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    fake = directory / "nvidia-smi"
     fake.write_text("#!/bin/sh\necho planted\n")
     fake.chmod(0o755)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("PATH", os.pathsep.join(["", ".", str(tmp_path)]))
+    return fake
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="uses a POSIX shell script")
+def test_find_nvidia_smi_ignores_cwd(tmp_path, monkeypatch):
+    cwd = tmp_path / "cwd"
+    fake = _plant(cwd)
+    _plant(cwd / "subdir")
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("PATH", os.pathsep.join(["", ".", "subdir", str(cwd)]))
     found = _lazy._find_nvidia_smi()
     assert found is None or Path(found).resolve() != fake.resolve()
+    assert found is None or "cwd" not in Path(found).parts
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="uses a POSIX shell script")
+def test_find_nvidia_smi_finds_absolute_path_entry(tmp_path, monkeypatch):
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    good = _plant(tmp_path / "bin")
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("PATH", os.pathsep.join(["", ".", str(good.parent)]))
+    found = _lazy._find_nvidia_smi()
+    assert found is not None
+    assert Path(found).resolve() == good.resolve()
+    assert os.path.isabs(found)
 
 
 def test_ensure_torch_disabled_message():
