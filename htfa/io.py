@@ -127,15 +127,24 @@ def _to_samples(arr: np.ndarray, channels: str) -> np.ndarray:
     return arr[..., :1]
 
 
+def _read_tiff(path: str, channels: str) -> np.ndarray:
+    """TIFF to ``(H, W, T)``; page axes (not Y, X or S) are samples."""
+    with lazy_import("tifffile", "images", "TIFF images").TiffFile(path) as tif:
+        series = tif.series[0]
+        axes, arr = series.axes, np.asarray(series.asarray())
+    if "S" not in axes:
+        arr, axes = arr[..., None], axes + "S"
+    pages = [a for a in axes if a not in "YXS"]
+    arr = np.transpose(arr, [axes.index(a) for a in (*pages, "Y", "X", "S")])
+    arr = arr.reshape((-1, *arr.shape[-3:]))
+    if arr.shape[-1] in (2, 4):  # alpha is dropped, as for PIL images
+        arr = arr[..., : arr.shape[-1] - 1]
+    return np.concatenate([_to_samples(page, channels) for page in arr], axis=-1)
+
+
 def _read_image(path: str, channels: str) -> np.ndarray:
     if _ext(path, TIFF_EXTS):
-        arr = np.asarray(lazy_import("tifffile", "images", "TIFF images").imread(path))
-        if arr.ndim == 3 and arr.shape[-1] not in (
-            3,
-            4,
-        ):  # multi-page: pages are samples
-            return np.moveaxis(arr, 0, -1).astype(np.float64)
-        return _to_samples(arr, channels)
+        return _read_tiff(path, channels)
     pil = lazy_import("PIL.Image", "images", "reading images")
     with pil.open(path) as im:
         im.seek(0)
@@ -177,7 +186,11 @@ def _grids(item: Any, coords: Any, channels: str) -> list[_Grid]:
         path = os.fspath(item)
         if os.path.isdir(path):
             names = sorted(
-                (n for n in os.listdir(path) if _ext(n, NIFTI_EXTS + IMAGE_EXTS)),
+                (
+                    n
+                    for n in os.listdir(path)
+                    if not n.startswith(".") and _ext(n, NIFTI_EXTS + IMAGE_EXTS)
+                ),
                 key=_natural,
             )
             if not names:
@@ -209,15 +222,16 @@ def _spacing(spacing: Any, ndim: int) -> np.ndarray:
 
 
 def _mask_from_image(img: Any) -> np.ndarray:
-    return np.squeeze(np.asarray(img.get_fdata())) != 0
+    data = np.asarray(img.get_fdata())
+    if data.ndim == 4 and data.shape[-1] == 1:
+        data = data[..., 0]
+    return data != 0
 
 
 def _resolve_mask(mask: Any, grid: _Grid) -> np.ndarray | None:
-    """Spatial boolean mask for ``grid``; None means keep everything (given coords)."""
+    """Spatial boolean mask for ``grid``."""
     spatial = grid.values.shape[:-1]
     if mask is None:
-        if grid.coords is not None:
-            return None
         v = grid.values
         return np.isfinite(v).all(-1) & (v != 0).any(-1)
     if isinstance(mask, str) and mask in ("epi", "background"):
@@ -250,9 +264,9 @@ def _resolve_mask(mask: Any, grid: _Grid) -> np.ndarray | None:
 def _subject(grid: _Grid, mask: Any, spacing: Any) -> Subject:
     keep = _resolve_mask(mask, grid)
     if grid.coords is not None:
-        data = grid.values if keep is None else grid.values[keep]
-        coords = grid.coords if keep is None else grid.coords[keep]
-        return Subject(data, coords, mask=keep, source=grid.source)
+        return Subject(
+            grid.values[keep], grid.coords[keep], mask=keep, source=grid.source
+        )
     assert keep is not None
     spatial = grid.values.shape[:-1]
     ijk = _ijk(keep)

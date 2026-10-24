@@ -1,5 +1,7 @@
 """Tests for htfa.io: real files in tmp_path, no mocks."""
 
+from pathlib import Path
+
 import nibabel as nib
 import numpy as np
 import pytest
@@ -47,7 +49,7 @@ def test_load_nifti_gz_and_folder_of_subjects(tmp_path):
         _save(tmp_path / f"s{i}.nii.gz", _vol((2, 2, 2), i))
     subs = load(tmp_path)
     assert len(subs) == 3
-    assert [s.source.split("/")[-1] for s in subs] == [
+    assert [Path(s.source).name for s in subs] == [
         "s1.nii.gz",
         "s2.nii.gz",
         "s10.nii.gz",
@@ -247,3 +249,60 @@ def test_load_errors(tmp_path):
         load(_vol((3, 3)), channels="rgb")
     with pytest.raises(ValueError, match="spacing"):
         load(_vol((3, 3)), spacing=(1, 2, 3))
+
+
+def test_load_tiff_pages_and_channels(tmp_path):
+    import tifffile
+
+    rng = np.random.default_rng(5)
+    pages = rng.integers(0, 60000, (3, 4, 3), dtype=np.uint16)  # 3 pages, width 3
+    tifffile.imwrite(tmp_path / "pages.tif", pages, photometric="minisblack")
+    (s,) = load(tmp_path / "pages.tif")
+    assert s.data.shape == (12, 3) and s.image_shape == (4, 3)
+    np.testing.assert_allclose(s.data, np.moveaxis(pages, 0, -1).reshape(12, 3))
+
+    rgb = rng.integers(0, 256, (4, 5, 3), dtype=np.uint8)
+    luma = (rgb * np.array([0.299, 0.587, 0.114])).sum(-1).ravel()
+    tifffile.imwrite(tmp_path / "rgb.tif", rgb, photometric="rgb")
+    tifffile.imwrite(
+        tmp_path / "planar.tif",
+        np.moveaxis(rgb, -1, 0),
+        photometric="rgb",
+        planarconfig="separate",
+    )
+    for name in ("rgb.tif", "planar.tif"):
+        (s,) = load(tmp_path / name)
+        np.testing.assert_allclose(s.data[:, 0], luma)
+        (s,) = load(tmp_path / name, channels="separate")
+        np.testing.assert_allclose(s.data, rgb.reshape(20, 3))
+
+    multi = rng.integers(0, 256, (2, 4, 5, 3), dtype=np.uint8)
+    tifffile.imwrite(tmp_path / "multi.tif", multi, photometric="rgb")
+    (s,) = load(tmp_path / "multi.tif")
+    assert s.data.shape == (20, 2)
+    (s,) = load(tmp_path / "multi.tif", channels="separate")
+    assert s.data.shape == (20, 6)
+
+    ga = rng.integers(0, 256, (4, 5, 2), dtype=np.uint8)
+    tifffile.imwrite(
+        tmp_path / "ga.tif", ga, extrasamples=["unassalpha"], photometric="minisblack"
+    )
+    (s,) = load(tmp_path / "ga.tif")
+    np.testing.assert_allclose(s.data[:, 0], ga[..., 0].ravel())
+
+
+def test_load_coords_default_screening():
+    data = _vol((6, 3))
+    data[1] = 0
+    data[4, 2] = np.nan
+    coords = _vol((6, 3), 9)
+    (s,) = load(data, coords=coords)
+    keep = [0, 2, 3, 5]
+    np.testing.assert_allclose(s.data, data[keep])
+    np.testing.assert_allclose(s.coords, coords[keep])
+
+
+def test_load_folder_skips_dot_files(tmp_path):
+    _save(tmp_path / "a.nii", _vol((2, 2, 2)))
+    (tmp_path / "._a.nii").write_bytes(b"junk")
+    assert len(load(tmp_path)) == 1
