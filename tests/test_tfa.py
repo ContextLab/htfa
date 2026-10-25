@@ -565,7 +565,7 @@ def test_subsampled_fit_stops_on_full_data_objective():
 
     model, caught = _subsampled_2d()
     n = model.n_iter_
-    print(f"stopped after {n} iterations ({model.converged_reason_}), cost {model.cost_}")
+    print(f"stopped after {n} iterations ({model.converged_reason_}), {model.cost_}")
     assert model.converged_reason_ == "objective" and model.converged_
     assert not caught
     assert OBJECTIVE_WINDOW <= n < model.max_iter
