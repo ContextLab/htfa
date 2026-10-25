@@ -5,7 +5,7 @@ A from-scratch, standalone Python implementation of Hierarchical Topographic Fac
 [![tests](https://github.com/ContextLab/htfa/actions/workflows/tests.yml/badge.svg)](https://github.com/ContextLab/htfa/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Work in progress.** `main` is in the middle of a rewrite. The TFA and HTFA estimators, `htfa.fit`, input loading and plotting are not implemented yet. See [Status and roadmap](#status-and-roadmap) for what exists today.
+> **Pre-release.** The TFA and HTFA estimators, `htfa.fit`, input loading (NIfTI files and folders, nilearn/nibabel objects, numpy arrays, 2D images), connectivity and the results object are implemented and tested. The API may change before the first tagged release. The Sphinx documentation is not written yet; see [docs/API.md](docs/API.md) for the API guide. See [Status and roadmap](#status-and-roadmap).
 
 ## Overview
 
@@ -19,33 +19,33 @@ Differences from BrainIAK, and whether each exists yet:
 |-|-|
 | No MPI and no compiler needed; the core dependencies are pure Python wheels (numpy, scipy, scikit-learn, nibabel, joblib) | Implemented (packaging) |
 | Analytic Jacobian for the center/width least-squares problem | Implemented (`htfa/_kernels.py`) |
-| NumPy engine, plus a torch engine for CUDA, Apple Metal (MPS) and CPU, with an `auto` backend that uses a GPU only for large problems when torch is already installed | Implemented (`htfa/_engines.py`); not yet reachable through an estimator |
+| NumPy engine, plus a torch engine for CUDA, Apple Metal (MPS) and CPU, with an `auto` backend that uses a GPU only for large problems when torch is already installed | Implemented (`htfa/_engines.py`); selected with the estimators' `backend` argument |
 | Optional dependencies install themselves on first use | Implemented (`htfa/_lazy.py`) |
 | Synthetic data with ground truth, for 2D and 3D coordinate grids | Implemented (`htfa.synthetic`) |
-| 2D images as input (pillow/tifffile extras) | Planned |
-| NIfTI files and nilearn objects as input | Planned |
-| `TFA` and `HTFA` estimators and `htfa.fit` | In progress / planned |
+| 2D images as input (pillow/tifffile extras) | Implemented (`htfa/io.py`) |
+| NIfTI files, folders of NIfTI files, and nilearn/nibabel objects as input | Implemented (`htfa/io.py`) |
+| `TFA` and `HTFA` estimators and `htfa.fit` | Implemented (`htfa/tfa.py`, `htfa/htfa.py`, `htfa/fit.py`) |
 
 ## Status and roadmap
 
-Implemented:
+Implemented (plan Tasks 1 to 10):
 
-- Packaging and repository cleanup (plan Task 1)
-- Numerical kernels: factors, ridge weights, residual and analytic Jacobian (Task 2)
-- NumPy and torch engines and backend selection (Task 3)
-- On-demand installation of optional dependencies (Task 4)
-- Synthetic data generators and factor matching (Task 5)
+- Packaging and repository cleanup
+- Numerical kernels: factors, ridge weights, residual and analytic Jacobian
+- NumPy and torch engines and backend selection
+- On-demand installation of optional dependencies
+- Synthetic data generators and factor matching
+- TFA estimator
+- HTFA estimator
+- Loading inputs: NIfTI files and folders, images, nilearn/nibabel objects, arrays
+- Connectivity, results object and `htfa.fit`
+- Cross-check against BrainIAK (`pytest -m brainiak`, run in CI)
 
-Not yet available (plan Tasks 6 to 13):
+Not yet done (Tasks 11 to 13):
 
-- TFA estimator (Task 6; in progress)
-- HTFA estimator (Task 7)
-- Loading inputs: NIfTI, images, nilearn objects (Task 8)
-- Connectivity, results object and `htfa.fit` (Task 9)
-- Cross-check against BrainIAK (Task 10)
-- Benchmarks, GPU accuracy checks and the `auto` threshold (Task 11)
-- Plotting and Sphinx documentation (Task 12)
-- Release workflow (Task 13)
+- Benchmarks, GPU accuracy checks and tuning of the `auto` backend threshold (Task 11; in progress)
+- Sphinx documentation and tutorials, including a check on real fMRI data (Task 12)
+- Release workflow and PyPI publication (Task 13)
 
 The full plan is in `docs/superpowers/plans/2026-10-23-htfa-rewrite.md`.
 
@@ -91,31 +91,40 @@ htfa.set_autoinstall(False)
 
 ## Example
 
-Only the synthetic-data helpers exist so far. This simulates single-subject TFA data on a 2D grid and recovers the ordering of shuffled factor centers (it does not fit a model):
+Fit HTFA to a folder with one `.nii` / `.nii.gz` file per subject:
 
 ```python
-import numpy as np
-from htfa.synthetic import make_tfa_data, match_factors
+import htfa
 
-# Simulate X = F @ W + noise: 20 x 20 pixel grid, 50 time points, 4 factors
-X, R, truth = make_tfa_data(grid_shape=(20, 20), n_samples=50, K=4, random_state=0)
-print(X.shape, R.shape)  # (400, 50) (400, 2)
-print(truth["centers"].shape, truth["widths"].shape, truth["weights"].shape)
+res = htfa.fit("path/to/folder", K=50, max_global_iter=30, random_state=0)
+res.global_centers  # (K, 3) template centers, in world (mm) coordinates
+res.weights[0]  # (K, T) factor time courses of the first subject (file order)
+res.connectivity(0)  # (K, K) factor connectivity of the first subject
+```
 
-# Match a shuffled copy of the true centers back to the originals
-rng = np.random.default_rng(1)
-shuffled = truth["centers"][rng.permutation(4)]
-perm = match_factors(truth["centers"], shuffled)
-print(np.allclose(shuffled[perm], truth["centers"]))
+On synthetic data with known parameters:
+
+```python
+import htfa
+from htfa.synthetic import match_factors
+
+Xs, Rs, truth = htfa.make_htfa_data(
+    n_subjects=3, grid_shape=(12, 12, 12), n_samples=60, K=5, random_state=0
+)
+res = htfa.fit(
+    Xs, K=5, coords=Rs, standardize=False, max_global_iter=30, random_state=0
+)
+perm = match_factors(truth["centers"][0], res.centers[0])
+print(abs(res.centers[0][perm] - truth["centers"][0]).max())
 ```
 
 Output:
 
 ```
-(400, 50) (400, 2)
-(4, 2) (4,) (4, 50)
-True
+0.01688680355447225
 ```
+
+See [docs/API.md](docs/API.md) for the inputs `htfa.fit` accepts, its parameters and the results object.
 
 ## Testing
 
