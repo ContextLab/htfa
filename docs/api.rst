@@ -33,7 +33,7 @@ Use the estimators directly when you already have arrays:
    model.centers_, model.widths_, model.weights_  # per-subject lists
 
    model = TFA(K=10, random_state=0).fit(X, R)  # X: (V, T), R: (V, D)
-   model.converged_reason_  # 'threshold', 'plateau' or 'max_iter'
+   model.converged_reason_  # 'threshold', 'objective', 'plateau' or 'max_iter'
 
 Factors are in template order for HTFA fits: factor ``k`` of every subject
 corresponds to global factor ``k``. Widths use the BrainIAK convention

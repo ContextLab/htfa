@@ -48,6 +48,19 @@ RAW_VAR_LIMIT = 10.0
 # With subsampling, stop when the scaled change has not reached a new minimum for
 # this many consecutive iterations (a fresh sample keeps it above the threshold).
 PLATEAU_PATIENCE = 5
+# With subsampling, the scaled change has a noise floor (two subsample optima differ:
+# 0.56 at caps 3000x300 and 0.31 at 10000x300 on real data, V~70k, T=1137, K=100), so
+# the fit stops when the lowest full-data objective so far has fallen by less than
+# OBJECTIVE_RTOL per iteration over the last OBJECTIVE_WINDOW iterations. The window
+# (and the running minimum) keeps one noisy upward step from stopping a fit that is
+# still improving: on make_tfa_data (20, 20), K=4, voxel_ratio=0.5 the objective rose
+# by 0.25% at iteration 6 after falling 1.5% at iteration 5. Measured (synthetic, real
+# mask 70k x 1137, K=100, caps 3000x300): the one-iteration relative decrease fell
+# from 1.5e-2 (iteration 1) to 4.9e-5-1.4e-4 at iterations 12-15; the rule stops at
+# iteration 15, median center error 2.20 mm (2.16-2.32 mm from iteration 9 on, 2.18
+# at 20).
+OBJECTIVE_RTOL = 1e-4
+OBJECTIVE_WINDOW = 3
 # Relative floor added to the K-means sample weights so that every voxel counts.
 TINY_WEIGHT = 1e-12
 
@@ -269,9 +282,23 @@ class TFA(BaseEstimator):
         ``max(max|dc| / L, max|dw| / w)`` with ``L = sqrt(max_sigma(R) / 2)``.
         BrainIAK instead thresholds the raw largest change at 1.0. With subsampling
         (any ratio < 1 or a cap below the data size) the fresh sample of every
-        iteration keeps the change from settling, so the fit also stops when the
-        change has not reached a new minimum for 5 consecutive iterations
-        ("plateau").
+        iteration keeps the change from settling: it has a noise floor, the
+        difference between two subsample optima. Measured on real fMRI data
+        (V = 69597, T = 1137, K = 100, six independent solves per row):
+
+        ===========  =============  =================  ======================
+        caps (V, T)  scaled change  center noise (mm)  width noise (median/90%)
+        ===========  =============  =================  ======================
+        3000, 300    0.56           2.1                5.6% / 23%
+        10000, 300   0.31           1.3                4.3% / 15%
+        30000, 300   0.31           0.85               2.5% / 14%
+        ===========  =============  =================  ======================
+
+        So with subsampling the fit also stops when the lowest full-data
+        objective so far (evaluated after every iteration) has fallen by less
+        than a relative 1e-4 per iteration over the last 3 iterations
+        ("objective"), or when the change has not reached a new minimum for 5
+        consecutive iterations ("plateau").
     nlss_method : {'bounded-lm', 'trf', 'dogbox'}, default='bounded-lm'
         Center/width solver. ``'bounded-lm'`` is a bounded Levenberg-Marquardt
         method on the explicit K (D + 1)-square Gauss-Newton system, assembled
@@ -332,7 +359,8 @@ class TFA(BaseEstimator):
     random_state : None, int or numpy.random.Generator, default=None
         Seeds the K-means initializations and the subsampling.
     verbose : bool, default=False
-        Print the scaled change of every iteration.
+        Print the scaled change of every iteration (and, with subsampling, the
+        relative decrease of the full-data objective), flushed immediately.
 
     Attributes
     ----------
@@ -347,9 +375,12 @@ class TFA(BaseEstimator):
     converged_ : bool
         Whether the fit stopped before ``max_iter`` (``converged_reason_`` is not
         ``'max_iter'``).
-    converged_reason_ : {'threshold', 'plateau', 'max_iter'}
+    converged_reason_ : {'threshold', 'objective', 'plateau', 'max_iter'}
         Why the winning start stopped: the scaled change fell to ``threshold``,
-        it plateaued under subsampling, or ``max_iter`` was reached.
+        the full-data objective stopped falling under subsampling (below a
+        relative 1e-4 per iteration over 3 iterations), the change plateaued
+        under subsampling, or
+        ``max_iter`` was reached.
     cost_ : float
         Final objective of the winning start: ``0.5 * sum(rho(r**2))`` over the
         full-data residual ``r`` (with the prior penalties when a prior is given).
@@ -368,7 +399,8 @@ class TFA(BaseEstimator):
     -----
     ConvergenceWarning
         When the winning start reaches ``max_iter`` (>= 1) without stopping on the
-        threshold or a plateau.
+        threshold, the objective or a plateau. Under subsampling its message
+        points to the noise floor and to ``max_voxels``/``max_trs``.
     UserWarning
         When single-sample data (T == 1) are fitted unstandardized
         (``standardize`` 'auto' or False) with variance above 10 or ``|mean|``
@@ -483,17 +515,22 @@ class TFA(BaseEstimator):
         bnds: tuple[Array, Array],
         sizes: tuple[int, int],
         label: str,
+        objective: Callable[[Array], float],
     ) -> Iterator[tuple[Array, int, str | None]]:
         """Outer loop from ``x``, one iteration per step.
 
         Yields ``(x, n_iter, reason)`` after every iteration; ``reason`` is
-        ``None`` until the last one, which carries the stop reason.
+        ``None`` until the last one, which carries the stop reason. With
+        subsampling, ``objective(x)`` (the full-data objective) is evaluated
+        after every iteration for the ``'objective'`` stopping rule.
         """
         (V, T), (Vs, Ts) = X.shape, sizes
         K, D = self.K, R.shape[1]
         length = np.sqrt(max_sigma(R) / 2.0)
         subsampled = Vs < V or Ts < T
         best, stale = np.inf, 0
+        # Running minimum of the full-data objective, from the start on.
+        lowest = [objective(x)] if subsampled and self.max_iter > 0 else []
         for n_iter in range(1, self.max_iter + 1):
             vi = np.sort(rng.choice(V, Vs, replace=False)) if Vs < V else slice(None)
             ti = np.sort(rng.choice(T, Ts, replace=False)) if Ts < T else slice(None)
@@ -519,10 +556,24 @@ class TFA(BaseEstimator):
                 float(np.max(np.abs(w_new - w) / w)),
             )
             x = np.concatenate([C_new.ravel(), w_new])
+            message = f"TFA {label} iteration {n_iter}: scaled change {change:.6g}"
+            if subsampled:
+                cost = objective(x)
+                change_obj = (lowest[-1] - cost) / abs(lowest[-1])
+                lowest.append(min(lowest[-1], cost))
+                message += f", full-data objective decrease {change_obj:.3g}"
             if self.verbose:
-                print(f"TFA {label} iteration {n_iter}: scaled change {change:.6g}")
+                print(message, flush=True)
             if change <= self.threshold:
                 yield x, n_iter, "threshold"
+                return
+            if subsampled and len(lowest) > OBJECTIVE_WINDOW:
+                ref = lowest[-1 - OBJECTIVE_WINDOW]
+                window_decrease = (ref - lowest[-1]) / abs(ref)
+            else:
+                window_decrease = np.inf
+            if window_decrease < OBJECTIVE_WINDOW * OBJECTIVE_RTOL:
+                yield x, n_iter, "objective"
                 return
             best, stale = (change, 0) if change < best else (best, stale + 1)
             if subsampled and stale >= PLATEAU_PATIENCE:
@@ -620,6 +671,7 @@ class TFA(BaseEstimator):
                 (lb, ub),
                 sizes,
                 name,
+                lambda x: self._objective(X, R, x, engine, full_prior)[0],
             )
 
         def advance(name: str, n_steps: int) -> None:
@@ -645,9 +697,17 @@ class TFA(BaseEstimator):
         self.converged_reason_ = reason
         self.converged_ = reason != "max_iter"
         if self.max_iter > 0 and not self.converged_:
+            if sizes != (V, T):
+                advice = (
+                    f"with subsampling ({sizes[0]} of {V} voxels, {sizes[1]} of {T} "
+                    "samples) the scaled change has a noise floor, so raise "
+                    "max_voxels/max_trs (or voxel_ratio/tr_ratio) or max_iter"
+                )
+            else:
+                advice = "increase max_iter or threshold"
             warnings.warn(
                 f"TFA did not converge in max_iter={self.max_iter} iterations "
-                f"(init {self.init_!r}); increase max_iter or threshold",
+                f"(init {self.init_!r}); {advice}",
                 ConvergenceWarning,
                 stacklevel=2,
             )

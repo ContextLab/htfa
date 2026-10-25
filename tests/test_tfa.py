@@ -18,8 +18,8 @@ CENTER_TOL_3D = 0.04  # measured: 0.0164 (seed 0)
 WIDTH_RTOL_3D = 0.008  # measured: 0.00312 (seed 0)
 CENTER_TOL_2D = 0.03  # measured: 0.0120 (seed 0)
 WIDTH_RTOL_2D = 0.025  # measured: 0.0101 (seed 0)
-CENTER_TOL_SUB = 0.25  # measured: 0.100 (seed 0; stops on plateau after 20 iter)
-WIDTH_RTOL_SUB = 0.025  # measured: 0.00995 (seed 0)
+CENTER_TOL_SUB = 0.25  # measured: 0.0273 (seed 0; objective rule, 10 iter)
+WIDTH_RTOL_SUB = 0.025  # measured: 0.0130 (seed 0)
 MIN_WEIGHT_R = 0.95  # brief: every matched weight row correlates at r > 0.95
 EXACT_ATOL = 1e-6  # layout/dtype invariance (controller ruling)
 IMPROVEMENT = (
@@ -65,7 +65,7 @@ def _fit_and_score(X, R, truth, **kwargs):
         K=truth["centers"].shape[0], standardize=False, random_state=0, **kwargs
     ).fit(X, R)
     print(f"fit time {time.perf_counter() - start:.2f} s")
-    assert model.converged_reason_ in ("threshold", "plateau")
+    assert model.converged_reason_ in ("threshold", "objective", "plateau")
     assert model.converged_
     return _recovery_errors(model, truth)
 
@@ -106,7 +106,7 @@ def test_tfa_recovers_known_parameters_2d():
 def test_tfa_subsampling_still_recovers():
     X, R, truth = make_tfa_data((20, 20, 20), 100, K=8, noise=0.1, random_state=0)
     # A fresh subsample every iteration keeps the scaled change above 1e-3, so the
-    # fit stops on a plateau instead; it must not warn.
+    # fit stops on the full-data objective (or a plateau) instead; it must not warn.
     with warnings.catch_warnings():
         warnings.simplefilter("error", ConvergenceWarning)
         c_err, w_err, r = _fit_and_score(X, R, truth, voxel_ratio=0.25, tr_ratio=0.5)
@@ -280,7 +280,9 @@ def test_tfa_accepts_float32_and_strided_views():
 def test_tfa_deterministic_with_random_state():
     X, R, _ = _small_data()
     kw = {"K": 2, "voxel_ratio": 0.5, "tr_ratio": 0.5, "max_iter": 4}
-    with pytest.warns(ConvergenceWarning):
+    with warnings.catch_warnings():
+        # Subsampled fits may stop on the objective rule before max_iter=4.
+        warnings.simplefilter("ignore", ConvergenceWarning)
         a = TFA(random_state=0, **kw).fit(X, R)
         b = TFA(random_state=0, **kw).fit(X, R)
         gen = TFA(random_state=np.random.default_rng(0), **kw).fit(X, R)
@@ -542,3 +544,109 @@ def test_tfa_no_raw_scale_warning_on_zscored_image(standardize):
         warnings.simplefilter("error", UserWarning)
         warnings.simplefilter("ignore", ConvergenceWarning)  # a UserWarning too
         TFA(K=3, max_iter=1, standardize=standardize, init="power").fit(X, R)
+
+
+def _subsampled_2d(**kwargs):
+    X, R, _ = _data_2d()
+    kw = {"K": 6, "init": "ncorr", "standardize": False, "random_state": 0}
+    kw |= {"max_voxels": 400, "max_trs": 40, "threshold": 1e-12} | kwargs
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        model = TFA(**kw).fit(X, R)
+    return model, [w for w in caught if issubclass(w.category, ConvergenceWarning)]
+
+
+def test_subsampled_fit_stops_on_full_data_objective():
+    """Under subsampling the unreachable threshold gives way to the objective rule:
+    the fit stops at the first iteration where the running minimum of the
+    full-data objective fell by less than a relative 1e-4 per iteration over the
+    last 3 iterations, without a ConvergenceWarning."""
+    from htfa.tfa import OBJECTIVE_RTOL, OBJECTIVE_WINDOW
+
+    model, caught = _subsampled_2d()
+    n = model.n_iter_
+    print(f"stopped after {n} iterations ({model.converged_reason_}), cost {model.cost_}")
+    assert model.converged_reason_ == "objective" and model.converged_
+    assert not caught
+    assert OBJECTIVE_WINDOW <= n < model.max_iter
+    # The same fit cut short replays the same subsamples (same seeds); max_iter=0
+    # evaluates the start.
+    costs = [_subsampled_2d(max_iter=m)[0].cost_ for m in range(n)] + [model.cost_]
+    lowest = np.minimum.accumulate(costs)
+    W = OBJECTIVE_WINDOW
+    rel = [(lowest[m - W] - lowest[m]) / abs(lowest[m - W]) for m in range(W, n + 1)]
+    print(f"objectives {costs}\nwindow decreases at iterations {W}..{n}: {rel}")
+    assert all(r >= W * OBJECTIVE_RTOL for r in rel[:-1])
+    assert rel[-1] < W * OBJECTIVE_RTOL
+
+
+def test_subsampled_fit_survives_one_noisy_objective_increase():
+    """make_tfa_data (20, 20), K=4, voxel_ratio=0.5: the full-data objective rises
+    at iteration 6 while the fit is still improving; the fit must go on."""
+    X, R, _ = make_tfa_data((20, 20), 40, K=4, noise=0.1, random_state=0)
+    kw = {"K": 4, "init": "ncorr", "standardize": False, "random_state": 0}
+    costs = [
+        TFA(voxel_ratio=0.5, max_iter=m, threshold=0.0, **kw).fit(X, R).cost_
+        if m
+        else TFA(voxel_ratio=0.5, max_iter=0, **kw).fit(X, R).cost_
+        for m in range(7)
+    ]
+    print(f"objectives at iterations 0-6: {costs}")
+    assert costs[6] > costs[5]  # the noisy step this test is about
+    model = TFA(voxel_ratio=0.5, **kw).fit(X, R)
+    print(f"n_iter {model.n_iter_}, reason {model.converged_reason_}")
+    assert model.n_iter_ > 6
+
+
+def test_subsampled_convergence_warning_points_to_caps():
+    model, caught = _subsampled_2d(max_iter=1)
+    assert model.converged_reason_ == "max_iter"
+    assert len(caught) == 1
+    text = str(caught[0].message)
+    print(text)
+    assert "noise floor" in text and "max_voxels/max_trs" in text
+    assert "400 of 1600 voxels, 40 of 100 samples" in text
+
+
+def test_verbose_output_is_flushed_to_a_pipe(tmp_path):
+    """verbose lines reach a piped stdout while the process is still running."""
+    import os
+    import select
+    import subprocess
+    import sys
+
+    script = tmp_path / "verbose_fit.py"
+    script.write_text(
+        "import sys\n"
+        "from htfa.htfa import HTFA\n"
+        "from htfa.synthetic import make_htfa_data, make_tfa_data\n"
+        "from htfa.tfa import TFA\n"
+        "X, R, _ = make_tfa_data((30, 30), 20, K=2, noise=0.1, random_state=0)\n"
+        "TFA(K=2, init='kmeans', max_iter=1, threshold=1e9, verbose=True).fit(X, R)\n"
+        "Xs, Rs, _ = make_htfa_data(2, (12, 12), 10, K=2, random_state=0)\n"
+        "HTFA(K=2, max_global_iter=1, max_local_iter=1, verbose=True).fit(Xs, Rs)\n"
+        "sys.stdin.read()\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, str(script)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    out, deadline = b"", time.monotonic() + 300
+    try:
+        while b"HTFA global iteration" not in out and time.monotonic() < deadline:
+            ready, _, _ = select.select([proc.stdout], [], [], 5.0)
+            if ready:
+                chunk = os.read(proc.stdout.fileno(), 65536)
+                if not chunk:
+                    break
+                out += chunk
+        print(out.decode())
+        assert proc.poll() is None, "the script exited before its output was read"
+        assert b"TFA kmeans iteration 1: scaled change" in out
+        assert b"HTFA global iteration 1: scaled change" in out
+    finally:
+        proc.stdin.close()
+        proc.wait(60)
+        proc.stdout.close()
