@@ -652,3 +652,30 @@ def test_verbose_output_is_flushed_to_a_pipe(tmp_path):
         proc.stdin.close()
         proc.wait(60)
         proc.stdout.close()
+
+
+def test_objective_rule_waits_for_minimum_iterations():
+    """Started at a converged solution the objective is flat from iteration 1, yet
+    the rule stops no earlier than OBJECTIVE_MIN_ITER; with a smaller max_iter the
+    stopping objective is not evaluated."""
+    from htfa.tfa import OBJECTIVE_MIN_ITER, OBJECTIVE_RTOL, OBJECTIVE_WINDOW
+
+    X, R, _ = _data_2d()
+    kw = {"K": 6, "standardize": False, "random_state": 0}
+    full = TFA(init="ncorr", **kw).fit(X, R)
+    sub = TFA(voxel_ratio=0.5, threshold=0.0, **kw)
+    model = sub.fit(X, R, start=(full.centers_, full.widths_))
+    costs = model.objective_history_
+    lowest = np.minimum.accumulate(costs)
+    W = OBJECTIVE_WINDOW
+    early = (lowest[0] - lowest[W]) / abs(lowest[0])
+    print(f"objectives {costs}; window decrease at iteration {W}: {early}")
+    assert early < W * OBJECTIVE_RTOL  # the rule alone would have fired at W
+    assert model.converged_reason_ == "objective"
+    assert model.n_iter_ == OBJECTIVE_MIN_ITER
+    with pytest.warns(ConvergenceWarning):
+        short = TFA(
+            voxel_ratio=0.5, threshold=0.0, max_iter=OBJECTIVE_MIN_ITER - 1, **kw
+        )
+        short = short.fit(X, R, start=(full.centers_, full.widths_))
+    assert short.objective_history_ == [] and short.n_iter_ == OBJECTIVE_MIN_ITER - 1

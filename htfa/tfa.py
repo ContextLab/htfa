@@ -61,6 +61,9 @@ PLATEAU_PATIENCE = 5
 # at 20).
 OBJECTIVE_RTOL = 1e-4
 OBJECTIVE_WINDOW = 3
+# The objective rule never stops a fit before this many iterations; with a smaller
+# max_iter the stopping objective is not evaluated at all.
+OBJECTIVE_MIN_ITER = OBJECTIVE_WINDOW + 2
 # Relative floor added to the K-means sample weights so that every voxel counts.
 TINY_WEIGHT = 1e-12
 
@@ -296,9 +299,10 @@ class TFA(BaseEstimator):
 
         So with subsampling the fit also stops when the lowest full-data
         objective so far (evaluated after every iteration) has fallen by less
-        than a relative 1e-4 per iteration over the last 3 iterations
-        ("objective"), or when the change has not reached a new minimum for 5
-        consecutive iterations ("plateau").
+        than a relative 1e-4 per iteration over the last 3 iterations, after at
+        least 5 iterations ("objective"), or when the change has not reached a
+        new minimum for 5 consecutive iterations ("plateau"); it then returns
+        the iterate with the lowest objective.
     nlss_method : {'bounded-lm', 'trf', 'dogbox'}, default='bounded-lm'
         Center/width solver. ``'bounded-lm'`` is a bounded Levenberg-Marquardt
         method on the explicit K (D + 1)-square Gauss-Newton system, assembled
@@ -385,8 +389,8 @@ class TFA(BaseEstimator):
         Final objective of the winning start: ``0.5 * sum(rho(r**2))`` over the
         full-data residual ``r`` (with the prior penalties when a prior is given).
     objective_history_ : list of float
-        With subsampling, the stopping objective of the winning start at its
-        start and after every iteration (empty without subsampling). The
+        With subsampling (and ``max_iter >= 5``), the stopping objective of the
+        winning start at its start and after every iteration (empty otherwise). The
         returned centers and widths are those of its minimum, unless the fit
         stopped on the threshold (then the last iterate).
     init_ : str
@@ -538,7 +542,7 @@ class TFA(BaseEstimator):
         subsampled = Vs < V or Ts < T
         best, stale = np.inf, 0
         # Running minimum of the objective, from the start on, and its iterate.
-        if subsampled and self.max_iter > 0:
+        if subsampled and self.max_iter >= OBJECTIVE_MIN_ITER:
             history.append(objective(x))
         lowest, x_best = list(history), x
         for n_iter in range(1, self.max_iter + 1):
@@ -582,7 +586,7 @@ class TFA(BaseEstimator):
             if change <= self.threshold:
                 yield x, n_iter, "threshold"
                 return
-            if len(lowest) > OBJECTIVE_WINDOW:
+            if lowest and n_iter >= OBJECTIVE_MIN_ITER:
                 ref = lowest[-1 - OBJECTIVE_WINDOW]
                 window_decrease = (ref - lowest[-1]) / abs(ref)
             else:
