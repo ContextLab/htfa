@@ -36,6 +36,11 @@ jobs), so timings below are upper bounds; idle-machine benchmarks are being re-r
   | full 70k x 1137, linear loss | 2271 s | 11.2 s |
   | full 70k x 1137, soft_l1 | stopped after 85 min | 66 s |
 
+  Re-run at 05:40-06:00 on a quieter machine (load 32-36 at start, 7 at end), numpy / mps:
+  small (5000x200, K=20) 5 iterations 2.2 / 1.5 s, full fit 55 / 52 s (was 402 / 793 s with
+  trf); medium (20000x300, K=100) 5 iterations 28.5 / 25.3 s (was 1344 / 1810 s), full fit
+  753 / 524 s. The full synthetic fits stop at max_iter=100 outer iterations: the outer
+  alternation, not the solver, is now what limits full fits (open item).
   Review fixes: memory of the chunked assembly bounded (K=200, V=70k: 4.77 → 1.30 GB peak);
   basin-jump regression locked in a test; MPS float32 matches CPU at 20000x300, K=100 (centers
   within 3.5e-4, weights r = 0.9999999999), so `backend='auto'` uses Metal above 5e8 V·T·K.
