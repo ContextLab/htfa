@@ -280,9 +280,7 @@ def test_tfa_accepts_float32_and_strided_views():
 def test_tfa_deterministic_with_random_state():
     X, R, _ = _small_data()
     kw = {"K": 2, "voxel_ratio": 0.5, "tr_ratio": 0.5, "max_iter": 4}
-    with warnings.catch_warnings():
-        # Subsampled fits may stop on the objective rule before max_iter=4.
-        warnings.simplefilter("ignore", ConvergenceWarning)
+    with pytest.warns(ConvergenceWarning):
         a = TFA(random_state=0, **kw).fit(X, R)
         b = TFA(random_state=0, **kw).fit(X, R)
         gen = TFA(random_state=np.random.default_rng(0), **kw).fit(X, R)
