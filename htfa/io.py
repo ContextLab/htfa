@@ -96,6 +96,9 @@ class _Grid:
     affine: np.ndarray | None
     source: str | None
     coords: np.ndarray | None = None  # given coords: spatial dims == (V,)
+    # mask=None drops all-zero locations (out-of-brain screening for volumes);
+    # False for 2D images, where black pixels are data.
+    screen_zeros: bool = True
 
 
 def _natural(name: str) -> list[Any]:
@@ -160,7 +163,7 @@ def _read_file(path: str, channels: str) -> _Grid:
     if _ext(path, NIFTI_EXTS):
         return _from_nifti(nib.load(path), path)
     if _ext(path, IMAGE_EXTS):
-        return _Grid(_read_image(path, channels), None, path)
+        return _Grid(_read_image(path, channels), None, path, screen_zeros=False)
     raise ValueError(f"unrecognized file type: {path}")
 
 
@@ -178,6 +181,8 @@ def _from_array(arr: Any, coords: Any) -> _Grid:
         return _Grid(arr, None, None, coords)
     if arr.ndim not in (2, 3, 4):
         raise ValueError(f"cannot interpret a {arr.ndim}D array without coords")
+    if arr.ndim == 2:
+        return _Grid(arr[..., None], None, None, screen_zeros=False)
     return _Grid(arr[..., None] if arr.ndim < 4 else arr, None, None)
 
 
@@ -233,7 +238,8 @@ def _resolve_mask(mask: Any, grid: _Grid) -> np.ndarray | None:
     spatial = grid.values.shape[:-1]
     if mask is None:
         v = grid.values
-        return np.isfinite(v).all(-1) & (v != 0).any(-1)
+        finite = np.isfinite(v).all(-1)
+        return finite & (v != 0).any(-1) if grid.screen_zeros else finite
     if isinstance(mask, str) and mask in ("epi", "background"):
         if grid.affine is None:
             raise ValueError(f"mask={mask!r} needs NIfTI input")
@@ -294,6 +300,7 @@ def _stack(grids: list[_Grid]) -> _Grid:
         first.affine,
         first.source,
         first.coords,
+        first.screen_zeros,
     )
 
 
@@ -318,7 +325,10 @@ def load(
     coords : array_like or list of array_like, optional
         ``(V, D)`` coordinates for ``(V, T)`` arrays; a list gives one per element.
     mask : None, path, nibabel image, fitted NiftiMasker, ndarray, 'epi' or 'background'
-        ``None`` keeps voxels that are finite and not all zero across samples.
+        ``None`` keeps voxels that are finite and not all zero across samples
+        (NIfTI, 3D/4D arrays and ``(V, T)`` arrays); for 2D images (PNG, JPEG,
+        TIFF, ... files and bare 2D arrays without ``coords``) it keeps every
+        finite pixel, since black pixels are data there.
         Otherwise nonzero voxels of the mask are kept; ``'epi'`` and
         ``'background'`` use nilearn's automatic masks (NIfTI input only).
     stack : bool

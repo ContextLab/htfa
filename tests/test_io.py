@@ -218,12 +218,12 @@ def test_to_image_roundtrip(tmp_path):
 
 def test_to_image_array_without_affine():
     img = _vol((4, 5))
-    img[0, 0] = 0
+    img[0, 0] = np.nan  # outside the default mask (zeros are kept for 2D images)
     (s,) = load(img)
     out = s.to_image(s.data[:, 0])
     assert isinstance(out, np.ndarray) and out.shape == (4, 5)
     assert np.isnan(out[0, 0])
-    np.testing.assert_allclose(out[s.mask.reshape(4, 5)], img[img != 0])
+    np.testing.assert_allclose(out[s.mask.reshape(4, 5)], img[np.isfinite(img)])
 
 
 def test_to_image_requires_image_space():
@@ -306,3 +306,36 @@ def test_load_folder_skips_dot_files(tmp_path):
     _save(tmp_path / "a.nii", _vol((2, 2, 2)))
     (tmp_path / "._a.nii").write_bytes(b"junk")
     assert len(load(tmp_path)) == 1
+
+
+def test_default_mask_keeps_black_pixels_of_2d_images(tmp_path):
+    """mask=None keeps every finite pixel of an image (black pixels are data)."""
+    img = np.random.default_rng(0).integers(1, 256, (30, 30)).astype(np.uint8)
+    img[:3, :3] = 0  # 9 black pixels
+    rgb = np.repeat(img[..., None], 3, axis=-1)
+    tif = np.stack([img, img])
+    Image.fromarray(img).save(tmp_path / "a.png")
+    Image.fromarray(rgb).save(tmp_path / "b.png")
+    import tifffile
+
+    tifffile.imwrite(tmp_path / "c.tif", tif)
+    for subject in [
+        *load([tmp_path / "a.png", tmp_path / "b.png", tmp_path / "c.tif"]),
+        *load(img),  # a bare 2D array without coords is an image too
+        *load(tmp_path, stack=True),
+    ]:
+        print(subject.source, subject.data.shape)
+        assert subject.data.shape[0] == 900
+        assert subject.mask.all()
+    bad = img.astype(np.float64)
+    bad[5, 5] = np.nan
+    (subject,) = load(bad)
+    assert subject.data.shape == (899, 1) and not subject.mask[5, 5]
+
+
+def test_default_mask_still_drops_zero_voxels_of_volumes(tmp_path):
+    vol = _vol((4, 4, 4, 3))
+    vol[0, 0, 0] = 0.0
+    nib.save(nib.Nifti1Image(vol, AFFINE), tmp_path / "v.nii.gz")
+    for subject in (load(tmp_path / "v.nii.gz")[0], load(vol)[0]):
+        assert subject.data.shape == (63, 3) and not subject.mask[0, 0, 0]

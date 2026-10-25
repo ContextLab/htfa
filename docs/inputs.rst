@@ -71,8 +71,12 @@ A BIDS dataset is a nested folder tree, so pass a list of paths:
 Masks
 -----
 
-With the default ``mask=None``, a voxel is kept when it is finite and not zero at
-every time point. ``mask=`` chooses voxels explicitly:
+With the default ``mask=None``, a voxel of a NIfTI image, a 3D/4D array or a
+``(V, T)`` array is kept when it is finite at every time point and not zero at
+every time point (zero everywhere marks out-of-brain locations). For 2D images
+(PNG, JPEG, TIFF, ... files and bare 2D arrays without ``coords``) every finite
+pixel is kept, because black pixels are data there; pass ``mask=image > 0`` to
+drop them. ``mask=`` chooses voxels explicitly:
 
 - a path to a NIfTI mask file, or a nibabel image (nonzero voxels are kept);
 - a fitted nilearn ``NiftiMasker`` (its ``mask_img_`` is used);
