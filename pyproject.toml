@@ -69,6 +69,8 @@ docs = [
   "nilearn>=0.10.1",
   "pillow>=10",
   "tifffile>=2023.1",
+  "hypertools>=1.1",
+  "sentence-transformers>=3",
 ]
 
 [project.urls]
