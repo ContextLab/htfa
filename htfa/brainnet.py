@@ -47,10 +47,12 @@ __all__ = [
     "animate_network",
     "annotate_pair",
     "config_style",
+    "effective_nodes",
     "fetch_mesh",
     "image_diff",
     "load_mesh",
     "mesh_cache_dir",
+    "mni_mask",
     "montage",
     "node_radius",
     "plot_network",
@@ -468,6 +470,15 @@ def _per_node(values: Any, K: int, what: str) -> Array:
 
 def _nodes(nodes: Any, sizes: Any, subject: Any) -> tuple[Array, Array]:
     """Centers and sizes from an HTFAResults, a fitted TFA/HTFA, or an array."""
+    centers, widths = _fit_nodes(nodes, subject)
+    K = len(centers)
+    if sizes is not None:
+        return centers, _per_node(sizes, K, "sizes")
+    return centers, np.ones(K) if widths is None else widths
+
+
+def _fit_nodes(nodes: Any, subject: Any) -> tuple[Array, Array | None]:
+    """Centers and widths (``None`` for an array) of ``nodes``."""
     from .htfa import HTFA
     from .results import HTFAResults
     from .tfa import TFA
@@ -489,10 +500,269 @@ def _nodes(nodes: Any, sizes: Any, subject: Any) -> tuple[Array, Array]:
     else:
         centers, widths = nodes, None
     centers = _centers(centers)
+    return centers, None if widths is None else _per_node(
+        widths, len(centers), "widths"
+    )
+
+
+# ------------------------------------------------------------- effective nodes
+
+_TAIL_SIGMAS = 5.0  # RBF weights beyond 5 sigma (exp(-12.5)) are left out
+_TIE_TOL = 1e-3  # distances within 1e-3 voxel count as tied
+
+
+def mni_mask() -> Array:
+    """Voxel centers (V, 3) of nilearn's 2 mm MNI152 brain mask, in MNI mm.
+
+    The default mask for snapping bare node centers (`effective_nodes`,
+    `plot_network`): the BrainNet meshes are in MNI space. Needs nilearn (the
+    ``nilearn`` extra); the mask ships with nilearn, so nothing is downloaded.
+
+    Raises
+    ------
+    ImportError
+        If nilearn is missing and cannot be installed; pass ``mask=`` or
+        ``snap=False`` instead.
+    """
+    return _mni_mask().copy()
+
+
+_MNI_CACHE: list[Array] = []
+
+
+def _mni_mask() -> Array:
+    if not _MNI_CACHE:
+        try:
+            datasets = lazy_import("nilearn.datasets", "nilearn", "the MNI brain mask")
+        except ImportError as err:
+            raise ImportError(
+                f"{err}\nSnapping nodes into the brain needs a mask: the default "
+                "for bare MNI centers is nilearn's MNI152 brain mask. Pass mask= "
+                "(voxel coordinates or a NIfTI mask) or snap=False."
+            ) from err
+        img = datasets.load_mni152_brain_mask(resolution=2)
+        _MNI_CACHE.append(_mask_coords(img)[0])
+    return _MNI_CACHE[0]
+
+
+def _mask_coords(mask: Any) -> tuple[Array, float, float]:
+    """Voxel centers, voxel spacing and voxel volume of a mask.
+
+    ``mask`` is a (V, D) coordinate array (spacing: median nearest-neighbor
+    distance, assumed isotropic), a NIfTI-like image (nonzero voxels), or a
+    ``(volume, affine)`` pair. For images the spacing is the cube root of the
+    voxel volume ``|det(affine[:3, :3])|``.
+    """
+    if isinstance(mask, tuple):
+        volume, affine = mask
+        return _volume_coords(np.asarray(volume), np.asarray(affine, dtype=float))
+    if hasattr(mask, "affine") and hasattr(mask, "dataobj"):
+        return _volume_coords(np.asarray(mask.dataobj), np.asarray(mask.affine))
+    coords = np.asarray(mask, dtype=np.float64)
+    if coords.ndim != 2:
+        raise ValueError(f"mask coordinates must be (V, D), got {coords.shape}")
+    if len(coords) == 0:
+        raise ValueError("mask has no voxels")
+    if len(coords) == 1:
+        raise ValueError("mask coordinates need at least 2 voxels to set the spacing")
+    d = cKDTree(coords).query(coords, k=2)[0][:, 1]
+    h = float(np.median(d))
+    return coords, h, h ** coords.shape[1]
+
+
+def _volume_coords(volume: Array, affine: Array) -> tuple[Array, float, float]:
+    ijk = np.argwhere(volume.astype(bool))
+    if not len(ijk):
+        raise ValueError("mask has no voxels")
+    vol = float(abs(np.linalg.det(affine[:3, :3])))
+    return ijk @ affine[:3, :3].T + affine[:3, 3], vol ** (1 / 3), vol
+
+
+def _lowest_tied(tree: Any, points: Array, h: float, p: float) -> tuple[Array, Array]:
+    """Nearest voxel of each point, the lowest voxel index among near-ties.
+
+    Returns the voxel indices and whether another voxel was tied.
+    """
+    k = min(8, tree.n)
+    d, i = tree.query(points, k=k, p=p)
+    d, i = d.reshape(len(points), k), i.reshape(len(points), k)
+    tied = d <= d[:, :1] + _TIE_TOL * h
+    best = np.where(tied, i, tree.n).min(axis=1)
+    return best, tied.sum(axis=1) > 1
+
+
+def effective_nodes(
+    centers: Any, widths: Any, mask: Any
+) -> tuple[Array, Array, dict[str, Array]]:
+    """In-mask ("effective") centers and widths of RBF nodes, for display.
+
+    A fitted center may lie outside the brain: an RBF there still reaches into
+    it, and is how a fit explains a blurry cortical activation. A plot should
+    not draw a node where no brain is, so the built-in plots show each node as
+    the part of its RBF that lies inside the mask, ``F(v) = exp(-||r_v - c||^2
+    / lambda)`` over the mask voxels ``r_v``:
+
+    - center: the F-weighted centroid of the mask voxels. Interior nodes keep
+      their center; nodes near the edge move inward. If the centroid falls
+      outside the mask (a concave mask: not within half a voxel of a mask
+      voxel), it is snapped to the first mask voxel on the segment from the
+      centroid to the original center, or, if that segment never enters the
+      mask, to the mask voxel nearest the centroid.
+    - width: ``lambda_eff = 2 * sigma_eff**2``, where ``sigma_eff**2`` is the
+      F-weighted per-axis variance about the centroid, averaged over axes.
+      An RBF has per-axis variance ``lambda / 2``, so interior nodes keep
+      ``lambda`` (to within 0.2% on 2 mm and 4 mm grids for
+      ``20 <= lambda <= 400`` mm^2).
+
+    The fit is not changed. Ties between equally near voxels (e.g. a node on
+    the midline between the hemispheres) go to the lowest voxel index and
+    are flagged ``ambiguous``.
+
+    Parameters
+    ----------
+    centers : array of shape (K, D)
+    widths : array of shape (K,) or None
+        RBF widths ``lambda`` (the BrainIAK convention ``2 * sigma**2``).
+        ``None`` treats the nodes as points: a center within half a voxel of
+        the mask stays, any other goes to the nearest mask voxel, and the
+        widths and masses are NaN.
+    mask : array of shape (V, D), NIfTI image or (volume, affine)
+        The in-brain voxels: voxel centers (an isotropic grid; its spacing is
+        the median nearest-neighbor distance), or a mask image whose nonzero
+        voxels count. `mni_mask` gives the MNI152 brain.
+
+    Returns
+    -------
+    centers_eff : ndarray, shape (K, D)
+    widths_eff : ndarray, shape (K,)
+        ``lambda_eff``.
+    info : dict of ndarray, shape (K,)
+        ``distance`` (from the original center, in coordinate units),
+        ``snapped`` (the centroid fell outside the mask), ``ambiguous``
+        (tied nearest voxels), ``mass_fraction`` (in-mask RBF mass over the
+        mass of an RBF fully inside, ``(pi * lambda)**(D / 2)`` divided by
+        the voxel volume), ``sigma`` (``sigma_eff``) and ``width_ratio``
+        (``lambda_eff / lambda``).
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from htfa.brainnet import effective_nodes
+    >>> ax = np.arange(-20.0, 21.0, 2.0)
+    >>> grid = np.stack(np.meshgrid(ax, ax, ax, indexing="ij"), -1).reshape(-1, 3)
+    >>> ball = grid[np.linalg.norm(grid, axis=1) <= 20]
+    >>> c, w, info = effective_nodes([[0.0, 0.0, 30.0]], [50.0], ball)
+    >>> bool(np.linalg.norm(c[0]) < 20), bool(info["snapped"][0])
+    (True, False)
+    """
+    c = np.asarray(centers, dtype=np.float64)
+    if c.ndim != 2:
+        raise ValueError(f"centers must be (K, D), got {c.shape}")
+    K, D = c.shape
+    coords, h, voxel_volume = _mask_coords(mask)
+    if coords.shape[1] != D:
+        raise ValueError(f"mask has {coords.shape[1]} dimensions but centers have {D}")
+    w = None if widths is None else _per_node(widths, K, "widths")
+    if w is not None and not np.all(w > 0):
+        raise ValueError("widths must be positive")
+    tree = cKDTree(coords)
+    out = c.copy()
+    sigma = np.full(K, np.nan)
+    mass = np.full(K, np.nan)
+    snapped = np.zeros(K, dtype=bool)
+    ambiguous = np.zeros(K, dtype=bool)
+    if w is not None:
+        dmin = tree.query(c)[0]
+        for k in range(K):
+            s = np.sqrt(w[k] / 2)
+            idx = tree.query_ball_point(c[k], dmin[k] + _TAIL_SIGMAS * s)
+            r = coords[idx]
+            d2 = np.sum((r - c[k]) ** 2, axis=1)
+            f = np.exp(-(d2 - dmin[k] ** 2) / w[k])  # scaled by exp(dmin^2 / w)
+            total = f.sum()
+            m = f @ r / total
+            sigma[k] = np.sqrt(f @ np.sum((r - m) ** 2, axis=1) / total / D)
+            mass[k] = (
+                total
+                * np.exp(-(dmin[k] ** 2) / w[k])
+                * voxel_volume
+                / (np.pi * w[k]) ** (D / 2)
+            )
+            out[k] = m
+    inside = tree.query(out, p=np.inf)[0] <= h / 2 * (1 + 1e-9)
+    for k in np.flatnonzero(~inside).tolist():
+        snapped[k] = True
+        step = np.linalg.norm(c[k] - out[k])
+        n = max(1, int(np.ceil(step / (h / 4))))
+        seg = out[k] + np.linspace(0, 1, n + 1)[:, None] * (c[k] - out[k])
+        hit = np.flatnonzero(tree.query(seg, p=np.inf)[0] <= h / 2 * (1 + 1e-9))
+        if len(hit):
+            i, tie = _lowest_tied(tree, seg[hit[:1]], h, np.inf)
+        else:
+            i, tie = _lowest_tied(tree, out[k : k + 1], h, 2.0)
+        out[k], ambiguous[k] = coords[i[0]], tie[0]
+    widths_eff = 2 * sigma**2
+    info = {
+        "distance": np.linalg.norm(out - c, axis=1),
+        "snapped": snapped,
+        "ambiguous": ambiguous,
+        "mass_fraction": mass,
+        "sigma": sigma,
+        "width_ratio": widths_eff / w if w is not None else np.full(K, np.nan),
+    }
+    return out, widths_eff, info
+
+
+def _default_mask(nodes: Any, subject: Any) -> Any:
+    """The fit's own voxels for an HTFAResults, else the MNI152 brain."""
+    from .results import HTFAResults
+
+    if isinstance(nodes, HTFAResults):
+        return nodes._display_mask(subject)
+    return _mni_mask()
+
+
+def _display_nodes(
+    nodes: Any,
+    sizes: Any,
+    widths: Any,
+    subject: Any,
+    snap: bool,
+    mask: Any,
+    scale_by_mass: bool = False,
+    fade_by_mass: bool | float = False,
+) -> tuple[Array, Array, Array | None]:
+    """Centers, sizes and per-node opacities (or None) the plots draw."""
+    centers, fit_widths = _fit_nodes(nodes, subject)
     K = len(centers)
+    w = fit_widths if widths is None else _per_node(widths, K, "widths")
+    floor = None
+    if fade_by_mass is not False:
+        floor = 0.15 if fade_by_mass is True else float(fade_by_mass)
+        if not 0 <= floor < 1:
+            raise ValueError(
+                f"fade_by_mass must be True or an opacity floor in [0, 1), "
+                f"got {fade_by_mass!r}"
+            )
+    if not snap:
+        if scale_by_mass or floor is not None:
+            raise ValueError("scale_by_mass and fade_by_mass need snap=True")
+        return (*_nodes(nodes, w if sizes is None else sizes, subject), None)
+    if w is None and (scale_by_mass or floor is not None):
+        raise ValueError("scale_by_mass and fade_by_mass need node widths (widths=)")
+    if mask is None:
+        mask = _default_mask(nodes, subject)
+    centers, w_eff, info = effective_nodes(centers, w, mask)
     if sizes is not None:
-        return centers, _per_node(sizes, K, "sizes")
-    return centers, np.ones(K) if widths is None else _per_node(widths, K, "widths")
+        node_sizes = _per_node(sizes, K, "sizes")
+    else:
+        node_sizes = np.ones(K) if w is None else w_eff
+    if scale_by_mass:
+        node_sizes = node_sizes * info["mass_fraction"]
+    opacity = None
+    if floor is not None:
+        opacity = floor + (1 - floor) * np.clip(info["mass_fraction"], 0, 1)
+    return centers, node_sizes, opacity
 
 
 def _edge_list(E: Array, threshold: float) -> tuple[Array, Array, Array]:
@@ -553,12 +823,14 @@ class _Scene:
         mesh_color: Any,
         mesh_opacity: float,
         background: Any,
+        node_opacity: Array | None = None,
     ) -> None:
         pv = lazy_import("pyvista", "brain3d", "network plots")
         if view not in VIEWS:
             raise ValueError(f"unknown view {view!r}; choose from {sorted(VIEWS)}")
         self.centers = centers
         self.radii = node_radius(sizes)
+        self.node_opacity = node_opacity
         self.size = (int(size[0]), int(size[1]))
         s = _SUPERSAMPLE
         pl = pv.Plotter(
@@ -605,13 +877,23 @@ class _Scene:
                 smooth_shading=True,
                 **_DULL,
             )
-        spheres = pv.merge(
-            [
-                pv.Sphere(radius=r, center=c, theta_resolution=40, phi_resolution=40)
-                for c, r in zip(centers, self.radii, strict=True)
-            ]
-        )
-        pl.add_mesh(spheres, color=node_color, smooth_shading=True, **_DULL)
+        spheres = [
+            pv.Sphere(radius=r, center=c, theta_resolution=40, phi_resolution=40)
+            for c, r in zip(centers, self.radii, strict=True)
+        ]
+        if self.node_opacity is None:
+            pl.add_mesh(
+                pv.merge(spheres), color=node_color, smooth_shading=True, **_DULL
+            )
+        else:
+            for sphere, alpha in zip(spheres, self.node_opacity, strict=True):
+                pl.add_mesh(
+                    sphere,
+                    color=node_color,
+                    opacity=float(alpha),
+                    smooth_shading=True,
+                    **_DULL,
+                )
         pl.enable_depth_peeling(number_of_peels=8)
         pl.enable_parallel_projection()
         direction, up = VIEWS[view]
@@ -753,8 +1035,13 @@ def plot_network(
     connectivity: Any = None,
     *,
     sizes: Any = None,
+    widths: Any = None,
     subject: Any = "global",
     mesh: Any = "ch2",
+    snap: bool = True,
+    mask: Any = None,
+    scale_by_mass: bool = False,
+    fade_by_mass: bool | float = False,
     out: str | os.PathLike | None = None,
     jpeg_quality: int | None = None,
     **style: Any,
@@ -770,11 +1057,37 @@ def plot_network(
         Edge weights (upper triangle used). ``None`` draws nodes only.
     sizes : array of shape (K,), optional
         Node sizes; mapped linearly onto 2-7 mm radii (`node_radius`).
-        Defaults to the fit's widths, or equal sizes (4 mm) for arrays.
+        Defaults to the (effective, with ``snap``) widths, or equal sizes
+        (4 mm) when no widths are known.
+    widths : array of shape (K,), optional
+        RBF widths of array ``nodes`` (a fit's own widths are used
+        otherwise).
     subject : "global" or int
         Which centers to use when ``nodes`` is a fit.
     mesh : str, path, (vertices, faces) or None
         Brain surface; see `load_mesh`. Default ``"ch2"``.
+    snap : bool
+        Draw each node as its in-brain part (`effective_nodes`): the
+        RBF-weighted centroid of the mask voxels, with width
+        ``lambda_eff``. Default ``True``; ``False`` draws the fitted centers
+        and widths as they are. The fit itself is never changed, and
+        `effective_nodes` (or `htfa.HTFAResults.display_nodes`) returns the
+        drawn values. Nodes without widths (a bare array without ``widths``)
+        are points: they stay if inside the mask and otherwise move to the
+        nearest mask voxel.
+    mask : array of shape (V, 3), NIfTI image or (volume, affine), optional
+        The in-brain voxels for ``snap``. Default: for an HTFAResults, the
+        subject's voxel coordinates (all subjects' for ``"global"``);
+        otherwise nilearn's 2 mm MNI152 brain mask (`mni_mask`), because the
+        BrainNet meshes are in MNI space. Raises ``ImportError`` if that needs
+        nilearn and nilearn cannot be installed.
+    scale_by_mass : bool
+        Multiply the node sizes by the in-mask RBF mass fraction before they
+        are mapped to radii (needs widths and ``snap``).
+    fade_by_mass : bool or float
+        Node opacity ``floor + (1 - floor) * mass_fraction`` with floor 0.15
+        (``True``) or the given floor, so nodes mostly outside the brain stay
+        faintly visible (needs widths and ``snap``).
     out : path, optional
         Save the image there: PNG, or JPEG for a ``.jpg``/``.jpeg`` suffix
         (quality ``jpeg_quality``, default 75, 4:2:0 chroma, like MATLAB's
@@ -800,11 +1113,15 @@ def plot_network(
         The RGB image.
     """
     scene_opts, edge_opts = _style(dict(style))
-    centers, node_sizes = _nodes(nodes, sizes, subject)
+    centers, node_sizes, opacity = _display_nodes(
+        nodes, sizes, widths, subject, snap, mask, scale_by_mass, fade_by_mass
+    )
     E = None
     if connectivity is not None:
         E = _connectivity(connectivity, len(centers), 2)
-    scene = _Scene(centers, node_sizes, load_mesh(mesh), **scene_opts)
+    scene = _Scene(
+        centers, node_sizes, load_mesh(mesh), **scene_opts, node_opacity=opacity
+    )
     try:
         if E is not None:
             scene.set_edges(E, **edge_opts)
@@ -825,8 +1142,13 @@ def animate_network(
     *,
     fps: float = 10,
     sizes: Any = None,
+    widths: Any = None,
     subject: Any = "global",
     mesh: Any = "ch2",
+    snap: bool = True,
+    mask: Any = None,
+    scale_by_mass: bool = False,
+    fade_by_mass: bool | float = False,
     captions: Sequence[str] | None = None,
     frames_dir: str | os.PathLike | None = None,
     jpeg_quality: int | None = None,
@@ -838,7 +1160,9 @@ def animate_network(
 
     Parameters
     ----------
-    nodes, sizes, subject, mesh, **style
+    nodes, sizes, widths, subject, mesh, snap, mask, scale_by_mass, fade_by_mass
+        As in `plot_network` (``snap`` is on by default).
+    **style
         As in `plot_network`.
     connectivity : array of shape (T, K, K)
         One edge matrix per frame.
@@ -864,7 +1188,9 @@ def animate_network(
         ``out``.
     """
     scene_opts, edge_opts = _style(dict(style))
-    centers, node_sizes = _nodes(nodes, sizes, subject)
+    centers, node_sizes, opacity = _display_nodes(
+        nodes, sizes, widths, subject, snap, mask, scale_by_mass, fade_by_mass
+    )
     E = _connectivity(connectivity, len(centers), 3)
     if captions is not None and len(captions) != len(E):
         raise ValueError(f"{len(captions)} captions for {len(E)} frames")
@@ -874,7 +1200,9 @@ def animate_network(
     folder = None if frames_dir is None else Path(frames_dir)
     if folder is not None:
         folder.mkdir(parents=True, exist_ok=True)
-    scene = _Scene(centers, node_sizes, load_mesh(mesh), **scene_opts)
+    scene = _Scene(
+        centers, node_sizes, load_mesh(mesh), **scene_opts, node_opacity=opacity
+    )
 
     def frames() -> Iterator[Any]:
         for t, frame in enumerate(E):

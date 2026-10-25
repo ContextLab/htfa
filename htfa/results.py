@@ -8,7 +8,7 @@ import numpy as np
 
 from ._kernels import factors as _factors
 from ._lazy import lazy_import
-from .brainnet import animate_network, plot_network
+from .brainnet import animate_network, effective_nodes, plot_network
 from .connectivity import dynamic_connectivity, isfc, static_connectivity
 from .htfa import HTFA
 from .io import Subject
@@ -293,7 +293,14 @@ class HTFAResults:
             raise ValueError(f"plotting supports 2D and 3D coordinates; got {D}D")
         return D
 
-    def plot_nodes(self, subject: Any = "global", ax: Any = None, **kwargs: Any) -> Any:
+    def plot_nodes(
+        self,
+        subject: Any = "global",
+        ax: Any = None,
+        snap: bool = True,
+        mask: Any = None,
+        **kwargs: Any,
+    ) -> Any:
         """Plot factor centers.
 
         Parameters
@@ -304,6 +311,13 @@ class HTFAResults:
             integer draws that subject's centers.
         ax : matplotlib Axes, optional
             Axes to draw on (2D coordinates, or the nilearn display's axes in 3D).
+        snap : bool
+            Draw each node at its in-brain RBF-weighted centroid (see
+            `display_nodes`); ``False`` draws the fitted centers. Default
+            ``True``.
+        mask : optional
+            In-brain voxels for ``snap`` (see `display_nodes`). Default: each
+            subject's own voxels, and all subjects' voxels for the template.
         **kwargs
             Passed to ``nilearn.plotting.plot_connectome`` for 3D coordinates.
 
@@ -339,13 +353,20 @@ class HTFAResults:
             subject = 0
         plt = lazy_import("matplotlib.pyplot", "plot", "plotting")
         K = self.centers[0].shape[0]
+        if glob:
+            gcenters = self._plotted_centers("global", snap, mask)
+            subj_centers = [
+                self._plotted_centers(s, snap, mask) for s in range(len(self.centers))
+            ]
+        else:
+            centers = self._plotted_centers(subject, snap, mask)
         if D == 3:
             plotting = lazy_import("nilearn.plotting", "plot", "3D plotting")
             none = np.zeros((K, K))
             if glob:
                 disp = plotting.plot_connectome(
                     none,
-                    self.global_centers,
+                    gcenters,
                     node_color="black",
                     node_size=50,
                     axes=ax,
@@ -353,14 +374,12 @@ class HTFAResults:
                     **kwargs,
                 )
                 colors = plt.get_cmap("Spectral")(np.linspace(0, 1, len(self.centers)))
-                for c, col in zip(self.centers, colors, strict=True):
+                for c, col in zip(subj_centers, colors, strict=True):
                     disp.add_markers(c, marker_color=[col], marker_size=20)
-                disp.add_markers(
-                    self.global_centers, marker_color="black", marker_size=50
-                )
+                disp.add_markers(gcenters, marker_color="black", marker_size=50)
             else:
                 disp = plotting.plot_connectome(
-                    none, self.centers[subject], axes=ax, colorbar=False, **kwargs
+                    none, centers, axes=ax, colorbar=False, **kwargs
                 )
             return disp
         fig, ax = (ax.figure, ax) if ax is not None else plt.subplots()
@@ -368,19 +387,20 @@ class HTFAResults:
         _scatter_field(ax, s.coords, s.data.mean(axis=1))
         if glob:
             colors = plt.get_cmap("Spectral")(np.linspace(0, 1, len(self.centers)))
-            for c, col in zip(self.centers, colors, strict=True):
+            for c, col in zip(subj_centers, colors, strict=True):
                 ax.scatter(c[:, 1], c[:, 0], color=[col], s=20, zorder=3)
-            gc = self.global_centers
-            assert gc is not None
-            ax.scatter(gc[:, 1], gc[:, 0], c="k", s=50, zorder=4)
+            ax.scatter(gcenters[:, 1], gcenters[:, 0], c="k", s=50, zorder=4)
         else:
-            ax.scatter(
-                self.centers[subject][:, 1], self.centers[subject][:, 0], c="r", s=30
-            )
+            ax.scatter(centers[:, 1], centers[:, 0], c="r", s=30)
         return fig
 
     def plot_connectivity(
-        self, subject: int = 0, threshold: Any = "75%", ax: Any = None
+        self,
+        subject: int = 0,
+        threshold: Any = "75%",
+        ax: Any = None,
+        snap: bool = True,
+        mask: Any = None,
     ) -> Any:
         """Plot factor connectivity as edges between factor centers.
 
@@ -394,6 +414,12 @@ class HTFAResults:
             with absolute correlation at least that large.
         ax : matplotlib Axes, optional
             Axes to draw on.
+        snap : bool
+            Draw each node at its in-brain RBF-weighted centroid (see
+            `display_nodes`); ``False`` draws the fitted centers. Default
+            ``True``.
+        mask : optional
+            In-brain voxels for ``snap``; default the subject's own voxels.
 
         Returns
         -------
@@ -424,7 +450,7 @@ class HTFAResults:
         D = self._dim()
         conn = self.connectivity(subject)
         np.fill_diagonal(conn, 0)
-        centers = self.centers[subject]
+        centers = self._plotted_centers(subject, snap, mask)
         if D == 3:
             plotting = lazy_import("nilearn.plotting", "plot", "3D plotting")
             return plotting.plot_connectome(
@@ -526,13 +552,11 @@ class HTFAResults:
         """
         if subject == "global" and self.global_centers is None:
             subject = 0
+        centers, sizes = self._fitted_nodes(subject)
         if subject == "global":
-            centers, sizes = self.global_centers, self.global_widths
-            assert centers is not None and sizes is not None
             if connectivity is None:
                 connectivity = self.isfc(window)
         else:
-            centers, sizes = self.centers[subject], self.widths[subject]
             if connectivity is None:
                 connectivity = (
                     self.connectivity(subject)
@@ -548,12 +572,16 @@ class HTFAResults:
 
         ``connectivity`` defaults to `isfc` for ``"global"`` (the HTFA
         template; subject 0 for a TFA fit) and to `connectivity` otherwise.
-        Node sizes are the factor widths unless ``sizes`` is given. Other
-        keyword arguments go to `htfa.brainnet.plot_network`. Needs the
+        Node sizes are the factor widths unless ``sizes`` is given. Nodes are
+        drawn as their in-brain parts by default (``snap=True``; see
+        `display_nodes`, which returns the drawn centers and widths): the
+        mask defaults to the subject's voxels, or all subjects' voxels for
+        the template. ``snap=False`` draws the fitted centers and widths.
+        Other keyword arguments go to `htfa.brainnet.plot_network`. Needs the
         ``brain3d`` extra.
         """
-        centers, sizes, conn = self._network_inputs(subject, connectivity)
-        kwargs.setdefault("sizes", sizes)
+        centers, widths, conn = self._network_inputs(subject, connectivity)
+        self._network_defaults(subject, widths, kwargs)
         return plot_network(centers, conn, **kwargs)
 
     def animate_network(
@@ -567,10 +595,87 @@ class HTFAResults:
         """Animate sliding-window connectivity BrainNet Viewer-style (mp4/GIF).
 
         ``connectivity`` defaults to ``isfc(window)`` for ``"global"`` and to
-        ``dynamic_connectivity(subject, window)`` otherwise. Other keyword
-        arguments go to `htfa.brainnet.animate_network`. Needs the ``brain3d``
-        extra.
+        ``dynamic_connectivity(subject, window)`` otherwise. Nodes are
+        snapped by default as in `plot_network`. Other keyword arguments go to
+        `htfa.brainnet.animate_network`. Needs the ``brain3d`` extra.
         """
-        centers, sizes, conn = self._network_inputs(subject, connectivity, window)
-        kwargs.setdefault("sizes", sizes)
+        centers, widths, conn = self._network_inputs(subject, connectivity, window)
+        self._network_defaults(subject, widths, kwargs)
         return animate_network(centers, conn, out, **kwargs)
+
+    def _network_defaults(
+        self, subject: Any, widths: Array, kwargs: dict[str, Any]
+    ) -> None:
+        """Default widths and, when snapping, mask for the network wrappers."""
+        kwargs.setdefault("widths", widths)
+        if kwargs.get("snap", True) and kwargs.get("mask") is None:
+            kwargs["mask"] = self._display_mask(subject)
+
+    def _display_mask(self, subject: Any = "global") -> Array:
+        """Voxels nodes snap into: the subject's, or all subjects' (template)."""
+        if subject == "global" and self.global_centers is None:
+            subject = 0
+        if subject == "global":
+            return np.unique(np.vstack([s.coords for s in self.subjects]), axis=0)
+        coords: Array = self.subjects[subject].coords
+        return coords
+
+    def _plotted_centers(self, subject: Any, snap: bool, mask: Any) -> Array:
+        """Centers a node plot draws: display_nodes, or the fit's with snap off."""
+        if snap:
+            return self.display_nodes(subject, mask)[0]
+        return self._fitted_nodes(subject)[0]
+
+    def _fitted_nodes(self, subject: Any) -> tuple[Array, Array]:
+        if subject == "global" and self.global_centers is not None:
+            assert self.global_widths is not None
+            return self.global_centers, self.global_widths
+        s = 0 if subject == "global" else subject
+        return self.centers[s], self.widths[s]
+
+    def display_nodes(
+        self, subject: Any = "global", mask: Any = None
+    ) -> tuple[Array, Array, dict[str, Array]]:
+        """Node centers and widths as the built-in plots draw them.
+
+        Each node is drawn as the part of its RBF inside the brain: the
+        RBF-weighted centroid of the in-brain voxels and the width
+        ``lambda_eff = 2 * sigma_eff**2`` from the weighted spread (see
+        `htfa.brainnet.effective_nodes`). The fit is not changed. This
+        returns what a plot with the default ``snap=True`` drew, and works on
+        any fit, including one saved before snapping existed.
+
+        Parameters
+        ----------
+        subject : {'global'} or int
+            ``'global'`` is the HTFA template (subject 0 for a TFA fit).
+        mask : optional
+            In-brain voxels (``(V, D)`` coordinates, NIfTI image or
+            ``(volume, affine)``). Default: the subject's voxel coordinates,
+            or the union of all subjects' coordinates for the template.
+
+        Returns
+        -------
+        centers : ndarray, shape (K, D)
+        widths : ndarray, shape (K,)
+            ``lambda_eff``.
+        info : dict of ndarray, shape (K,)
+            ``distance`` moved, ``snapped`` and ``ambiguous`` flags,
+            ``mass_fraction``, ``sigma`` (``sigma_eff``) and ``width_ratio``
+            (``lambda_eff / lambda``); see `htfa.brainnet.effective_nodes`.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import htfa
+        >>> X, R, _ = htfa.make_tfa_data((6, 6), 8, K=2, random_state=0)
+        >>> res = htfa.fit(X, K=2, coords=R, standardize=False, init="power",
+        ...                max_iter=5, random_state=0)
+        >>> centers, widths, info = res.display_nodes()
+        >>> centers.shape, sorted(info)[:2]
+        ((2, 2), ['ambiguous', 'distance'])
+        """
+        centers, widths = self._fitted_nodes(subject)
+        if mask is None:
+            mask = self._display_mask(subject)
+        return effective_nodes(centers, widths, mask)

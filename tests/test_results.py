@@ -113,3 +113,59 @@ def test_plots_render_png(kind, dim, res2d, res2d_img, res3d, tmp_path):
     path = tmp_path / f"{kind}_{dim}.png"
     out.savefig(path)
     assert path.exists() and path.stat().st_size > PNG_MIN_BYTES, path.stat().st_size
+
+
+def _offsets(fig):
+    """(row, column) of each scatter collection on the figure's first axes."""
+    return [c.get_offsets()[:, ::-1] for c in fig.axes[0].collections]
+
+
+def test_2d_node_plots_draw_display_nodes(res2d):
+    """plot_nodes / plot_connectivity draw display_nodes; snap=False the fit."""
+    r = res2d
+    g, _, info = r.display_nodes()
+    print("template moved (coordinate units):", info["distance"])
+    off = _offsets(r.plot_nodes("global"))
+    np.testing.assert_allclose(off[-1], g)  # template, drawn last
+    for s in range(2):
+        np.testing.assert_allclose(off[1 + s], r.display_nodes(s)[0])
+    off = _offsets(r.plot_nodes("global", snap=False))
+    np.testing.assert_allclose(off[-1], r.global_centers)
+    np.testing.assert_allclose(off[1], r.centers[0])
+    off = _offsets(r.plot_connectivity(1, threshold=0.0))
+    np.testing.assert_allclose(off[-1], r.display_nodes(1)[0])
+    off = _offsets(r.plot_connectivity(1, threshold=0.0, snap=False))
+    np.testing.assert_allclose(off[-1], r.centers[1])
+    # a given mask replaces the default
+    mask = r.subjects[0].coords[r.subjects[0].coords[:, 0] < 7]
+    off = _offsets(r.plot_connectivity(0, threshold=0.0, mask=mask))
+    np.testing.assert_allclose(off[-1], r.display_nodes(0, mask=mask)[0])
+    assert (off[-1][:, 0] < 7.5).all()
+
+
+def test_3d_glass_brain_draws_display_nodes(res3d, tmp_path):
+    """The 3D glass-brain plot equals plot_connectome at display_nodes."""
+    from nilearn import plotting
+
+    r = res3d
+    conn = r.connectivity(0)
+    np.fill_diagonal(conn, 0)
+    c_eff, _, info = r.display_nodes(0)
+    print("subject 0 moved (mm):", info["distance"], "ratio", info["width_ratio"])
+    paths = {}
+    for name, make in {
+        "snap": lambda: r.plot_connectivity(0),
+        "raw": lambda: r.plot_connectivity(0, snap=False),
+        "ref_snap": lambda: plotting.plot_connectome(conn, c_eff, edge_threshold="75%"),
+        "ref_raw": lambda: plotting.plot_connectome(
+            conn, r.centers[0], edge_threshold="75%"
+        ),
+    }.items():
+        paths[name] = tmp_path / f"{name}.png"
+        make().savefig(paths[name])
+        plt.close("all")
+    arr = {k: np.asarray(Image.open(p).convert("RGB")) for k, p in paths.items()}
+    np.testing.assert_array_equal(arr["snap"], arr["ref_snap"])
+    np.testing.assert_array_equal(arr["raw"], arr["ref_raw"])
+    if info["distance"].max() > 1.0:
+        assert not np.array_equal(arr["snap"], arr["raw"])

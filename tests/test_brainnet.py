@@ -282,7 +282,10 @@ def test_extract_meshes_cleans_up_on_failure(tmp_path):
 
 def test_plot_network_edges_colors_threshold(tmp_path):
     out = tmp_path / "net.png"
-    img = bn.plot_network(CENTERS, _conn(0.3), mesh=None, out=out, threshold=0.35)
+    # raw centers: (0, 40, -40) lies outside the MNI brain
+    img = bn.plot_network(
+        CENTERS, _conn(0.3), mesh=None, out=out, threshold=0.35, snap=False
+    )
     assert out.stat().st_size > 5000
     with Image.open(out) as saved:
         assert saved.size == (1600, 1000) and saved.mode == "RGB"
@@ -302,10 +305,14 @@ def test_plot_network_edges_colors_threshold(tmp_path):
     node = a[r - 5 : r + 6, c - 5 : c + 6]
     assert np.all(np.abs(node[..., 0] - node[..., 2]) < 10) and node.max() < 200
     # lower threshold: the 0.3 edge appears (red)
-    a2 = _rgb(bn.plot_network(CENTERS, _conn(0.3), mesh=None, threshold=0.25))
+    a2 = _rgb(
+        bn.plot_network(CENTERS, _conn(0.3), mesh=None, threshold=0.25, snap=False)
+    )
     assert _red(_window(a2, -10, -40)).sum() >= 5
     # strict inequality: |E| == threshold is not drawn
-    a3 = _rgb(bn.plot_network(CENTERS, _conn(0.3), mesh=None, threshold=0.3))
+    a3 = _rgb(
+        bn.plot_network(CENTERS, _conn(0.3), mesh=None, threshold=0.3, snap=False)
+    )
     assert _window(a3, -10, -40).min() == 255
 
 
@@ -417,7 +424,7 @@ def _frames():
 def test_animate_network_gif(tmp_path):
     out = bn.animate_network(
         CENTERS, _frames(), tmp_path / "a.gif", mesh=None, fps=5,
-        frames_dir=tmp_path / "frames",
+        frames_dir=tmp_path / "frames", snap=False,
     )  # fmt: skip
     assert sorted(p.name for p in (tmp_path / "frames").iterdir()) == [
         "1.png",
@@ -792,3 +799,283 @@ def test_2014_config_jpeg_reproduction(ch2, tmp_path):
     d = bn.image_diff(out, GT_2014 / "frames/cue_r/28.jpg")
     print("2014 frame 28, JPEG q75 with the 2014 config:", d)
     assert d < 2.75
+
+
+# ------------------------------------------------------------ effective nodes
+
+
+def _grid(lo, hi, h):
+    """Voxel centers of a cube [lo, hi]^3 at spacing h, as (V, 3) mm."""
+    ax = np.arange(lo, hi + h / 2, h, dtype=float)
+    return np.stack(np.meshgrid(ax, ax, ax, indexing="ij"), -1).reshape(-1, 3)
+
+
+def _sphere(radius, h, center=(0.0, 0.0, 0.0)):
+    center = np.asarray(center, dtype=float)
+    g = _grid(-radius - h, radius + h, h) + center
+    return g[np.linalg.norm(g - center, axis=1) <= radius]
+
+
+@pytest.mark.parametrize("h", [2.0, 4.0])
+def test_effective_nodes_interior_nodes_unchanged(h):
+    """A node far from the mask edge keeps its center and width.
+
+    The RBF's per-axis variance is lambda / 2, so lambda_eff = lambda up to the
+    grid discretization; this measures that error at 2 mm and 4 mm.
+    """
+    mask = _grid(-80, 80, h)
+    widths = np.array([20.0, 50.0, 100.0, 200.0, 400.0])
+    centers = np.array([[0.3, -1.1, 0.7]] * len(widths))
+    c_eff, w_eff, info = bn.effective_nodes(centers, widths, mask)
+    shift = np.linalg.norm(c_eff - centers, axis=1)
+    ratio = w_eff / widths
+    print(f"h={h} mm: shifts (mm)", shift, "lambda_eff/lambda", ratio)
+    print("mass fraction", info["mass_fraction"])
+    assert shift.max() < 1e-3 * h
+    assert np.abs(ratio - 1).max() < 2e-3
+    np.testing.assert_allclose(info["width_ratio"], ratio)
+    np.testing.assert_allclose(info["sigma"], np.sqrt(w_eff / 2))
+    np.testing.assert_allclose(info["distance"], shift)
+    assert np.abs(info["mass_fraction"] - 1).max() < 2e-3
+    assert not info["snapped"].any() and not info["ambiguous"].any()
+
+
+def test_effective_nodes_outside_sphere_projects_inside():
+    """A node outside a sphere moves inside; the reported distance is the move."""
+    h, radius = 2.0, 40.0
+    mask = _sphere(radius, h)
+    centers = np.array([[60.0, 0.0, 0.0], [0.0, -55.0, 10.0]])
+    widths = np.array([150.0, 300.0])
+    c_eff, w_eff, info = bn.effective_nodes(centers, widths, mask)
+    print("effective centers", c_eff, "widths", w_eff, "info", info)
+    assert (np.linalg.norm(c_eff, axis=1) < radius).all()
+    np.testing.assert_allclose(
+        info["distance"], np.linalg.norm(c_eff - centers, axis=1)
+    )
+    assert (info["distance"] > 20).all()
+    # the first node stays on the x axis (symmetry), inside the sphere
+    np.testing.assert_allclose(c_eff[0, 1:], 0.0, atol=1e-9)
+    # a convex mask holds every weighted centroid: no snap is needed
+    assert not info["snapped"].any()
+    assert (info["mass_fraction"] < 0.5).all() and (w_eff < widths).all()
+
+
+def _hemispheres(h, gap):
+    """Two balls of radius 30 mm whose surfaces are ``gap`` mm apart along x."""
+    off = 30.0 + gap / 2
+    return np.vstack([_sphere(30.0, h, (-off, 0, 0)), _sphere(30.0, h, (off, 0, 0))])
+
+
+def test_effective_nodes_gap_node_snaps_deterministically():
+    """A node in the gap between two hemispheres snaps into one of them.
+
+    Its centroid lies in the gap (outside the mask). When it is symmetric the
+    two nearest voxels tie: the lowest voxel index wins and the node is flagged
+    ambiguous. Off the midline it goes to the nearer hemisphere, unflagged.
+    """
+    mask = _hemispheres(2.0, gap=10.0)
+    centers = np.array([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]])
+    widths = np.array([400.0, 400.0])
+    c_eff, _, info = bn.effective_nodes(centers, widths, mask)
+    print("gap nodes", c_eff, info)
+    assert info["snapped"].all()
+    assert info["ambiguous"].tolist() == [True, False]
+    # every effective center is a mask voxel
+    d = np.min(np.linalg.norm(mask[None] - c_eff[:, None], axis=2), axis=1)
+    np.testing.assert_allclose(d, 0.0, atol=1e-9)
+    assert c_eff[0, 0] < 0  # the left ball holds the lower voxel indices
+    assert c_eff[1, 0] > 0  # nearer (right) hemisphere
+    again, _, info2 = bn.effective_nodes(centers, widths, mask[::-1].copy())
+    print("reversed voxel order", again)
+    assert again[0, 0] > 0 and info2["ambiguous"][0]  # lowest index is now right
+    np.testing.assert_array_equal(bn.effective_nodes(centers, widths, mask)[0], c_eff)
+
+
+def test_effective_nodes_snaps_along_segment_into_concave_mask():
+    """A centroid in a ring's hole snaps along the line back to the node."""
+    g = _grid(-40, 40, 2.0)
+    rho = np.hypot(g[:, 0], g[:, 1])
+    ring = g[np.hypot(rho - 30.0, g[:, 2]) <= 6.0]
+    centers = np.array([[30.0, 0.0, 0.0]])
+    c_eff, _, info = bn.effective_nodes(centers, np.array([5000.0]), ring)
+    print("ring node", c_eff, info)
+    assert info["snapped"][0] and not info["ambiguous"][0]
+    # the first ring voxel on the way from the hole's centroid to x = 30
+    assert 22.0 <= c_eff[0, 0] <= 26.0
+    np.testing.assert_allclose(c_eff[0, 1:], 0.0, atol=1e-9)
+
+
+def test_effective_nodes_flat_boundary_half_mass():
+    """A node centered on a flat boundary keeps half its mass.
+
+    Inward shift sigma * sqrt(2 / pi) (half-normal mean) and lambda_eff /
+    lambda = 1 - 2 / (3 pi) (one axis has half-normal variance).
+    """
+    g = _grid(-79, 79, 2.0)
+    mask = g[g[:, 0] < 0]
+    w = 100.0
+    c_eff, w_eff, info = bn.effective_nodes(np.zeros((1, 3)), np.array([w]), mask)
+    sigma = np.sqrt(w / 2)
+    print("flat boundary", c_eff, w_eff / w, info["mass_fraction"])
+    assert info["mass_fraction"][0] == pytest.approx(0.5, abs=2e-3)
+    assert c_eff[0, 0] == pytest.approx(-sigma * np.sqrt(2 / np.pi), rel=5e-3)
+    assert w_eff[0] / w == pytest.approx(1 - 2 / (3 * np.pi), rel=5e-3)
+    assert not info["snapped"][0]
+
+
+def test_effective_nodes_mask_forms_agree():
+    """Coordinates, a NIfTI image and a (volume, affine) pair give one answer."""
+    import nibabel as nib
+
+    affine = np.array(
+        [[2.0, 0, 0, -40], [0, 2.0, 0, -40], [0, 0, 2.0, -40], [0, 0, 0, 1]]
+    )
+    ijk = np.stack(np.meshgrid(*[np.arange(41)] * 3, indexing="ij"), -1)
+    xyz = ijk @ affine[:3, :3].T + affine[:3, 3]
+    vol = np.linalg.norm(xyz, axis=-1) <= 30.0
+    coords = xyz[vol]
+    centers = np.array([[45.0, 3.0, -2.0], [0.0, 0.0, 0.0]])
+    widths = np.array([120.0, 60.0])
+    ref = bn.effective_nodes(centers, widths, coords)
+    for mask in (nib.Nifti1Image(vol.astype(np.uint8), affine), (vol, affine)):
+        got = bn.effective_nodes(centers, widths, mask)
+        np.testing.assert_allclose(got[0], ref[0], atol=1e-9)
+        np.testing.assert_allclose(got[1], ref[1], rtol=1e-9)
+        for key in ref[2]:
+            np.testing.assert_allclose(got[2][key], ref[2][key], rtol=1e-9)
+
+
+def test_effective_nodes_point_nodes_and_errors():
+    """Without widths, inside nodes stay and outside nodes go to the nearest voxel."""
+    mask = _sphere(20.0, 2.0)
+    centers = np.array([[0.4, 0.2, -0.6], [0.0, 0.0, 35.0]])
+    c_eff, w_eff, info = bn.effective_nodes(centers, None, mask)
+    print("point nodes", c_eff, info)
+    np.testing.assert_array_equal(c_eff[0], centers[0])
+    np.testing.assert_allclose(c_eff[1], [0.0, 0.0, 20.0])
+    assert info["snapped"].tolist() == [False, True]
+    assert info["distance"][1] == pytest.approx(15.0)
+    assert np.isnan(w_eff).all() and np.isnan(info["mass_fraction"]).all()
+    with pytest.raises(ValueError, match="widths has 1 entries for 2 nodes"):
+        bn.effective_nodes(centers, np.array([1.0]), mask)
+    with pytest.raises(ValueError, match="positive"):
+        bn.effective_nodes(centers, np.array([1.0, 0.0]), mask)
+    with pytest.raises(ValueError, match="no voxels"):
+        bn.effective_nodes(centers, None, np.zeros((0, 3)))
+    with pytest.raises(ValueError, match="dimensions"):
+        bn.effective_nodes(centers, None, np.zeros((5, 2)))
+
+
+def _gray(a, y, z, half=4):
+    w = _window(a, y, z, half)
+    return bool(np.all(np.abs(w[..., 0] - w[..., 2]) < 10) and w.max() < 200)
+
+
+def test_plot_network_projects_nodes_into_mask(tmp_path):
+    """plot_network draws a node at its in-mask centroid unless snap=False."""
+    mask = _sphere(40.0, 2.0)
+    centers = np.array([[0.0, 70.0, 0.0], [0.0, -20.0, 0.0]])
+    widths = np.array([200.0, 50.0])
+    c_eff, w_eff, _ = bn.effective_nodes(centers, widths, mask)
+    print("effective centers", c_eff)
+    assert c_eff[0, 1] < 40
+    snapped = bn.plot_network(
+        centers, widths=widths, mask=mask, mesh=None, out=tmp_path / "snapped.png"
+    )
+    raw = bn.plot_network(
+        centers, widths=widths, mask=mask, mesh=None, snap=False,
+        out=tmp_path / "raw.png",
+    )  # fmt: skip
+    a, b = _rgb(snapped), _rgb(raw)
+    assert _gray(a, c_eff[0, 1], c_eff[0, 2]) and _window(a, 70, 0).min() == 255
+    assert _gray(b, 70, 0) and _window(b, c_eff[0, 1], c_eff[0, 2]).min() == 255
+    # the same image as the effective nodes drawn unsnapped with their widths
+    same = bn.plot_network(c_eff, sizes=w_eff, mesh=None, snap=False)
+    assert bn.image_diff(snapped, same) == 0.0
+
+
+def test_plot_network_default_mni_mask_for_bare_centers():
+    """Bare centers snap into the MNI152 brain mask; a node above the head moves."""
+    centers = np.array([[0.0, 95.0, 0.0], [0.0, -20.0, 20.0]])
+    img = _rgb(bn.plot_network(centers, mesh=None))
+    raw = _rgb(bn.plot_network(centers, mesh=None, snap=False))
+    c_eff, _, info = bn.effective_nodes(centers, None, bn.mni_mask())
+    print("MNI point nodes", c_eff, info)
+    assert info["snapped"][0] and not info["snapped"][1]
+    assert 55 < c_eff[0, 1] < 75 and info["distance"][0] > 20
+    np.testing.assert_array_equal(c_eff[1], centers[1])
+    assert _gray(img, c_eff[0, 1], c_eff[0, 2]) and _window(img, 95, 0).min() == 255
+    assert _gray(raw, 95, 0)
+
+
+def test_plot_network_mass_options(tmp_path):
+    """fade_by_mass lightens a node mostly outside the mask; errors without snap."""
+    mask = _sphere(40.0, 2.0)
+    # three nodes so that node_radius's min-max mapping cannot hide the scaling
+    centers = np.array([[0.0, 50.0, 0.0], [0.0, -10.0, 0.0], [0.0, 0.0, 40.0]])
+    widths = np.array([100.0, 100.0, 100.0])
+    c_eff, _, info = bn.effective_nodes(centers, widths, mask)
+    print("mass fractions", info["mass_fraction"])
+    plain = _rgb(bn.plot_network(centers, widths=widths, mask=mask, mesh=None))
+    faded = _rgb(
+        bn.plot_network(
+            centers, widths=widths, mask=mask, mesh=None, fade_by_mass=True,
+            out=tmp_path / "faded.png",
+        )
+    )  # fmt: skip
+    y, z = c_eff[0, 1], c_eff[0, 2]
+    print(
+        "min gray plain/faded", _window(plain, y, z).min(), _window(faded, y, z).min()
+    )
+    assert _window(faded, y, z).min() > _window(plain, y, z).min() + 40
+    # the interior node keeps full opacity
+    assert np.array_equal(_window(faded, -10, 0), _window(plain, -10, 0))
+    scaled = bn.plot_network(
+        centers, widths=widths, mask=mask, mesh=None, scale_by_mass=True
+    )
+    assert bn.image_diff(scaled, Image.fromarray(plain.astype(np.uint8))) > 0
+    with pytest.raises(ValueError, match="snap"):
+        bn.plot_network(
+            centers, widths=widths, mesh=None, snap=False, fade_by_mass=True
+        )
+    with pytest.raises(ValueError, match="widths"):
+        bn.plot_network(centers, mask=mask, mesh=None, scale_by_mass=True)
+    with pytest.raises(ValueError, match="fade_by_mass"):
+        bn.plot_network(centers, widths=widths, mask=mask, mesh=None, fade_by_mass=1.5)
+
+
+def test_results_display_nodes_match_effective_nodes(res_htfa, res_tfa):
+    """display_nodes uses the subject's voxels, or all subjects' for the template."""
+    r = res_htfa
+    union = np.unique(np.vstack([s.coords for s in r.subjects]), axis=0)
+    got = r.display_nodes()
+    ref = bn.effective_nodes(r.global_centers, r.global_widths, union)
+    for g, e in zip(got[:2], ref[:2], strict=True):
+        np.testing.assert_array_equal(g, e)
+    got1 = r.display_nodes(subject=1)
+    ref1 = bn.effective_nodes(r.centers[1], r.widths[1], r.subjects[1].coords)
+    np.testing.assert_array_equal(got1[0], ref1[0])
+    print("template shifts (mm)", got[2]["distance"], "ratio", got[2]["width_ratio"])
+    t = res_tfa
+    np.testing.assert_array_equal(
+        t.display_nodes()[0],
+        bn.effective_nodes(t.centers[0], t.widths[0], t.subjects[0].coords)[0],
+    )
+    # an HTFAResults or a fitted model passed to htfa.brainnet uses the same
+    # default masks as display_nodes / the MNI mask
+    img_res = _rgb(bn.plot_network(r, _signed_edges(4), mesh=None))
+    img_wrap = _rgb(r.plot_network(connectivity=_signed_edges(4), mesh=None))
+    assert _red(_midpoint_window(img_res, got[0], 0, 1)).sum() >= 10
+    assert _red(_midpoint_window(img_wrap, got[0], 0, 1)).sum() >= 10
+
+
+def test_results_plot_network_draws_display_nodes(res_htfa):
+    """The wrapper's default draws edges between the snapped centers."""
+    r = res_htfa
+    c_eff = r.display_nodes()[0]
+    a = _rgb(r.plot_network(connectivity=_signed_edges(4), mesh=None))
+    pos = _midpoint_window(a, c_eff, 0, 1)
+    neg = _midpoint_window(a, c_eff, 2, 3)
+    print("red/blue px at +edge", _red(pos).sum(), _blue(pos).sum())
+    assert _red(pos).sum() >= 10 and _blue(pos).sum() == 0
+    assert _blue(neg).sum() >= 10 and _red(neg).sum() == 0

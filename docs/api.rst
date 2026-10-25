@@ -138,6 +138,27 @@ need the ``brain3d`` extra (pyvista, imageio, imageio-ffmpeg, pillow). The brain
 meshes come from BrainNet Viewer 1.43, which is not bundled: the first call downloads
 it from NITRC, checks its SHA-256 checksums and caches the meshes.
 
+A fitted center can lie outside the brain (its RBF still reaches in). The built-in
+node plots (:func:`htfa.plot_network`, :func:`htfa.animate_network`, and the
+:class:`htfa.HTFAResults` methods ``plot_network``, ``animate_network``,
+``plot_nodes`` and ``plot_connectivity``) therefore draw each node as the part of its
+RBF inside the brain: the RBF-weighted centroid of the in-brain voxels, sized by
+``lambda_eff = 2 * sigma_eff**2`` from the weighted spread
+(:func:`htfa.brainnet.effective_nodes`). Interior nodes are unchanged; nodes near the
+edge move inward and shrink. The fit itself is not changed. ``snap=False`` draws the
+fitted centers and widths. The mask (``mask=``) defaults to the subject's voxels (all
+subjects' voxels for the template) for an :class:`htfa.HTFAResults`, and to the
+MNI152 brain mask (:func:`htfa.brainnet.mni_mask`) for bare MNI centers or a fitted
+estimator. ``HTFAResults.display_nodes(subject)`` returns the drawn centers, widths and
+per-node details (distance moved, snapped and ambiguous flags, in-brain mass
+fraction, ``sigma_eff``, ``lambda_eff / lambda``), also for fits made before this
+existed:
+
+.. code-block:: python
+
+   centers, widths, info = res.display_nodes("global")
+   (info["distance"] > 5).sum()  # nodes drawn more than 5 mm from their fitted center
+
 .. autosummary::
    :toctree: generated/
    :nosignatures:
@@ -156,6 +177,8 @@ it from NITRC, checks its SHA-256 checksums and caches the meshes.
    htfa.brainnet.fetch_mesh
    htfa.brainnet.load_mesh
    htfa.brainnet.node_radius
+   htfa.brainnet.effective_nodes
+   htfa.brainnet.mni_mask
    htfa.brainnet.write_animation
    htfa.brainnet.image_diff
    htfa.brainnet.annotate_pair
