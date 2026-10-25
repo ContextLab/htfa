@@ -9,6 +9,7 @@ parameter vector are handled by :class:`htfa._kernels.ResidualProblem`.
 
 import importlib.util
 import os
+from collections import deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -33,6 +34,10 @@ GPU_MIN_WORK = int(5e8)
 # each in float64 per NumPy thread, and to 32 MB each in float32 on a GPU (fewer,
 # larger kernels).
 CHUNK_ELEMENTS = 2**21
+# Rows per chunk never fall below this, so that the (rows, T) x (T, K(K+1)/2)
+# product stays an efficient GEMM at large K (K=200: 52 rows by the element
+# budget alone).
+MIN_CHUNK_ROWS = 128
 GPU_CHUNK_ELEMENTS = 2**23
 _THREADS: ContextVar[int | None] = ContextVar("htfa_engine_threads", default=None)
 
@@ -147,6 +152,7 @@ class _ChunkedDataTerm:
     _W: Any
     _W64: NDArray[np.float64]
     chunk_elements: int = CHUNK_ELEMENTS
+    min_chunk_rows: int = MIN_CHUNK_ROWS
     n_threads: int = 1
 
     def _put(self, a: NDArray[np.float64]) -> Any:
@@ -161,14 +167,24 @@ class _ChunkedDataTerm:
 
     def _chunks(self, width: int) -> list[slice]:
         V = self._X.shape[0]
-        step = max(1, self.chunk_elements // max(1, width))
+        step = max(self.min_chunk_rows, self.chunk_elements // max(1, width), 1)
         return [slice(i, min(i + step, V)) for i in range(0, V, step)]
 
-    def _map(self, fn: Callable[[slice], Any], slices: list[slice]) -> list[Any]:
+    def _imap(self, fn: Callable[[slice], Any], slices: list[slice]) -> Iterator[Any]:
+        """``fn`` over ``slices``, yielded in order, with at most ``2 n_threads``
+        chunks in flight so that unconsumed partial results stay bounded."""
         if self.n_threads <= 1 or len(slices) <= 1:
-            return [fn(sl) for sl in slices]
+            yield from (fn(sl) for sl in slices)
+            return
+        window = 2 * self.n_threads
         with ThreadPoolExecutor(min(self.n_threads, len(slices))) as pool:
-            return list(pool.map(fn, slices))
+            pending: deque[Any] = deque()
+            for sl in slices:
+                pending.append(pool.submit(fn, sl))
+                if len(pending) >= window:
+                    yield pending.popleft().result()
+            while pending:
+                yield pending.popleft().result()
 
     def _weight_pairs(self) -> tuple[Any, Any]:
         """``(T, K(K+1)/2)`` products ``W_kt W_lt`` (k <= l) and the (K, K) map
@@ -197,7 +213,7 @@ class _ChunkedDataTerm:
             _, (rho, _, _) = self._residual_chunk(Fd, sl, s, loss)
             return float(np.sum(self._get(rho.sum(1))))
 
-        return 0.5 * sum(self._map(chunk, self._chunks(self._X.shape[1])))
+        return 0.5 * sum(self._imap(chunk, self._chunks(self._X.shape[1])))
 
     def gauss_newton(
         self, F: NDArray[np.float64], G: NDArray[np.float64], s: float, loss: str
@@ -256,7 +272,7 @@ class _ChunkedDataTerm:
         cost = 0.0
         M = np.empty((V, K))
         H = np.zeros((K, A, K, A))
-        for c, sl, M_c, part in self._map(chunk, self._chunks(width)):
+        for c, sl, M_c, part in self._imap(chunk, self._chunks(width)):
             cost += c
             M[sl] = M_c
             if linear:

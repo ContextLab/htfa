@@ -112,6 +112,7 @@ def test_torch_engine_gauss_newton_matches_numpy(device, loss):
     eng = TorchEngine(device)
     eng.set(X, W)
     eng.chunk_elements = 50 * T  # several chunks, also on the GPU
+    eng.min_chunk_rows = 1
     want = ref.gauss_newton(F, G, s, loss)
     got = eng.gauss_newton(F, G, s, loss)
     rtol = 1e-4 if device == "mps" else 1e-10
@@ -139,6 +140,7 @@ def test_numpy_engine_threads_give_identical_results(loss):
     for n in (1, 4):
         eng = NumpyEngine(n_threads=n)
         eng.chunk_elements = 30 * K * K  # 17 chunks
+        eng.min_chunk_rows = 1
         eng.set(X, W)
         results.append(
             eng.gauss_newton(F, G, 0.7, loss) + (eng.data_cost(F, 0.7, loss),)
@@ -161,3 +163,32 @@ def test_thread_limit_sets_numpy_engine_threads():
         assert select_engine("numpy", 10, 5, 2).n_threads == 2
     assert NumpyEngine().n_threads == (os.cpu_count() or 1)
     assert NumpyEngine(n_threads=3).n_threads == 3
+
+
+def test_chunks_respect_min_rows_and_bound_in_flight_results():
+    """Chunks never shrink below min_chunk_rows; with threads, at most
+    2 * n_threads chunk results are pending before the consumer takes them."""
+    import threading
+
+    eng = NumpyEngine(n_threads=3)
+    eng.set(np.zeros((1000, 4)), np.zeros((2, 4)))
+    eng.chunk_elements = 10
+    eng.min_chunk_rows = 50
+    slices = eng._chunks(100)
+    assert len(slices) == 20 and all(sl.stop - sl.start == 50 for sl in slices)
+    done, lock, high = [0], threading.Lock(), [0]
+    consumed = 0
+
+    def work(sl):
+        with lock:
+            done[0] += 1
+            high[0] = max(high[0], done[0] - consumed)
+        return sl.start
+
+    starts = []
+    for start in eng._imap(work, slices):
+        starts.append(start)
+        consumed += 1
+    print(f"most results pending at once: {high[0]}")
+    assert starts == [sl.start for sl in slices]
+    assert high[0] <= 2 * eng.n_threads

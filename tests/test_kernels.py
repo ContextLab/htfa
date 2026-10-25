@@ -588,6 +588,7 @@ def test_cost_grad_hess_independent_of_chunk_size(loss):
     prob, x, _ = _gn_problem(3, True, 500, V=97, T=11, K=4)
     whole = prob.cost_grad_hess(x, loss)
     prob.engine.chunk_elements = 3 * 16  # 3 voxels per chunk (K**2 = A*K = 16 > T)
+    prob.engine.min_chunk_rows = 1
     chunked = prob.cost_grad_hess(x, loss)
     assert len(prob.engine._chunks(16)) == 33
     assert chunked[0] == pytest.approx(whole[0], rel=1e-13)
