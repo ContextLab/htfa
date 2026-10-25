@@ -41,6 +41,7 @@ plot = ["matplotlib>=3.7", "nilearn>=0.10"]
 images = ["pillow>=10", "tifffile>=2023.1"]
 nilearn = ["nilearn>=0.10"]
 gpu = ["torch>=2.2"]
+brain3d = ["pyvista>=0.43", "imageio>=2.31", "imageio-ffmpeg>=0.4.9", "pillow>=10.1"]
 dev = [
   "pytest>=8",
   "pytest-cov>=5",
@@ -50,8 +51,11 @@ dev = [
   "twine>=5",
   "nilearn>=0.10",
   "matplotlib>=3.7",
-  "pillow>=10",
+  "pillow>=10.1",
   "tifffile>=2023.1",
+  "pyvista>=0.43",
+  "imageio>=2.31",
+  "imageio-ffmpeg>=0.4.9",
 ]
 docs = [
   "sphinx>=7",

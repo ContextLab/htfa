@@ -8,6 +8,7 @@ import numpy as np
 
 from ._kernels import factors as _factors
 from ._lazy import lazy_import
+from .brainnet import animate_network, plot_network
 from .connectivity import dynamic_connectivity, isfc, static_connectivity
 from .htfa import HTFA
 from .io import Subject
@@ -227,3 +228,47 @@ class HTFAResults:
                 _scatter_field(ax, s.coords, v)
             ax.set_title(t)
         return fig
+
+    def _network_subject(self, subject: Any) -> Any:
+        return 0 if subject == "global" and self.global_centers is None else subject
+
+    def plot_network(
+        self, subject: Any = "global", connectivity: Any = None, **kwargs: Any
+    ) -> Any:
+        """BrainNet Viewer-style plot of factor centers and connectivity.
+
+        ``connectivity`` defaults to `isfc` for ``"global"`` (the HTFA
+        template; subject 0 for a TFA fit) and to `connectivity` otherwise.
+        Node sizes are the factor widths. Other keyword arguments go to
+        `htfa.brainnet.plot_network`. Needs the ``brain3d`` extra.
+        """
+        subject = self._network_subject(subject)
+        if connectivity is None:
+            connectivity = (
+                self.isfc() if subject == "global" else self.connectivity(subject)
+            )
+        return plot_network(self, connectivity, subject=subject, **kwargs)
+
+    def animate_network(
+        self,
+        out: Any,
+        subject: Any = "global",
+        window: int = 20,
+        connectivity: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Animate sliding-window connectivity BrainNet Viewer-style (mp4/GIF).
+
+        ``connectivity`` defaults to ``isfc(window)`` for ``"global"`` and to
+        ``dynamic_connectivity(subject, window)`` otherwise. Other keyword
+        arguments go to `htfa.brainnet.animate_network`. Needs the ``brain3d``
+        extra.
+        """
+        subject = self._network_subject(subject)
+        if connectivity is None:
+            connectivity = (
+                self.isfc(window)
+                if subject == "global"
+                else self.dynamic_connectivity(subject, window)
+            )
+        return animate_network(self, connectivity, out, subject=subject, **kwargs)

@@ -94,9 +94,9 @@ def test_public_api():
     import htfa
 
     names = [
-        "HTFA", "HTFAResults", "Subject", "TFA", "dynamic_connectivity", "fit",
-        "isfc", "load", "make_htfa_data", "make_tfa_data", "set_autoinstall",
-        "static_connectivity",
+        "HTFA", "HTFAResults", "Subject", "TFA", "animate_network",
+        "dynamic_connectivity", "fit", "isfc", "load", "make_htfa_data",
+        "make_tfa_data", "plot_network", "set_autoinstall", "static_connectivity",
     ]  # fmt: skip
     for name in names:
         assert hasattr(htfa, name), name

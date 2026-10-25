@@ -1,6 +1,7 @@
 """Hierarchical Topographic Factor Analysis."""
 
 from ._lazy import set_autoinstall
+from .brainnet import animate_network, plot_network
 from .connectivity import dynamic_connectivity, isfc, static_connectivity
 from .fit import fit
 from .htfa import HTFA
@@ -16,12 +17,14 @@ __all__ = [
     "HTFAResults",
     "Subject",
     "TFA",
+    "animate_network",
     "dynamic_connectivity",
     "fit",
     "isfc",
     "load",
     "make_htfa_data",
     "make_tfa_data",
+    "plot_network",
     "set_autoinstall",
     "static_connectivity",
 ]
