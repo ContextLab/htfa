@@ -2,7 +2,9 @@
 
 import dataclasses
 import warnings
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import Any
 
 import numpy as np
@@ -199,11 +201,10 @@ def _initial_starts(
     seeds = {name: int(rng.integers(np.iinfo(np.int32).max)) for name in INIT_METHODS}
     power = np.sum(X * X, axis=1)
     power_uniform = np.std(power) < UNIFORM_CV * np.mean(power)
-    starts = {}
+    jobs: dict[str, Callable[[], tuple[Array, Array]]] = {}
     for name in names:
         if name == "kmeans":
-            with threadpool_limits(limits=1, user_api="openmp"):
-                starts[name] = init_centers_widths(R, K, seeds[name])
+            jobs[name] = partial(init_centers_widths, R, K, seeds[name])
             continue
         if name == "ncorr" and X.shape[1] > 1:
             weights = _ncorr_weights(X, R)
@@ -213,8 +214,13 @@ def _initial_starts(
             continue
         else:
             weights = _power_weights(power)
-        starts[name] = _weighted_start(R, K, seeds[name], weights, w_lo, w_hi)
-    return starts
+        jobs[name] = partial(_weighted_start, R, K, seeds[name], weights, w_lo, w_hi)
+    # Each K-means runs on one OpenMP thread (reproducible sums); the candidates
+    # run concurrently on threads instead (sklearn's K-means releases the GIL).
+    with threadpool_limits(limits=1, user_api="openmp"):
+        with ThreadPoolExecutor(max(1, len(jobs))) as pool:
+            futures = {name: pool.submit(job) for name, job in jobs.items()}
+            return {name: future.result() for name, future in futures.items()}
 
 
 class TFA(BaseEstimator):
