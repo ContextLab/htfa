@@ -678,3 +678,72 @@ def test_solve_rejects_unknown_method():
     prob, x0, _ = _gn_problem(2, False, 900)
     with pytest.raises(ValueError, match="method must be one of"):
         solve_centers_widths(prob, x0, bounds(prob.R, 3, 0.02, 4.0), method="lm")
+
+
+def _tfa_solve_case(name, seed, use_prior, loss):
+    """One center/width solve on make_tfa_data, as in scripts/compare_solvers.py:
+    z-scored data, the 'ncorr' start (or the prior's), its ridge weights, and a
+    prior near the truth with HTFA's initial (co)variances."""
+    from htfa.synthetic import make_tfa_data
+    from htfa.tfa import _initial_starts, standardize_data
+
+    shape, K = {"2d": ((40, 40), 6), "3d": ((20, 20, 20), 8)}[name]
+    X, R, truth = make_tfa_data(shape, 100, K=K, random_state=seed)
+    X = standardize_data(X, "auto")
+    lb, ub = bounds(R, K, 0.02, 1.8)
+    if use_prior:
+        rng = np.random.default_rng(1000 + seed)
+        length = np.sqrt(max_sigma(R) / 2.0)
+        prior = Prior(
+            centers=truth["centers"]
+            + rng.normal(0.0, 0.3 * length, size=(K, len(shape))),
+            widths=truth["widths"] * rng.uniform(0.8, 1.2, size=K),
+            centers_cov=np.tile(np.cov(R.T) * K ** (-2.0 / 3.0), (K, 1, 1)),
+            widths_var=np.full(K, max_sigma(R)),
+            scale=0.5,
+        )
+        start = (prior.centers, prior.widths)
+    else:
+        prior = None
+        start = _initial_starts(
+            X, R, K, ("ncorr",), np.random.default_rng(seed), lb[-1], ub[-1]
+        )["ncorr"]
+    x0 = np.clip(np.concatenate([np.ravel(start[0]), start[1]]), lb, ub)
+    W = ridge_weights(X, factors(R, *start))
+    prob = ResidualProblem(X, W, R, NumpyEngine(), prior, compress=loss == "linear")
+    return prob, x0, (lb, ub)
+
+
+@pytest.mark.parametrize("loss", ["linear", "soft_l1"])
+@pytest.mark.parametrize("case", [("2d", 2), ("3d", 2)])
+def test_bounded_lm_does_not_jump_basins_on_indefinite_hessian(case, loss):
+    """With a prior the Hessian is indefinite at the start, and a damped Newton
+    step along negative curvature jumps to a worse basin: 2D seed 2 (+9.5% vs
+    trf, a center moved 22.7 mm, before the derivative-layout change) and 3D
+    seed 2 (+4e-4, centers 6.8 mm off, with the current code). With the
+    Gauss-Newton fallback both reach trf's optimum; with the Hessian always
+    used, the 3D case fails here (checked by disabling the switch)."""
+    prob, x0, bnds = _tfa_solve_case(*case, True, loss)
+    nc = prob.K * prob.D
+    x_trf, c_trf = solve_centers_widths(prob, x0, bnds, method="trf", loss=loss)
+    x_lm, c_lm = solve_centers_widths(prob, x0, bnds, loss=loss)
+    dc = np.abs(x_lm[:nc] - x_trf[:nc]).max()
+    print(f"{case} {loss}: cost lm {c_lm:.10g} trf {c_trf:.10g}, max|dc| {dc:.3g}")
+    assert c_lm <= c_trf * (1 + SAME_OPTIMUM_COST_RTOL)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("loss", ["linear", "soft_l1"])
+@pytest.mark.parametrize("use_prior", [False, True], ids=["prior=None", "prior=Prior"])
+@pytest.mark.parametrize("case", [("2d", 0), ("2d", 4), ("3d", 1)])
+def test_bounded_lm_matches_trf_on_tfa_data(case, use_prior, loss):
+    """A subset of scripts/compare_solvers.py's single-solve sweep."""
+    prob, x0, bnds = _tfa_solve_case(*case, use_prior, loss)
+    _, c_trf = solve_centers_widths(prob, x0, bnds, method="trf", loss=loss)
+    t0 = time.perf_counter()
+    _, c_lm = solve_centers_widths(prob, x0, bnds, loss=loss)
+    print(
+        f"{case} prior={use_prior} {loss}: cost lm {c_lm:.10g} trf {c_trf:.10g} "
+        f"(rel {(c_lm - c_trf) / c_trf:+.2e}), lm {time.perf_counter() - t0:.2f} s"
+    )
+    assert c_lm <= c_trf * (1 + SAME_OPTIMUM_COST_RTOL)
