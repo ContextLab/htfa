@@ -16,6 +16,10 @@ downloaded from NITRC on first use, checked against SHA-256 checksums, and
 cached (see `mesh_cache_dir`).
 """
 
+# Adapted from ContextLab/directed-forgetting-network-dynamics, commit 31a2b66
+# (code/dfnet/render.py and code/dfnet/brainnet_io.py), MIT License,
+# Copyright (c) 2019 Contextual Dynamics Laboratory.
+
 from __future__ import annotations
 
 import hashlib
@@ -42,6 +46,7 @@ __all__ = [
     "MESHES",
     "animate_network",
     "annotate_pair",
+    "config_style",
     "fetch_mesh",
     "image_diff",
     "load_mesh",
@@ -49,6 +54,7 @@ __all__ = [
     "montage",
     "node_radius",
     "plot_network",
+    "read_brainnet_config",
     "read_edge",
     "read_node",
     "read_nv",
@@ -217,6 +223,51 @@ def write_nv(path: str | os.PathLike, vertices: Array, faces: Array) -> Path:
         f.write(f"{len(faces)}\n")
         np.savetxt(f, faces + 1, fmt="%d")
     return Path(path)
+
+
+def read_brainnet_config(path: str | os.PathLike) -> dict[str, Any]:
+    """Read a BrainNet Viewer option file (``.mat`` holding struct ``EC``).
+
+    Returns the struct as nested dicts (``cfg["edg"]["draw_threshold"]``, ...).
+    """
+    import scipy.io
+
+    m = scipy.io.loadmat(str(path), squeeze_me=True, struct_as_record=False)
+    if "EC" not in m:
+        raise ValueError(f"{path} has no BrainNet option struct 'EC'")
+
+    def todict(x: Any) -> Any:
+        if isinstance(x, scipy.io.matlab.mat_struct):
+            return {k: todict(getattr(x, k)) for k in x._fieldnames}
+        return x
+
+    return dict(todict(m["EC"]))
+
+
+def config_style(cfg: dict[str, Any]) -> dict[str, Any]:
+    """`plot_network` style keywords from a BrainNet option struct.
+
+    Uses the background color, mesh color and opacity, the first node color,
+    the edge draw threshold, and the first / last edge colormap rows as the
+    positive / negative edge colors (BrainNet's two-color edge mode). The view
+    is always left lateral: BrainNet 1.43 uses ``view(-90, 0)`` for
+    ``view_direction`` 1, whatever ``view_az`` holds.
+    """
+    edge_cm = np.atleast_2d(np.asarray(cfg["edg"]["CM"], dtype=np.float64))
+    node_cm = np.atleast_2d(np.asarray(cfg["nod"]["CM"], dtype=np.float64))
+
+    def rgb(x: Any) -> tuple[float, ...]:
+        return tuple(float(v) for v in np.ravel(x))
+
+    return {
+        "background": rgb(cfg["bak"]["color"]),
+        "mesh_color": rgb(cfg["msh"]["color"]),
+        "mesh_opacity": float(cfg["msh"]["alpha"]),
+        "node_color": rgb(node_cm[0]),
+        "threshold": float(cfg["edg"]["draw_threshold"]),
+        "positive_color": rgb(edge_cm[0]),
+        "negative_color": rgb(edge_cm[-1]),
+    }
 
 
 # ---------------------------------------------------------------------- meshes
@@ -481,6 +532,7 @@ class _Scene:
         node_color: Any,
         mesh_color: Any,
         mesh_opacity: float,
+        background: Any,
     ) -> None:
         pv = lazy_import("pyvista", "brain3d", "network plots")
         if view not in VIEWS:
@@ -494,7 +546,7 @@ class _Scene:
             window_size=[self.size[0] * s, self.size[1] * s],
             lighting="none",
         )
-        pl.set_background("white")
+        pl.set_background(background)
         if mesh is not None:
             verts, faces = mesh
             cells = np.c_[np.full(len(faces), 3), faces].ravel()
@@ -599,9 +651,29 @@ def _connectivity(connectivity: Any, K: int, ndim: int) -> Array:
     return E
 
 
-def _save(img: Any, path: Path) -> None:
-    if path.suffix.lower() in (".jpg", ".jpeg"):
-        img.save(path, quality=95)
+MATLAB_JPEG_QUALITY = 75  # MATLAB's default JPEG export quality (2014 frames)
+
+
+def _is_jpeg(path: Path) -> bool:
+    return path.suffix.lower() in (".jpg", ".jpeg")
+
+
+def _jpeg(img: Any, quality: int) -> Any:
+    """``img`` after a JPEG round trip with 4:2:0 chroma, as MATLAB writes."""
+    import io
+
+    Image = _pil()
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=int(quality), subsampling=2)
+    buf.seek(0)
+    with Image.open(buf) as im:
+        return im.convert("RGB")
+
+
+def _save(img: Any, path: Path, jpeg_quality: int | None) -> None:
+    if _is_jpeg(path):
+        quality = MATLAB_JPEG_QUALITY if jpeg_quality is None else jpeg_quality
+        img.save(path, quality=int(quality), subsampling=2)
     else:
         img.save(path)
 
@@ -614,6 +686,7 @@ def _style(kwargs: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         "node_color": kwargs.pop("node_color", (0.502, 0.502, 0.502)),
         "mesh_color": kwargs.pop("mesh_color", (0.95, 0.95, 0.95)),
         "mesh_opacity": kwargs.pop("mesh_opacity", 0.2),
+        "background": kwargs.pop("background", "white"),
     }
     edges = {
         "threshold": float(kwargs.pop("threshold", 0.25)),
@@ -638,6 +711,7 @@ def plot_network(
     subject: Any = "global",
     mesh: Any = "ch2",
     out: str | os.PathLike | None = None,
+    jpeg_quality: int | None = None,
     **style: Any,
 ) -> Any:
     """Render nodes and thresholded edges BrainNet Viewer-style.
@@ -657,7 +731,13 @@ def plot_network(
     mesh : str, path, (vertices, faces) or None
         Brain surface; see `load_mesh`. Default ``"ch2"``.
     out : path, optional
-        Save the image there (PNG, or JPEG by suffix).
+        Save the image there: PNG, or JPEG for a ``.jpg``/``.jpeg`` suffix
+        (quality ``jpeg_quality``, default 75, 4:2:0 chroma, like MATLAB's
+        export of the 2014 frames).
+    jpeg_quality : int, optional
+        If given, the image is JPEG-compressed at this quality before it is
+        returned or saved. JPEG at 75 makes thin edges paler, as in the 2014
+        BrainNet frames.
     **style
         ``threshold`` (0.25; edges with ``|E| > threshold`` are drawn),
         ``view`` (``"lateral"`` = ``"left"``, ``"right"``, ``"dorsal"``,
@@ -666,7 +746,8 @@ def plot_network(
         ``|E|`` mm at opacity 0.7; ``"flat"``: 0.5 mm, opaque),
         ``positive_color`` ("red"), ``negative_color`` ("blue"),
         ``node_color`` (0.502 gray), ``mesh_color`` (0.95 gray),
-        ``mesh_opacity`` (0.2).
+        ``mesh_opacity`` (0.2), ``background`` ("white"). See also
+        `config_style`.
 
     Returns
     -------
@@ -685,8 +766,10 @@ def plot_network(
         img = scene.image()
     finally:
         scene.close()
+    if jpeg_quality is not None:
+        img = _jpeg(img, jpeg_quality)
     if out is not None:
-        _save(img, Path(out))
+        _save(img, Path(out), jpeg_quality)
     return img
 
 
@@ -701,6 +784,7 @@ def animate_network(
     mesh: Any = "ch2",
     captions: Sequence[str] | None = None,
     frames_dir: str | os.PathLike | None = None,
+    jpeg_quality: int | None = None,
     **style: Any,
 ) -> Path:
     """Render a ``(T, K, K)`` connectivity series as an mp4 or GIF.
@@ -720,7 +804,11 @@ def animate_network(
     captions : sequence of T str, optional
         Text shown in a white band above each frame (not over the brain).
     frames_dir : path, optional
-        Also save each frame there as ``1.png``, ``2.png``, ...
+        Also save each frame there as ``1.png``, ``2.png``, ... (``.jpg``
+        with ``jpeg_quality``).
+    jpeg_quality : int, optional
+        JPEG-compress each frame at this quality before it goes into the
+        movie (75 reproduces the look of the 2014 frames).
 
     Returns
     -------
@@ -746,8 +834,11 @@ def animate_network(
             img = scene.image()
             if captions is not None:
                 img = _with_header(img, [captions[t]])
+            if jpeg_quality is not None:
+                img = _jpeg(img, jpeg_quality)
             if folder is not None:
-                img.save(folder / f"{t + 1}.png")
+                ext = ".png" if jpeg_quality is None else ".jpg"
+                _save(img, folder / f"{t + 1}{ext}", jpeg_quality)
             images.append(img)
     finally:
         scene.close()

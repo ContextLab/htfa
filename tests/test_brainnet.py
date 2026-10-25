@@ -494,3 +494,89 @@ def test_tfa_results_global_falls_back_to_subject_0(tmp_path):
     assert bn.image_diff(img, ref) == 0.0
     with pytest.raises(ValueError, match="no global template"):
         bn.plot_network(res, mesh=None, subject="global")
+
+
+# ------------------------------------------------- JPEG output and configs
+
+
+def test_jpeg_output_matches_matlab_export(tmp_path):
+    """A .jpg is written at quality 75 with 4:2:0 chroma unless told otherwise."""
+    png = bn.plot_network(CENTERS, _conn(), mesh=None, out=tmp_path / "a.png")
+    bn.plot_network(CENTERS, _conn(), mesh=None, out=tmp_path / "a.jpg")
+    with Image.open(tmp_path / "a.jpg") as im:
+        assert im.format == "JPEG"
+        a75 = _rgb(im)
+    expect = bn._jpeg(png, 75)  # same round trip in memory
+    assert np.abs(a75 - _rgb(expect)).max() == 0
+    # jpeg_quality compresses the returned image too; lower quality, larger error
+    q30 = bn.plot_network(CENTERS, _conn(), mesh=None, jpeg_quality=30,
+                          out=tmp_path / "b.jpg")  # fmt: skip
+    q95 = bn.plot_network(CENTERS, _conn(), mesh=None, jpeg_quality=95)
+    e30, e95 = bn.image_diff(q30, png, png.size), bn.image_diff(q95, png, png.size)
+    print("jpeg error q30 / q95:", e30, e95)
+    assert e30 > e95 > 0
+    assert (tmp_path / "b.jpg").stat().st_size < (tmp_path / "a.jpg").stat().st_size
+
+    # thin edges get paler: the red edge's most saturated pixel loses saturation
+    def sat(a):
+        return (a[..., 0] - a[..., 1]).max()
+
+    assert sat(_window(_rgb(q30), -10, 50)) < sat(_window(_rgb(png), -10, 50))
+
+
+def test_animate_network_jpeg_frames(tmp_path):
+    bn.animate_network(CENTERS, _frames(), tmp_path / "a.gif", mesh=None,
+                       jpeg_quality=75, frames_dir=tmp_path / "f")  # fmt: skip
+    names = sorted(p.name for p in (tmp_path / "f").iterdir())
+    assert names == ["1.jpg", "2.jpg", "3.jpg"]
+    with Image.open(tmp_path / "f" / "2.jpg") as im:
+        assert im.format == "JPEG"
+
+
+def test_config_roundtrip_and_style(tmp_path):
+    import scipy.io
+
+    ec = {
+        "bak": {"color": np.array([1, 1, 1], np.uint8)},
+        "msh": {"color": np.array([0.95, 0.95, 0.95]), "alpha": 0.2},
+        "nod": {"CM": np.vstack([[0.502, 0.502, 0.502], np.tile([1.0, 0, 0], (3, 1))])},
+        "edg": {"draw_threshold": 0.25,
+                "CM": np.vstack([[1.0, 0, 0], np.full((3, 3), 0.38), [0, 0, 1.0]])},
+        "lot": {"view_direction": 1, "view_az": -80},
+    }  # fmt: skip
+    path = tmp_path / "cfg.mat"
+    scipy.io.savemat(path, {"EC": ec})
+    cfg = bn.read_brainnet_config(path)
+    assert cfg["lot"]["view_az"] == -80 and cfg["edg"]["draw_threshold"] == 0.25
+    style = bn.config_style(cfg)
+    assert style == {
+        "background": (1.0, 1.0, 1.0),
+        "mesh_color": (0.95, 0.95, 0.95),
+        "mesh_opacity": 0.2,
+        "node_color": (0.502, 0.502, 0.502),
+        "threshold": 0.25,
+        "positive_color": (1.0, 0.0, 0.0),
+        "negative_color": (0.0, 0.0, 1.0),
+    }
+    img = bn.plot_network(CENTERS, _conn(), mesh=None, **style)
+    ref = bn.plot_network(CENTERS, _conn(), mesh=None)
+    assert bn.image_diff(img, ref) == 0.0
+    dark = _rgb(bn.plot_network(CENTERS, mesh=None, background=(0, 0, 0)))
+    assert tuple(dark[0, 0]) == (0, 0, 0)
+    scipy.io.savemat(tmp_path / "x.mat", {"other": 1})
+    with pytest.raises(ValueError, match="no BrainNet option struct"):
+        bn.read_brainnet_config(tmp_path / "x.mat")
+
+
+@pytest.mark.skipif(not GT_2014.is_dir(), reason=f"2014 frames not found at {GT_2014}")
+def test_2014_config_jpeg_reproduction(ch2, tmp_path):
+    """The 2014 option file plus MATLAB-quality JPEG output match the 2014 frame."""
+    style = bn.config_style(bn.read_brainnet_config(GT_2014 / "DF_config.mat"))
+    assert style["threshold"] == 0.25 and style["mesh_opacity"] == 0.2
+    centers, _, sizes, _ = bn.read_node(GT_2014 / "frames/cue_r/1.node")
+    E = bn.read_edge(GT_2014 / "frames/cue_r/28.edge")
+    out = tmp_path / "28.jpg"
+    bn.plot_network(centers, E, sizes=sizes, mesh=ch2, out=out, **style)
+    d = bn.image_diff(out, GT_2014 / "frames/cue_r/28.jpg")
+    print("2014 frame 28, JPEG q75 with the 2014 config:", d)
+    assert d < 2.75

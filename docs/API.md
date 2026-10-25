@@ -210,9 +210,21 @@ htfa.animate_network(
 | `view` | `"lateral"` | `"lateral"`/`"left"`, `"right"`, `"dorsal"`, `"ventral"`, `"anterior"`, `"posterior"` |
 | `edge_style` | `"intensity"` | `"intensity"` (diameter `\|E\|` mm, opacity 0.7) or `"flat"` (0.5 mm, opaque) |
 | `size` | `(1600, 1000)` | Image size in pixels |
-| `positive_color`, `negative_color`, `node_color`, `mesh_color`, `mesh_opacity` | red, blue, 0.502 gray, 0.95 gray, 0.2 | Colors |
-| `out` | `None` | `plot_network`: save PNG/JPEG. `animate_network`: required, `.mp4` (H.264) or `.gif` |
-| `fps`, `captions`, `frames_dir` | 10, `None`, `None` | `animate_network` only: frame rate, one caption per frame (drawn in a band above the brain), folder for per-frame PNGs |
+| `positive_color`, `negative_color`, `node_color`, `mesh_color`, `mesh_opacity`, `background` | red, blue, 0.502 gray, 0.95 gray, 0.2, white | Colors |
+| `out` | `None` | `plot_network`: save PNG, or JPEG for `.jpg` (quality 75 with 4:2:0 chroma by default, as MATLAB wrote the 2014 frames). `animate_network`: required, `.mp4` (H.264) or `.gif` |
+| `jpeg_quality` | `None` | If set, JPEG-compress the image (each frame, for `animate_network`) at this quality. At 75, thin edges become paler, as in the 2014 BrainNet frames |
+| `fps`, `captions`, `frames_dir` | 10, `None`, `None` | `animate_network` only: frame rate, one caption per frame (drawn in a band above the brain), folder for per-frame PNGs (JPEGs with `jpeg_quality`) |
+
+To reuse a BrainNet Viewer option file (`.mat` holding struct `EC`):
+`htfa.plot_network(centers, E, **htfa.brainnet.config_style(htfa.brainnet.read_brainnet_config("cfg.mat")))`.
+`config_style` takes the background, mesh, node and edge colors and the edge
+threshold. The view stays left lateral: BrainNet 1.43 uses `view(-90, 0)` for
+`view_direction` 1 whatever `view_az` holds.
+
+With the 2014 directed-forgetting `.node`/`.edge` files and option file, the
+rendered frames differ from the 2014 BrainNet frames by a mean of 2.0 to 2.7
+(on a 0-255 scale, after resizing both to 400 x 250) for frames 1, 25, 28 and
+35. The test suite checks this when the 2014 files are available locally.
 
 In a GIF, Pillow merges consecutive identical frames and adds up their
 durations, so the playing time is unchanged but `n_frames` can be smaller
@@ -232,6 +244,47 @@ network access and without a cached copy, `fetch_mesh` raises
 `image_diff(a, b)`, and two annotated layouts that keep text off the brain:
 `annotate_pair(left, right, titles, caption)` (two frames side by side under
 a header band) and `montage(images, row_labels, col_labels, title)` (a grid).
+
+## Connectivity time courses
+
+`htfa.timecourse.global_connectivity(frames)` is the mean edge of each
+`(K, K)` frame over the upper triangle including the diagonal, and
+`edge_count(frames, threshold=0.25)` counts node pairs with `|E| > threshold`.
+`moving_average(y, window)` is a centered moving average along the last axis
+(odd window, shrinking near the ends like MATLAB's `smooth`). The curves in
+the 2014 directed-forgetting movie PDFs are `global_connectivity` of the 2014
+`.edge` frames smoothed with a 5-TR window (correlation 0.999 or higher for the
+`cue_r`, `cue_f`, `rec_rl1` and `rec_fl2` movies).
+
+`htfa.plot_timecourse(conditions, x=None, *, colors=None, smooth=None,
+shared_before=None, events=(), periods=(), xlabel=None, ylabel=None,
+title=None, ax=None, fontsize=18)` draws each condition (`label -> (S, T)`
+array of per-subject curves, or a `(T,)` curve) as its mean with a +/- SEM
+ribbon: light-gray background, red then blue conditions, bold in-plot labels
+instead of a legend, magenta lines at `events`, tan shading over `periods`.
+With `shared_before`, the mean of all conditions before that x is drawn as one
+dark curve. `smooth` applies `moving_average` to each subject's curve before
+averaging. It returns the matplotlib figure (needs the `plot` extra).
+
+```python
+import htfa
+from htfa.timecourse import global_connectivity
+
+curves = {
+    "Remember": [global_connectivity(f) for f in remember_frames],  # one per subject
+    "Forget": [global_connectivity(f) for f in forget_frames],
+}
+fig = htfa.plot_timecourse(
+    curves,
+    x=tr,
+    smooth=5,
+    shared_before=0,
+    events=[0],
+    periods=[(0, 5)],
+    xlabel="TR relative to cue",
+    ylabel="Global connectivity",
+)
+```
 
 ## Synthetic data
 
