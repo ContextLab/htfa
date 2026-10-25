@@ -1126,6 +1126,77 @@ def test_results_display_nodes_match_effective_nodes(res_htfa, res_tfa):
     assert _red(_midpoint_window(img_wrap, got[0], 0, 1)).sum() >= 10
 
 
+def _outside(points, mask):
+    """Which points are not within half a voxel (per axis) of a mask voxel."""
+    from scipy.spatial import cKDTree
+
+    coords, h, _ = bn._mask_coords(mask)
+    return cKDTree(coords).query(points, p=np.inf)[0] > h / 2 * (1 + 1e-9)
+
+
+def _check_display_inside(res):
+    """Every node the default plot path draws lies within the mask; returns
+    the number of fitted centers outside, per mask."""
+    n_out = {}
+    subjects = ["global", *range(len(res.subjects))]
+    for s in subjects:
+        mask = res._display_mask(s)
+        fitted = res._fitted_nodes(s)[0]
+        shown = res.display_nodes(s)[0]
+        drawn = bn._display_nodes(res, None, None, s, True, None)[0]
+        np.testing.assert_array_equal(drawn, shown)
+        n_out[s] = int(_outside(fitted, mask).sum())
+        assert not _outside(shown, mask).any(), (s, shown[_outside(shown, mask)])
+    return n_out
+
+
+def test_display_nodes_inside_mask_for_outside_centers(res_htfa):
+    """A fit whose centers lie outside the voxels draws every node inside them."""
+    import copy
+
+    model = copy.deepcopy(res_htfa.model)
+    # the voxels span about 84 mm per axis: these move every center out of them
+    push = np.array([[100.0, 0, 0], [0, -100.0, 0], [0, 0, 100.0], [-90, 90, 0]])
+    model.global_centers_ = model.global_centers_ + push
+    model.centers_ = [c + push for c in model.centers_]
+    r = htfa.HTFAResults(model, res_htfa.subjects)
+    n_out = _check_display_inside(r)
+    print("fitted centers outside the mask:", n_out)
+    assert all(n >= 3 for n in n_out.values())
+
+
+T10 = Path.home() / ".cache/htfa/tutorials"
+T10_FIT = T10 / "10_dynamic_isfc_K50_5a3dab79e829.npz"
+
+
+@pytest.mark.skipif(
+    not T10_FIT.exists(), reason=f"tutorial 10's cached fit not found at {T10_FIT}"
+)
+def test_display_nodes_inside_mask_tutorial_10_fit():
+    """Tutorial 10's real HTFA fit (12 development_fmri adults, K=50): every
+    drawn node lies within the subjects' voxels."""
+    from htfa.io import Subject
+
+    fit = np.load(T10_FIT)
+    files = sorted((T10 / "development_fmri").glob("sub-pixar*.npz"))
+    if len(files) != len(fit["centers"]):
+        pytest.skip(f"{len(files)} cached subjects for {len(fit['centers'])} fitted")
+    subjects = []
+    for f in files:
+        z = np.load(f)
+        subjects.append(Subject(data=z["X"], coords=z["coords"]))
+    model = htfa.HTFA(K=50)
+    model.global_centers_, model.global_widths_ = (
+        fit["global_centers"],
+        fit["global_widths"],
+    )
+    model.centers_, model.widths_ = list(fit["centers"]), list(fit["widths"])
+    model.weights_ = list(fit["weights"])
+    n_out = _check_display_inside(htfa.HTFAResults(model, subjects))
+    print("tutorial 10 fitted centers outside the mask:", n_out)
+    assert sum(n_out.values()) > 0  # the fit does have centers outside
+
+
 def test_results_plot_network_draws_display_nodes(res_htfa):
     """The wrapper's default draws edges between the snapped centers."""
     r = res_htfa
