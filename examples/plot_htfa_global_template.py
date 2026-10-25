@@ -3,9 +3,10 @@ The HTFA global template
 ========================
 
 Simulate three subjects whose factor centers are jittered copies of a shared
-template (:func:`htfa.make_htfa_data`), fit :class:`htfa.HTFA` through
-:func:`htfa.fit` and draw the estimated template (black) together with each
-subject's own centers (colors) using :meth:`htfa.HTFAResults.plot_nodes`.
+template (:func:`htfa.make_htfa_data`), fit :class:`htfa.HTFA` directly, wrap the
+fitted model in :class:`htfa.HTFAResults` and draw the estimated template
+(black) together with each subject's own centers (colors) using
+:meth:`htfa.HTFAResults.plot_nodes`.
 The printed numbers come from the code below.
 """
 
@@ -22,16 +23,12 @@ Xs, Rs, truth = htfa.make_htfa_data(
 )
 
 start = time.perf_counter()
-res = htfa.fit(
-    Xs,
-    K=4,
-    coords=Rs,
-    standardize=False,
-    max_global_iter=15,
-    random_state=0,
-)
+model = htfa.HTFA(K=4, standardize=False, max_global_iter=15, random_state=0)
+model.fit(Xs, Rs)
+res = htfa.HTFAResults(model, htfa.load(Xs, coords=Rs))
 elapsed = time.perf_counter() - start
 print(f"fit time: {elapsed:.1f} s over {len(res.subjects)} subjects")
+print(f"converged: {model.converged_}, global iterations: {model.n_iter_}")
 
 perm = match_factors(truth["global_centers"], res.global_centers)
 err = np.linalg.norm(res.global_centers[perm] - truth["global_centers"], axis=1)

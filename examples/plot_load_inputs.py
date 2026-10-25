@@ -7,9 +7,10 @@ Loading different kinds of input
 coordinates. This example writes tiny synthetic NIfTI files (two subjects, 8 x 8 x 8
 voxels, 10 volumes) and a PNG image to a temporary directory, loads them in each
 supported way and prints what comes back. It then fits the folder with
-:func:`htfa.fit`. Automatic installation of optional packages is switched off with
-:func:`htfa.set_autoinstall` so that the build never calls pip. The printed numbers
-come from the code below.
+:func:`htfa.fit`; that fit only shows that loading works, because the data are
+noise and contain no structure to recover. Automatic installation of optional
+packages is switched off with :func:`htfa.set_autoinstall` so that the build never
+calls pip. The printed numbers come from the code below.
 """
 
 import tempfile
