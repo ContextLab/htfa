@@ -2,7 +2,7 @@
 
 import dataclasses
 import warnings
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 import numpy as np
@@ -14,8 +14,9 @@ from sklearn.exceptions import ConvergenceWarning
 from sklearn.utils.validation import check_is_fitted
 from threadpoolctl import threadpool_limits
 
-from htfa._engines import select_engine
+from htfa._engines import LOSS_NAMES, loss_terms, select_engine
 from htfa._kernels import (
+    NLSS_METHODS,
     Prior,
     ResidualProblem,
     bounds,
@@ -39,14 +40,6 @@ UNIFORM_CV = 1e-3
 PLATEAU_PATIENCE = 5
 # Relative floor added to the K-means sample weights so that every voxel counts.
 TINY_WEIGHT = 1e-12
-# scipy.optimize.least_squares losses rho(z) of the squared residual z (f_scale=1).
-LOSSES: dict[str, Callable[[Array], Array]] = {
-    "linear": lambda z: z,
-    "soft_l1": lambda z: 2.0 * (np.sqrt(1.0 + z) - 1.0),
-    "huber": lambda z: np.where(z <= 1.0, z, 2.0 * np.sqrt(z) - 1.0),
-    "cauchy": np.log1p,
-    "arctan": np.arctan,
-}
 
 
 def standardize_data(X: ArrayLike, mode: str | bool) -> Array:
@@ -251,14 +244,20 @@ class TFA(BaseEstimator):
         iteration keeps the change from settling, so the fit also stops when the
         change has not reached a new minimum for 5 consecutive iterations
         ("plateau").
-    nlss_method : {'trf', 'dogbox'}, default='trf'
-        ``scipy.optimize.least_squares`` method.
+    nlss_method : {'bounded-lm', 'trf', 'dogbox'}, default='bounded-lm'
+        Center/width solver. ``'bounded-lm'`` is a bounded Levenberg-Marquardt
+        method on the explicit K (D + 1)-square Gauss-Newton system, assembled
+        from the factor structure of the Jacobian (`htfa._kernels.bounded_lm`).
+        ``'trf'`` and ``'dogbox'`` run ``scipy.optimize.least_squares`` with a
+        matrix-free Jacobian (BrainIAK's solver; much slower). All minimize the
+        same objective with scipy's default tolerances.
     nlss_loss : {'soft_l1', 'linear', 'huber', 'cauchy', 'arctan'}, default='soft_l1'
-        ``least_squares`` loss. ``'linear'`` enables an exact QR compression of
-        the data term.
+        Robust loss, as in ``least_squares``. ``'linear'`` enables an exact QR
+        compression of the data term.
     x_scale : 'jac' or ndarray, default='jac'
-        ``least_squares`` variable scaling; ``'jac'`` uses the inverse Jacobian
-        column norms at the start of each solve.
+        Variable scaling (``least_squares``' ``x_scale``; the damping scale of
+        ``'bounded-lm'``); ``'jac'`` uses the inverse Jacobian column norms at the
+        start of each solve.
     weight_method : {'rr', 'ols'}, default='rr'
         Ridge regression (penalty ``var(X)``) or ordinary least squares weights.
     upper_ratio, lower_ratio : float, default=1.8, 0.02
@@ -360,7 +359,7 @@ class TFA(BaseEstimator):
         K: int = 50,
         max_iter: int = 100,
         threshold: float = 1e-3,
-        nlss_method: str = "trf",
+        nlss_method: str = "bounded-lm",
         nlss_loss: str = "soft_l1",
         x_scale: Any = "jac",
         weight_method: str = "rr",
@@ -421,9 +420,13 @@ class TFA(BaseEstimator):
             raise ValueError(
                 f"weight method must be 'rr' or 'ols', got {self.weight_method!r}"
             )
-        if self.nlss_loss not in LOSSES:
+        if self.nlss_loss not in LOSS_NAMES:
             raise ValueError(
-                f"nlss_loss must be one of {tuple(LOSSES)}, got {self.nlss_loss!r}"
+                f"nlss_loss must be one of {LOSS_NAMES}, got {self.nlss_loss!r}"
+            )
+        if self.nlss_method not in NLSS_METHODS:
+            raise ValueError(
+                f"nlss_method must be one of {NLSS_METHODS}, got {self.nlss_method!r}"
             )
         return X, R
 
@@ -435,7 +438,7 @@ class TFA(BaseEstimator):
         F = factors(R, x[: K * D].reshape(K, D), x[K * D :])
         W = ridge_weights(X, F, self.weight_method)
         r = ResidualProblem(X, W, R, engine, prior).residual(x)
-        return 0.5 * float(np.sum(LOSSES[self.nlss_loss](r * r))), W
+        return 0.5 * float(np.sum(loss_terms(self.nlss_loss, r * r)[0])), W
 
     def _iterate(
         self,

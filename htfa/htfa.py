@@ -162,7 +162,7 @@ class HTFA(BaseEstimator):
         max_global_iter: int = 10,
         max_local_iter: int = 10,
         threshold: float = 1e-3,
-        nlss_method: str = "trf",
+        nlss_method: str = "bounded-lm",
         nlss_loss: str = "soft_l1",
         x_scale: Any = "jac",
         weight_method: str = "rr",

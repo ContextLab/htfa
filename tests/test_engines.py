@@ -89,3 +89,38 @@ def test_torch_backend_picks_best_device():
     eng = select_engine("torch", 10, 5, 2)
     best = "cuda" if "cuda" in _devices() else "mps" if "mps" in _devices() else "cpu"
     assert eng.name == f"torch-{best}"
+
+
+@pytest.mark.parametrize("loss", ["linear", "soft_l1", "huber", "cauchy", "arctan"])
+@pytest.mark.parametrize("device", ["cpu", "cuda", "mps"])
+def test_torch_engine_gauss_newton_matches_numpy(device, loss):
+    """The structured solver's data-term pass on torch matches NumPy (cost,
+    (rho' r) W^T and J^T u J): float64 devices to 1e-10, float32 MPS to 1e-4."""
+    if device not in _devices():
+        pytest.skip(f"no {device}")
+    from htfa._engines import loss_terms
+
+    rng = np.random.default_rng(1)
+    V, T, K, A = 300, 30, 5, 4
+    X = rng.standard_normal((V, T)) * 1.5
+    W = rng.standard_normal((K, T))
+    F = rng.uniform(size=(V, K))
+    G = rng.standard_normal((K, V, A))
+    s = 0.7
+    ref = NumpyEngine()
+    ref.set(X, W)
+    eng = TorchEngine(device)
+    eng.set(X, W)
+    eng.chunk_elements = 50 * T  # several chunks, also on the GPU
+    want = ref.gauss_newton(F, G, s, loss)
+    got = eng.gauss_newton(F, G, s, loss)
+    rtol = 1e-4 if device == "mps" else 1e-10
+    for name, g_, w_ in zip(("cost", "M", "H"), got, want, strict=True):
+        g_, w_ = np.asarray(g_), np.asarray(w_)
+        rel = np.abs(g_ - w_).max() / np.abs(w_).max()
+        print(f"{device} {loss} {name}: max relative difference {rel:.3e}")
+        assert g_.dtype == np.float64 and g_.shape == w_.shape
+        assert rel < rtol
+    r = s * (X - F @ W)
+    expected_cost = 0.5 * np.sum(loss_terms(loss, r * r)[0])
+    assert eng.data_cost(F, s, loss) == pytest.approx(expected_cost, rel=rtol)

@@ -503,3 +503,9 @@ def test_tfa_explicit_start_overrides_init_and_prior_start():
         np.testing.assert_array_equal(match_factors(start[0], one.centers_), [0, 1])
     with pytest.raises(ValueError, match="start must be"):
         TFA(**kw).fit(X, R, start=(truth["centers"][:1], truth["widths"]))
+
+
+def test_tfa_rejects_unknown_nlss_method():
+    X, R, _ = _small_data()
+    with pytest.raises(ValueError, match="nlss_method must be one of"):
+        TFA(K=2, nlss_method="lm").fit(X, R)

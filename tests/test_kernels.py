@@ -393,3 +393,278 @@ def test_solve_rejects_unknown_x_scale_string():
     x0 = np.concatenate([centers.ravel(), widths])
     with pytest.raises(ValueError, match="x_scale"):
         solve_centers_widths(prob, x0, bounds(R, 2, 0.02, 4.0), x_scale="auto")
+
+
+# --- Structured Gauss-Newton solver (bounded-lm) -----------------------------------
+
+LOSS_NAMES = ("linear", "soft_l1", "huber", "cauchy", "arctan")
+# loss_terms vs scipy's own loss functions: the same formulas; measured max
+# relative difference 0 (identical expressions), 1e-14 allows libm differences.
+LOSS_RTOL = 1e-14
+# Central differences of rho and rho' with step 1e-4 * z: measured relative error
+# <= 5.7e-10 (soft_l1); a 1e-6 step is rounding-limited at small z (1.3e-7).
+LOSS_FD_STEP = 1e-4
+LOSS_FD_RTOL = 1e-7
+# Gradient (and Hessian) vs central differences, relative to the largest entry.
+GRAD_FD_RTOL = 1e-6
+# Structured gradient vs dense J^T (rho' r): same sums, different order.
+GN_RTOL = 1e-11
+# Acceptance (brief T11b): the structured solver's cost may exceed trf's by at most
+# 1e-6 relative, and its centers must match trf's within 1e-3 (unless its cost is
+# lower, then it found a better point).
+SAME_OPTIMUM_COST_RTOL = 1e-6
+SAME_OPTIMUM_CENTER_ATOL = 1e-3
+
+
+def _scipy_loss(name, z):
+    from scipy.optimize._lsq.least_squares import IMPLEMENTED_LOSSES
+
+    rho = np.empty((3, z.size))
+    if name == "linear":
+        return z, np.ones_like(z), np.zeros_like(z)
+    IMPLEMENTED_LOSSES[name](z, rho, cost_only=False)
+    return rho
+
+
+@pytest.mark.parametrize("name", LOSS_NAMES)
+def test_loss_terms_match_scipy_and_finite_differences(name):
+    from htfa._engines import loss_terms
+
+    z = np.concatenate([[0.0, 0.5, 1.0], np.geomspace(1e-4, 50.0, 40)])
+    got = loss_terms(name, z)
+    expected = _scipy_loss(name, z)
+    for i in range(3):
+        err = np.abs(got[i] - expected[i]).max() / max(np.abs(expected[i]).max(), 1)
+        print(f"{name}: rho^({i}) max relative difference vs scipy = {err:.3e}")
+        assert err <= LOSS_RTOL
+    zz = z[z > 1e-3]
+    zz = zz[np.abs(zz - 1.0) > 1e-3]  # huber's kink at z = 1
+    h = LOSS_FD_STEP * zz
+    for i in (1, 2):
+        fd = (loss_terms(name, zz + h)[i - 1] - loss_terms(name, zz - h)[i - 1]) / (
+            2 * h
+        )
+        err = np.abs(fd - loss_terms(name, zz)[i]).max() / max(np.abs(fd).max(), 1)
+        print(f"{name}: rho^({i}) vs central differences, relative error {err:.3e}")
+        assert err < LOSS_FD_RTOL
+
+
+def test_loss_terms_rejects_unknown():
+    from htfa._engines import loss_terms
+
+    with pytest.raises(ValueError, match="loss must be one of"):
+        loss_terms("l2", np.ones(2))
+
+
+def _gn_problem(D, use_prior, seed, V=60, T=7, K=3):
+    rng = np.random.default_rng(seed)
+    R, centers, widths, W, X = _random_problem_inputs(rng, D, V=V, T=T, K=K)
+    # Heavier tails so that the robust weights differ visibly from 1.
+    X = X + rng.standard_t(2, size=X.shape) * 0.3
+    prior = _random_prior(rng, centers, widths) if use_prior else None
+    prob = ResidualProblem(X, W, R, NumpyEngine(), prior=prior)
+    x = np.concatenate(
+        [(centers + rng.normal(0, 0.5, centers.shape)).ravel(), widths * 1.1]
+    )
+    return prob, x, rng
+
+
+@pytest.mark.parametrize("loss", LOSS_NAMES)
+@pytest.mark.parametrize("D", [2, 3])
+@pytest.mark.parametrize("use_prior", [False, True], ids=["prior=None", "prior=Prior"])
+def test_cost_matches_residual(loss, D, use_prior):
+    from htfa._engines import loss_terms
+
+    prob, x, _ = _gn_problem(D, use_prior, 100 + D)
+    r = prob.residual(x)
+    expected = 0.5 * np.sum(loss_terms(loss, r * r)[0])
+    got = prob.cost(x, loss)
+    gn_cost = prob.cost_grad_hess(x, loss)[0]
+    print(f"{loss} D={D} prior={use_prior}: cost {got:.12g} vs {expected:.12g}")
+    assert got == pytest.approx(expected, rel=1e-13)
+    assert gn_cost == pytest.approx(expected, rel=1e-13)
+
+
+@pytest.mark.parametrize("loss", LOSS_NAMES)
+@pytest.mark.parametrize("D", [2, 3])
+@pytest.mark.parametrize("use_prior", [False, True], ids=["prior=None", "prior=Prior"])
+def test_gradient_matches_finite_differences(loss, D, use_prior):
+    prob, x, _ = _gn_problem(D, use_prior, 200 + D)
+    _, g, _ = prob.cost_grad_hess(x, loss)
+    g_fd = np.empty_like(x)
+    for j in range(x.size):
+        e = np.zeros_like(x)
+        e[j] = FD_STEP
+        g_fd[j] = (prob.cost(x + e, loss) - prob.cost(x - e, loss)) / (2 * FD_STEP)
+    rel = np.abs(g - g_fd).max() / np.abs(g_fd).max()
+    print(f"{loss} D={D} prior={use_prior}: max|g - g_fd| / max|g_fd| = {rel:.3e}")
+    assert rel < GRAD_FD_RTOL
+
+
+@pytest.mark.parametrize("loss", LOSS_NAMES)
+@pytest.mark.parametrize("D", [2, 3])
+def test_hessian_matches_finite_differences(loss, D):
+    """Data-term Hessian = central differences of the (FD-checked) gradient, with
+    scipy's EPS floor on the loss weight u = rho' + 2 r^2 rho'' in the J^T u J part
+    (it binds only for cauchy and arctan, where u < 0 for large residuals)."""
+    from htfa._engines import EPS, loss_terms
+
+    prob, x, _ = _gn_problem(D, False, 300 + D)
+    J = _dense(prob.jacobian(x))
+    r = prob.residual(x)
+    _, rho1, rho2 = loss_terms(loss, r * r)
+    u = rho1 + 2 * r * r * rho2
+    floor = J.T @ ((np.maximum(u, EPS) - u)[:, None] * J)
+    _, g, H = prob.cost_grad_hess(x, loss)
+    H_fd = np.empty_like(H)
+    for j in range(x.size):
+        e = np.zeros_like(x)
+        e[j] = FD_STEP
+        H_fd[:, j] = (
+            prob.cost_grad_hess(x + e, loss)[1] - prob.cost_grad_hess(x - e, loss)[1]
+        ) / (2 * FD_STEP)
+    expected = H_fd + floor
+    rel = np.abs(H - expected).max() / np.abs(expected).max()
+    print(
+        f"{loss} D={D}: max|H - (H_fd + floor)| / max = {rel:.3e}; "
+        f"floor share {np.abs(floor).max() / np.abs(expected).max():.2e}; "
+        f"min eig(H) {np.linalg.eigvalsh(H).min():.3g}"
+    )
+    assert rel < GRAD_FD_RTOL
+    np.testing.assert_allclose(g, J.T @ (rho1 * r), rtol=GN_RTOL, atol=1e-13)
+    np.testing.assert_array_equal(H, H.T)
+
+
+@pytest.mark.parametrize("loss", ["linear", "soft_l1"])
+@pytest.mark.parametrize("D", [2, 3])
+def test_prior_hessian_terms_match_finite_differences(loss, D):
+    """Prior part: exact Hessian of the center term (a function of q = r_c^2) and
+    of the linear width residuals, against central differences of the prior
+    gradient (the EPS floor is inactive for these losses)."""
+    prob, x, _ = _gn_problem(D, True, 400 + D)
+    K = prob.K
+
+    def prior_grad(y):
+        C, w = prob._unpack(y)
+        return prob._prior_terms(C, w, loss, derivatives=True)[1]
+
+    def prior_cost(y):
+        C, w = prob._unpack(y)
+        return prob._prior_terms(C, w, loss, derivatives=False)[0]
+
+    C, w = prob._unpack(x)
+    _, g, H = prob._prior_terms(C, w, loss, derivatives=True)
+    H_fd = np.empty_like(H)
+    g_fd = np.empty_like(g)
+    for j in range(x.size):
+        e = np.zeros_like(x)
+        e[j] = FD_STEP
+        H_fd[:, j] = (prior_grad(x + e) - prior_grad(x - e)) / (2 * FD_STEP)
+        g_fd[j] = (prior_cost(x + e) - prior_cost(x - e)) / (2 * FD_STEP)
+    g_rel = np.abs(g - g_fd).max() / np.abs(g_fd).max()
+    nc = K * D
+    for rows, cols in (
+        (slice(0, nc), slice(0, nc)),
+        (slice(nc, None), slice(nc, None)),
+    ):
+        rel = np.abs(H[rows, cols] - H_fd[rows, cols]).max() / np.abs(H_fd).max()
+        print(f"{loss} D={D}: prior Hessian block rel err {rel:.3e}")
+        assert rel < GRAD_FD_RTOL
+    print(f"{loss} D={D}: prior gradient rel err {g_rel:.3e}")
+    assert g_rel < GRAD_FD_RTOL
+    np.testing.assert_array_equal(H[:nc, nc:], 0.0)
+    assert np.all(np.linalg.eigvalsh(H) >= 0)
+
+
+def test_cost_grad_hess_independent_of_chunk_size():
+    prob, x, _ = _gn_problem(3, True, 500, V=97, T=11, K=4)
+    whole = prob.cost_grad_hess(x, "soft_l1")
+    prob.engine.chunk_elements = 3 * 16  # 3 voxels per chunk (K**2 = 16 > T)
+    chunked = prob.cost_grad_hess(x, "soft_l1")
+    assert len(prob.engine._chunks(16)) == 33
+    assert chunked[0] == pytest.approx(whole[0], rel=1e-13)
+    np.testing.assert_allclose(chunked[1], whole[1], rtol=1e-12, atol=1e-14)
+    np.testing.assert_allclose(chunked[2], whole[2], rtol=1e-12, atol=1e-14)
+    assert prob.cost(x, "soft_l1") == pytest.approx(whole[0], rel=1e-13)
+
+
+def _trf_and_lm(prob, x0, bnds, loss):
+    x_trf, c_trf = solve_centers_widths(prob, x0, bnds, method="trf", loss=loss)
+    t0 = time.perf_counter()
+    x_lm, c_lm = solve_centers_widths(prob, x0, bnds, method="bounded-lm", loss=loss)
+    return x_trf, c_trf, x_lm, c_lm, time.perf_counter() - t0
+
+
+@pytest.mark.parametrize("loss", ["linear", "soft_l1"])
+@pytest.mark.parametrize("D", [2, 3])
+@pytest.mark.parametrize("use_prior", [False, True], ids=["prior=None", "prior=Prior"])
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_bounded_lm_reaches_trf_optimum(loss, D, use_prior, seed):
+    prob, x0, _ = _gn_problem(D, use_prior, 600 + seed, V=150, T=20, K=3)
+    lb, ub = bounds(prob.R, prob.K, 0.02, 4.0)
+    x0 = np.clip(x0, lb, ub)
+    x_trf, c_trf, x_lm, c_lm, secs = _trf_and_lm(prob, x0, (lb, ub), loss)
+    nc = prob.K * D
+    dc = np.abs(x_lm[:nc] - x_trf[:nc]).max()
+    print(
+        f"{loss} D={D} prior={use_prior} seed={seed}: cost lm {c_lm:.12g} trf "
+        f"{c_trf:.12g} (rel {(c_lm - c_trf) / c_trf:+.2e}), max|dc| {dc:.2e}, "
+        f"lm {secs:.3f}s"
+    )
+    assert c_lm <= c_trf * (1 + SAME_OPTIMUM_COST_RTOL)
+    assert dc < SAME_OPTIMUM_CENTER_ATOL or c_lm < c_trf
+    assert np.all(x_lm >= lb) and np.all(x_lm <= ub)
+    assert c_lm == pytest.approx(prob.cost(x_lm, loss), rel=1e-15)
+
+
+@pytest.mark.parametrize("loss", ["linear", "soft_l1"])
+def test_bounded_lm_active_bounds_kkt(loss):
+    """Optimum with the widths pressed against a low upper bound: the solution
+    sits on the bound with the gradient pointing out of the box (KKT), and
+    matches trf. Both stop on ftol, so the interior gradient is compared with
+    trf's (measured: 2.1e-5 vs 1.5e-3 linear, 1.1e-5 vs 1.4e-3 soft_l1)."""
+    from htfa._kernels import bounded_lm
+
+    prob, x0, _ = _gn_problem(3, False, 700, V=150, T=20, K=3)
+    lb, ub = bounds(prob.R, prob.K, 0.02, 4.0)
+    nc = prob.K * 3
+    ub[nc:] = 0.5 * x0[nc:]  # well below the widths that fit the data
+    x0 = np.clip(x0, lb, ub)
+    scale = 1.0 / prob.column_norms(x0)
+    x, cost, status, nfev = bounded_lm(prob, x0, (lb, ub), loss, scale)
+    _, g, _ = prob.cost_grad_hess(x, loss)
+    at_ub = x >= ub
+    print(f"{loss}: status {status}, nfev {nfev}, at ub {at_ub.nonzero()[0]}")
+    assert np.all(at_ub[nc:]) and np.all(g[nc:] < 0)
+    x_trf, c_trf = solve_centers_widths(prob, x0, (lb, ub), method="trf", loss=loss)
+    g_trf = prob.cost_grad_hess(x_trf, loss)[1]
+    interior = (x > lb) & (x < ub)
+    g_in, g_in_trf = np.abs(g[interior]).max(), np.abs(g_trf[interior]).max()
+    print(
+        f"{loss}: cost lm {cost:.12g} trf {c_trf:.12g}; interior max|g| lm "
+        f"{g_in:.3e} trf {g_in_trf:.3e}"
+    )
+    assert g_in < 10 * g_in_trf
+    assert cost <= c_trf * (1 + SAME_OPTIMUM_COST_RTOL)
+    assert status in (1, 2, 3, 4)
+
+
+def test_bounded_lm_respects_max_nfev():
+    from htfa._kernels import bounded_lm
+
+    prob, x0, _ = _gn_problem(2, False, 800)
+    lb, ub = bounds(prob.R, prob.K, 0.02, 4.0)
+    x0 = np.clip(x0, lb, ub)
+    scale = 1.0 / prob.column_norms(x0)
+    x, cost, status, nfev = bounded_lm(prob, x0, (lb, ub), "soft_l1", scale, 1)
+    assert status == 0 and nfev == 1
+    np.testing.assert_array_equal(x, x0)
+    assert cost == prob.cost(x0, "soft_l1")
+    x, cost3, status, nfev = bounded_lm(prob, x0, (lb, ub), "soft_l1", scale, 3)
+    assert nfev <= 3 and cost3 <= cost
+
+
+def test_solve_rejects_unknown_method():
+    prob, x0, _ = _gn_problem(2, False, 900)
+    with pytest.raises(ValueError, match="method must be one of"):
+        solve_centers_widths(prob, x0, bounds(prob.R, 3, 0.02, 4.0), method="lm")
