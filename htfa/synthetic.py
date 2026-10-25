@@ -113,6 +113,13 @@ def make_tfa_data(
     ------
     ValueError
         If centers cannot be placed with the required separation.
+
+    Examples
+    --------
+    >>> from htfa.synthetic import make_tfa_data
+    >>> X, R, truth = make_tfa_data((8, 8, 8), n_samples=20, K=3, random_state=0)
+    >>> X.shape, R.shape, truth["centers"].shape
+    ((512, 20), (512, 3), (3, 3))
     """
     _validate(grid_shape, n_samples, K, noise, spacing)
     rng = np.random.default_rng(random_state)
@@ -170,6 +177,15 @@ def make_htfa_data(
     ------
     ValueError
         If global centers cannot be placed with the required separation.
+
+    Examples
+    --------
+    >>> from htfa.synthetic import make_htfa_data
+    >>> Xs, Rs, truth = make_htfa_data(
+    ...     2, grid_shape=(8, 8, 8), n_samples=20, K=3, random_state=0
+    ... )
+    >>> len(Xs), Xs[0].shape, truth["global_centers"].shape
+    (2, (512, 20), (3, 3))
     """
     if n_subjects < 1:
         raise ValueError(f"n_subjects must be >= 1, got {n_subjects}")

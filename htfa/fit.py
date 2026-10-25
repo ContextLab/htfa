@@ -44,7 +44,8 @@ def fit(
     >>> import numpy as np
     >>> from htfa import fit
     >>> img = np.random.default_rng(0).random((6, 6, 6, 8)) + 1
-    >>> fit(img, K=2, standardize=False).connectivity().shape
+    >>> res = fit(img, K=2, standardize=False, init="power", max_iter=5)
+    >>> res.connectivity().shape
     (2, 2)
     """
     subjects = load(

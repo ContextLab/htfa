@@ -49,8 +49,8 @@ class HTFAResults:
     --------
     >>> import numpy as np
     >>> from htfa import fit
-    >>> res = fit(np.random.default_rng(0).random((6, 6, 6, 8)) + 1, K=2,
-    ...           standardize=False)
+    >>> img = np.random.default_rng(0).random((6, 6, 6, 8)) + 1
+    >>> res = fit(img, K=2, standardize=False, init="power", max_iter=5)
     >>> res.reconstruct().shape[1]
     8
     """
@@ -76,13 +76,57 @@ class HTFAResults:
             )
 
     def factors(self, subject: int = 0) -> Array:
-        """Factor images ``(V, K)`` of ``subject`` at its coordinates."""
+        """Factor images of one subject at that subject's coordinates.
+
+        Parameters
+        ----------
+        subject : int
+            Index into ``subjects``.
+
+        Returns
+        -------
+        ndarray, shape (V, K)
+            Column ``k`` is the radial basis function of factor ``k``.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import htfa
+        >>> img = np.random.default_rng(0).random((6, 6, 6, 8)) + 1
+        >>> res = htfa.fit(img, K=2, standardize=False, init="power", max_iter=5,
+        ...                random_state=0)
+        >>> res.factors().shape
+        (216, 2)
+        """
         return _factors(
             self.subjects[subject].coords, self.centers[subject], self.widths[subject]
         )
 
     def reconstruct(self, subject: int = 0) -> Array:
-        """Reconstruction ``(V, T)`` in the standardized space of the fit."""
+        """Reconstruction ``factors(subject) @ weights[subject]``.
+
+        The result is in the standardized (z-scored) space the model was fitted
+        in, not in the units of the raw input.
+
+        Parameters
+        ----------
+        subject : int
+            Index into ``subjects``.
+
+        Returns
+        -------
+        ndarray, shape (V, T)
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import htfa
+        >>> img = np.random.default_rng(0).random((6, 6, 6, 8)) + 1
+        >>> res = htfa.fit(img, K=2, standardize=False, init="power", max_iter=5,
+        ...                random_state=0)
+        >>> res.reconstruct().shape
+        (216, 8)
+        """
         return self.factors(subject) @ self.weights[subject]
 
     def _values(self, subject: int, what: str) -> Array:
@@ -93,26 +137,154 @@ class HTFAResults:
         raise ValueError(f"what must be 'reconstruction' or 'factors', got {what!r}")
 
     def to_nifti(self, subject: int = 0, what: str = "reconstruction") -> Any:
-        """Reconstruction or factors as a NIfTI image (NaN outside the mask)."""
+        """Reconstruction or factors as a NIfTI image (NaN outside the mask).
+
+        Parameters
+        ----------
+        subject : int
+            Index into ``subjects``.
+        what : {'reconstruction', 'factors'}
+            The ``(V, T)`` reconstruction, or the ``(V, K)`` factor images.
+
+        Returns
+        -------
+        nibabel.Nifti1Image
+            Image with the subject's affine; the last axis is ``T`` or ``K``.
+
+        Raises
+        ------
+        ValueError
+            If the subject was not read from NIfTI input (no affine), or ``what``
+            is not one of the two options.
+
+        Examples
+        --------
+        >>> import nibabel as nib
+        >>> import numpy as np
+        >>> import htfa
+        >>> data = np.random.default_rng(0).random((6, 6, 6, 8)) + 1
+        >>> img = nib.Nifti1Image(data, np.eye(4))
+        >>> res = htfa.fit(img, K=2, standardize=False, init="power", max_iter=5,
+        ...                random_state=0)
+        >>> res.to_nifti(what="factors").shape
+        (6, 6, 6, 2)
+        """
         if self.subjects[subject].affine is None:
             raise ValueError("subject has no affine (not NIfTI input); use to_image")
         return self.subjects[subject].to_image(self._values(subject, what))
 
     def to_image(self, subject: int = 0, what: str = "reconstruction") -> Array:
-        """Reconstruction or factors as an array in image space (NaN outside mask)."""
+        """Reconstruction or factors as an array in image space.
+
+        Parameters
+        ----------
+        subject : int
+            Index into ``subjects``.
+        what : {'reconstruction', 'factors'}
+            The ``(V, T)`` reconstruction, or the ``(V, K)`` factor images.
+
+        Returns
+        -------
+        ndarray
+            Shape ``image_shape + (T,)`` or ``image_shape + (K,)``; NaN outside
+            the mask.
+
+        Raises
+        ------
+        ValueError
+            If the subject has no image space (data given as ``(V, T)`` plus
+            ``coords``), or ``what`` is not one of the two options.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import htfa
+        >>> img = np.random.default_rng(0).random((6, 6, 6, 8)) + 1
+        >>> res = htfa.fit(img, K=2, standardize=False, init="power", max_iter=5,
+        ...                random_state=0)
+        >>> res.to_image().shape
+        (6, 6, 6, 8)
+        """
         img = self.subjects[subject].to_image(self._values(subject, what))
         return np.asarray(getattr(img, "dataobj", img), dtype=np.float64)
 
     def connectivity(self, subject: int = 0) -> Array:
-        """Static factor connectivity ``(K, K)`` of ``subject``."""
+        """Static factor connectivity of one subject.
+
+        Parameters
+        ----------
+        subject : int
+            Index into ``subjects``.
+
+        Returns
+        -------
+        ndarray, shape (K, K)
+            Pearson correlation between the subject's factor time courses
+            (`htfa.static_connectivity` of ``weights[subject]``).
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import htfa
+        >>> img = np.random.default_rng(0).random((6, 6, 6, 8)) + 1
+        >>> res = htfa.fit(img, K=2, standardize=False, init="power", max_iter=5,
+        ...                random_state=0)
+        >>> res.connectivity().shape
+        (2, 2)
+        """
         return static_connectivity(self.weights[subject])
 
     def dynamic_connectivity(self, subject: int = 0, window: int = 20) -> Array:
-        """Sliding-window factor connectivity ``(T - window + 1, K, K)``."""
+        """Sliding-window factor connectivity of one subject.
+
+        Parameters
+        ----------
+        subject : int
+            Index into ``subjects``.
+        window : int
+            Window length in samples, ``2 <= window <= T``.
+
+        Returns
+        -------
+        ndarray, shape (T - window + 1, K, K)
+            See `htfa.dynamic_connectivity`.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import htfa
+        >>> img = np.random.default_rng(0).random((6, 6, 6, 8)) + 1
+        >>> res = htfa.fit(img, K=2, standardize=False, init="power", max_iter=5,
+        ...                random_state=0)
+        >>> res.dynamic_connectivity(window=5).shape
+        (4, 2, 2)
+        """
         return dynamic_connectivity(self.weights[subject], window)
 
     def isfc(self, window: int | None = None) -> Array:
-        """Inter-subject factor correlation across all subjects."""
+        """Inter-subject factor correlation across all subjects.
+
+        Parameters
+        ----------
+        window : int, optional
+            If given, sliding-window ISFC.
+
+        Returns
+        -------
+        ndarray, shape (K, K) or (T - window + 1, K, K)
+            See `htfa.isfc`. Needs at least two subjects with equal ``T``.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import htfa
+        >>> rng = np.random.default_rng(0)
+        >>> imgs = [rng.random((6, 6, 6, 8)) + 1 for _ in range(2)]
+        >>> res = htfa.fit(imgs, K=2, standardize=False, init="power",
+        ...                max_global_iter=2, max_local_iter=2, random_state=0)
+        >>> res.isfc().shape
+        (2, 2)
+        """
         return isfc(self.weights, window)
 
     def _dim(self) -> int:
@@ -122,7 +294,45 @@ class HTFAResults:
         return D
 
     def plot_nodes(self, subject: Any = "global", ax: Any = None, **kwargs: Any) -> Any:
-        """Plot factor centers (``"global"`` template plus subjects, or one subject)."""
+        """Plot factor centers.
+
+        Parameters
+        ----------
+        subject : {'global'} or int
+            ``'global'`` draws the HTFA template in black and each subject's
+            centers in a distinct color; for a TFA fit it draws subject 0. An
+            integer draws that subject's centers.
+        ax : matplotlib Axes, optional
+            Axes to draw on (2D coordinates, or the nilearn display's axes in 3D).
+        **kwargs
+            Passed to ``nilearn.plotting.plot_connectome`` for 3D coordinates.
+
+        Returns
+        -------
+        matplotlib.figure.Figure or nilearn display
+            A figure for 2D coordinates; a nilearn glass-brain display for 3D.
+
+        Raises
+        ------
+        ValueError
+            If the coordinates are not 2D or 3D.
+
+        Notes
+        -----
+        Needs the ``plot`` extra (matplotlib and, for 3D, nilearn).
+
+        Examples
+        --------
+        >>> import matplotlib
+        >>> matplotlib.use("Agg")
+        >>> import numpy as np
+        >>> import htfa
+        >>> X, R, _ = htfa.make_tfa_data((6, 6), 8, K=2, random_state=0)
+        >>> res = htfa.fit(X, K=2, coords=R, standardize=False, init="power",
+        ...                max_iter=5, random_state=0)
+        >>> len(res.plot_nodes().axes)
+        1
+        """
         D = self._dim()
         glob = subject == "global" and self.global_centers is not None
         if subject == "global" and not glob:
@@ -172,7 +382,45 @@ class HTFAResults:
     def plot_connectivity(
         self, subject: int = 0, threshold: Any = "75%", ax: Any = None
     ) -> Any:
-        """Plot factor connectivity as edges between factor centers."""
+        """Plot factor connectivity as edges between factor centers.
+
+        Parameters
+        ----------
+        subject : int
+            Index into ``subjects``.
+        threshold : str or float
+            A percentage string such as ``'75%'`` keeps the edges whose absolute
+            correlation is at or above that percentile; a number keeps edges
+            with absolute correlation at least that large.
+        ax : matplotlib Axes, optional
+            Axes to draw on.
+
+        Returns
+        -------
+        matplotlib.figure.Figure or nilearn display
+            A figure for 2D coordinates; a nilearn glass-brain display for 3D.
+
+        Raises
+        ------
+        ValueError
+            If the coordinates are not 2D or 3D.
+
+        Notes
+        -----
+        Needs the ``plot`` extra.
+
+        Examples
+        --------
+        >>> import matplotlib
+        >>> matplotlib.use("Agg")
+        >>> import numpy as np
+        >>> import htfa
+        >>> X, R, _ = htfa.make_tfa_data((6, 6), 8, K=3, random_state=0)
+        >>> res = htfa.fit(X, K=3, coords=R, standardize=False, init="power",
+        ...                max_iter=5, random_state=0)
+        >>> len(res.plot_connectivity(threshold=0.0).axes)
+        1
+        """
         D = self._dim()
         conn = self.connectivity(subject)
         np.fill_diagonal(conn, 0)
@@ -204,7 +452,42 @@ class HTFAResults:
         return fig
 
     def plot_reconstruction(self, subject: int = 0, sample: int = 0) -> Any:
-        """Original (standardized) data vs reconstruction of one sample."""
+        """Original (standardized) data next to the reconstruction of one sample.
+
+        Parameters
+        ----------
+        subject : int
+            Index into ``subjects``.
+        sample : int
+            Index of the time point or image to show.
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+            Two panels, "original" and "reconstruction". 3D data are drawn as
+            glass-brain images and need NIfTI input.
+
+        Raises
+        ------
+        ValueError
+            If the coordinates are not 2D or 3D, or 3D data have no affine.
+
+        Notes
+        -----
+        Needs the ``plot`` extra.
+
+        Examples
+        --------
+        >>> import matplotlib
+        >>> matplotlib.use("Agg")
+        >>> import numpy as np
+        >>> import htfa
+        >>> X, R, _ = htfa.make_tfa_data((6, 6), 8, K=2, random_state=0)
+        >>> res = htfa.fit(X, K=2, coords=R, standardize=False, init="power",
+        ...                max_iter=5, random_state=0)
+        >>> len(res.plot_reconstruction().axes)
+        2
+        """
         D = self._dim()
         plt = lazy_import("matplotlib.pyplot", "plot", "plotting")
         s = self.subjects[subject]

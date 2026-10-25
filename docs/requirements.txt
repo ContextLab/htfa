@@ -1,0 +1,11 @@
+sphinx>=7
+furo
+numpydoc
+sphinx-gallery
+nbsphinx
+ipykernel
+nbconvert
+matplotlib>=3.7
+nilearn>=0.10
+pillow>=10
+tifffile>=2023.1

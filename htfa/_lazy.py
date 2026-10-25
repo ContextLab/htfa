@@ -26,7 +26,29 @@ _override: bool | None = None
 
 
 def set_autoinstall(enabled: bool) -> None:
-    """Turn on-demand installation of optional dependencies on or off."""
+    """Turn on-demand installation of optional dependencies on or off.
+
+    By default a missing optional dependency (for example matplotlib for plots
+    or pillow for 2D images) is installed with pip the first time it is needed.
+    The ``HTFA_AUTO_INSTALL`` environment variable (``0``, ``false`` or ``no``
+    turns it off) sets the default; this function overrides the variable for the
+    current process.
+
+    Parameters
+    ----------
+    enabled : bool
+        ``True`` allows installation; ``False`` makes a missing dependency raise
+        ``ImportError`` with the ``pip install`` command to run.
+
+    Examples
+    --------
+    >>> import htfa
+    >>> htfa.set_autoinstall(False)
+    >>> from htfa._lazy import autoinstall_enabled
+    >>> autoinstall_enabled()
+    False
+    >>> htfa.set_autoinstall(True)
+    """
     global _override
     _override = bool(enabled)
 

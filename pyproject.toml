@@ -79,8 +79,8 @@ Repository = "https://github.com/ContextLab/htfa"
 include = ["htfa*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "--strict-markers -m 'not brainiak and not network'"
+testpaths = ["tests", "htfa"]
+addopts = "--doctest-modules --strict-markers -m 'not brainiak and not network'"
 markers = [
   "brainiak: compares against the reference BrainIAK implementation (requires brainiak)",
   "network: requires network access (downloads data)",

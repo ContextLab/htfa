@@ -626,5 +626,7 @@ MigrationBackup/
 docs/_build
 docs/auto_examples
 docs/gen_modules
+docs/generated
+docs/sg_execution_times.rst
 htmlcov
 .coverage

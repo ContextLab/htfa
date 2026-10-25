@@ -23,6 +23,15 @@ def match_factors(true_centers: Array, est_centers: Array) -> NDArray[np.intp]:
     perm : ndarray of int, shape (K,)
         Permutation such that ``est_centers[perm][k]`` corresponds to
         ``true_centers[k]`` (minimum total squared Euclidean distance).
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from htfa.synthetic import match_factors
+    >>> true = np.array([[0.0, 0.0], [5.0, 5.0]])
+    >>> est = np.array([[5.1, 4.9], [0.1, -0.1]])
+    >>> match_factors(true, est)
+    array([1, 0])
     """
     cost = cdist(true_centers, est_centers, metric="sqeuclidean")
     rows, cols = linear_sum_assignment(cost)
