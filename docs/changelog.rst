@@ -10,9 +10,17 @@ in BrainIAK. It does not import BrainIAK and has no C++ or MPI code.
 Added:
 
 - :class:`htfa.TFA` and :class:`htfa.HTFA` estimators, and :func:`htfa.fit`.
-- An analytic, matrix-free Jacobian for the center and width least-squares
-  problem, with NumPy and torch (CUDA, MPS, CPU) engines and a ``backend='auto'``
+- A bounded Levenberg-Marquardt solver for the centers and widths
+  (``nlss_method='bounded-lm'``, the default), built on the factor structure of
+  the Jacobian: 6 to 220 times faster per iteration (NumPy) than scipy's
+  ``least_squares`` on the benchmarks, at the same optimum. ``'trf'`` and
+  ``'dogbox'`` (``least_squares`` with an analytic, matrix-free Jacobian) remain
+  available. NumPy and torch (CUDA, MPS, CPU) engines and a ``backend='auto'``
   choice.
+- A stopping rule for subsampled fits: the fit stops when the full-data
+  objective falls by less than a relative 1e-4 in one iteration
+  (``converged_reason_ == 'objective'``), since the scaled change has a noise
+  floor under subsampling (see :doc:`performance`).
 - Inputs: NIfTI files and folders, nibabel and nilearn images, numpy arrays and 2D
   images.
 - Factor-level static, dynamic and inter-subject connectivity, and the
