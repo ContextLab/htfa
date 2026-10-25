@@ -37,6 +37,14 @@ INIT_METHODS = ("ncorr", "power", "kmeans")
 # median subtraction) makes 'power' weights rounding noise -- always the case for
 # z-scored rows -- so 'power' is skipped when 'kmeans' runs too.
 UNIFORM_CV = 1e-3
+# Single-sample data on a raw scale: fits collapse factors onto the upper width
+# bound because the ridge penalty is var(X) in the data's units (BrainIAK's) and
+# the model has no intercept. Measured (make_tfa_data 35x53, K=6, T=1): var 0.05
+# recovered centers within 1.0; the same data x50 (var 132) missed by 12.2, and
+# shifted by +3 sd (|mean| = 3 std) missed by 20; a 47x60 photo (mean 146,
+# var 5948) put every width within 2% of the bound. Unit-variance (z-scored)
+# data sit an order of magnitude below RAW_VAR_LIMIT.
+RAW_VAR_LIMIT = 10.0
 # With subsampling, stop when the scaled change has not reached a new minimum for
 # this many consecutive iterations (a fresh sample keeps it above the threshold).
 PLATEAU_PATIENCE = 5
@@ -98,6 +106,20 @@ def standardize_data(X: ArrayLike, mode: str | bool) -> Array:
     Z: Array = (X - mean) / std
     Z[np.broadcast_to(constant, Z.shape)] = 0.0
     return Z
+
+
+def _warn_raw_single_sample(X: Array) -> None:
+    """UserWarning when single-sample data (V, 1) are far from unit scale."""
+    mean, std = float(np.mean(X)), float(np.std(X))
+    if std * std > RAW_VAR_LIMIT or abs(mean) > std:
+        warnings.warn(
+            f"single-sample data with mean {mean:.4g} and variance {std * std:.4g} "
+            "are fitted unstandardized; on such a scale the factors tend to "
+            "collapse onto the upper width bound. Pass standardize=True to "
+            "z-score them across voxels.",
+            UserWarning,
+            stacklevel=3,
+        )
 
 
 def _sample_size(n: int, ratio: float, cap: int | None) -> int:
@@ -347,6 +369,10 @@ class TFA(BaseEstimator):
     ConvergenceWarning
         When the winning start reaches ``max_iter`` (>= 1) without stopping on the
         threshold or a plateau.
+    UserWarning
+        When single-sample data (T == 1) are fitted unstandardized
+        (``standardize`` 'auto' or False) with variance above 10 or ``|mean|``
+        above their standard deviation; ``standardize=True`` z-scores them.
 
     Examples
     --------
@@ -541,6 +567,8 @@ class TFA(BaseEstimator):
         """
         X, R = self._validate(X, coords)
         names = _init_names(self.init)
+        if X.shape[1] == 1 and (self.standardize == "auto" or not self.standardize):
+            _warn_raw_single_sample(X)
         X = standardize_data(X, self.standardize)
         V, T = X.shape
         K, D = self.K, R.shape[1]

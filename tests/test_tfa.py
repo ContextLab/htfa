@@ -509,3 +509,36 @@ def test_tfa_rejects_unknown_nlss_method():
     X, R, _ = _small_data()
     with pytest.raises(ValueError, match="nlss_method must be one of"):
         TFA(K=2, nlss_method="lm").fit(X, R)
+
+
+def _photo_patch():
+    """A real photograph (sklearn's china.jpg), block-averaged to 22 x 33 gray."""
+    from sklearn.datasets import load_sample_image
+
+    photo = load_sample_image("china.jpg").astype(np.float64)
+    b = 19
+    h, w = photo.shape[0] // b, photo.shape[1] // b
+    small = photo[: h * b, : w * b].reshape(h, b, w, b, 3).mean(axis=(1, 3))
+    gray = small @ np.array([0.299, 0.587, 0.114])
+    R = np.stack(np.meshgrid(np.arange(h), np.arange(w), indexing="ij"), -1)
+    return gray.reshape(-1, 1), R.reshape(-1, 2).astype(np.float64)
+
+
+@pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+@pytest.mark.parametrize("standardize", ["auto", False])
+def test_tfa_warns_on_raw_single_sample_image(standardize):
+    X, R = _photo_patch()
+    print(f"photo: V={X.shape[0]}, mean {X.mean():.1f}, var {X.var():.1f}")
+    with pytest.warns(UserWarning, match="standardize=True"):
+        TFA(K=3, max_iter=1, standardize=standardize, init="power").fit(X, R)
+
+
+@pytest.mark.parametrize("standardize", ["auto", True])
+def test_tfa_no_raw_scale_warning_on_zscored_image(standardize):
+    X, R = _photo_patch()
+    if standardize == "auto":
+        X = (X - X.mean()) / X.std()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        warnings.simplefilter("ignore", ConvergenceWarning)  # a UserWarning too
+        TFA(K=3, max_iter=1, standardize=standardize, init="power").fit(X, R)
