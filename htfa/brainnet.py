@@ -363,17 +363,29 @@ def _download_meshes(folder: Path) -> None:
                 f"{MESH_ARCHIVE_URL} has SHA-256 {got}, expected "
                 f"{MESH_ARCHIVE_SHA256}; the download is corrupt or the file changed"
             )
-        with zipfile.ZipFile(tmp) as archive:
-            for filename, _ in MESHES.values():
-                part = folder / (filename + ".part")
+        _extract_meshes(tmp, folder)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _extract_meshes(archive_path: Path, folder: Path) -> None:
+    """Extract the meshes in `MESHES` from the BrainNet Viewer zip into ``folder``.
+
+    Each file is written to ``<name>.part`` and renamed when complete; a
+    ``.part`` left by a failure is removed.
+    """
+    with zipfile.ZipFile(archive_path) as archive:
+        for filename, _ in MESHES.values():
+            part = folder / (filename + ".part")
+            try:
                 with (
                     archive.open(_MESH_DIR_IN_ARCHIVE + filename) as src,
                     open(part, "wb") as dst,
                 ):
                     shutil.copyfileobj(src, dst)
                 os.replace(part, folder / filename)
-    finally:
-        tmp.unlink(missing_ok=True)
+            finally:
+                part.unlink(missing_ok=True)
 
 
 def fetch_mesh(name: str = "ch2") -> Path:

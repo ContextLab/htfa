@@ -255,6 +255,28 @@ def test_fetch_archive_checks_zip_signature(http_folder, tmp_path):
         )
 
 
+def test_extract_meshes_cleans_up_on_failure(tmp_path):
+    """A corrupt second mesh fails mid-copy and leaves no .part file behind."""
+    import zipfile
+
+    first, second = [f for f, _ in bn.MESHES.values()][:2]
+    archive = tmp_path / "a.zip"
+    tri = "3\n0 0 0\n1 0 0\n0 1 0\n1\n1 2 3\n"
+    marker = "CORRUPTME" * 50
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED) as z:
+        z.writestr(bn._MESH_DIR_IN_ARCHIVE + first, tri)
+        z.writestr(bn._MESH_DIR_IN_ARCHIVE + second, tri + marker)
+    raw = archive.read_bytes()
+    archive.write_bytes(raw.replace(marker.encode(), marker.lower().encode()))
+    out = tmp_path / "cache"
+    out.mkdir()
+    with pytest.raises(zipfile.BadZipFile, match="CRC"):
+        bn._extract_meshes(archive, out)
+    print(sorted(p.name for p in out.iterdir()))
+    assert sorted(p.name for p in out.iterdir()) == [first]  # complete file kept
+    assert bn.read_nv(out / first)[1].shape == (1, 3)
+
+
 # --------------------------------------------------------------- rendering
 
 
