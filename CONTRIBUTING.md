@@ -1,47 +1,35 @@
-# How to contribute
+# Contributing
 
-## Dependencies
+## Setup
 
-We use `poetry` to manage the [dependencies](https://github.com/python-poetry/poetry).
-If you dont have `poetry`, you should install with `make poetry-download`.
-
-To install dependencies and prepare [`pre-commit`](https://pre-commit.com/) hooks you would need to run `install` command:
+The project uses [uv](https://docs.astral.sh/uv/) and a `Makefile`:
 
 ```bash
+git clone https://github.com/ContextLab/htfa.git
+cd htfa
 make install
-make pre-commit-install
 ```
 
-To activate your `virtualenv` run `poetry shell`.
+`make install` creates `.venv` (Python 3.12) and installs the package in editable mode with the `dev` and `docs` extras.
 
-## Codestyle
+## Commands
 
-After installation you may execute code formatting.
+| Command | What it does |
+|-|-|
+| `make test` | `pytest -q` in `.venv` |
+| `make lint` | `ruff check .`, `ruff format --check .` and `mypy` |
+| `make docs` | builds the Sphinx site into `docs/_build/html` |
 
-```bash
-make codestyle
-```
+Run a single test with, for example, `.venv/bin/pytest tests/test_package.py::test_version -xvs`. To fix formatting, run `.venv/bin/ruff format .` (it also formats Python code blocks in Markdown files).
 
-### Checks
+## Tests
 
-Many checks are configured for this project. Command `make check-codestyle` will check black, isort and darglint.
-The `make check-safety` command will look at the security of your code.
+- Tests live in flat `tests/test_*.py` files; shared fixtures are in `tests/conftest.py`.
+- Tests use real implementations and real data (no mocks).
+- Markers (`--strict-markers` is on): `brainiak` (needs brainiak) and `network` (needs network access) are deselected by default; `gpu` needs a CUDA or MPS torch backend; `slow` marks long-running tests.
 
-Comand `make lint` applies all checks.
+## Before submitting
 
-### Before submitting
-
-Before submitting your code please do the following steps:
-
-1. Add any changes you want
-1. Add tests for the new changes
-1. Edit documentation if you have changed something significant
-1. Run `make codestyle` to format your changes.
-1. Run `make lint` to ensure that types, security and docstrings are okay.
-
-## Other help
-
-You can contribute by spreading a word about this library.
-It would also be a huge contribution to write
-a short article on how you are using this project.
-You can also share your best practices with us.
+1. Add tests for your changes.
+2. Update the documentation (`docs/`, docstrings, README) if behavior or the API changed.
+3. Run `make lint`, `make test` and `make docs`. If a fix changes anything, run all three again.

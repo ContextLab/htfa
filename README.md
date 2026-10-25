@@ -1,57 +1,64 @@
 # htfa
 
-A from-scratch, standalone Python implementation of Hierarchical Topographic Factor Analysis (HTFA), ported from the algorithm in BrainIAK.
-
 [![tests](https://github.com/ContextLab/htfa/actions/workflows/tests.yml/badge.svg)](https://github.com/ContextLab/htfa/actions/workflows/tests.yml)
+[![Documentation Status](https://readthedocs.org/projects/htfa/badge/?version=latest)](https://htfa.readthedocs.io/en/latest/?badge=latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Pre-release.** The TFA and HTFA estimators, `htfa.fit`, input loading (NIfTI files and folders, nilearn/nibabel objects, numpy arrays, 2D images), connectivity and the results object are implemented and tested. The API may change before the first tagged release. The Sphinx documentation is not written yet; see [docs/API.md](docs/API.md) for the API guide. See [Status and roadmap](#status-and-roadmap).
+> **Pre-release.** htfa is not on PyPI and has no tagged release yet, so the API may change. See [Status](#status).
 
 ## Overview
 
 Topographic factor analysis (TFA) models a data matrix `X` (voxels by time points) as `X ≈ F W + noise`. Each of the `K` factors is a radial basis function with a center and a width in coordinate space, and `W` holds the factors' weights over time [1]. Hierarchical TFA (HTFA) fits TFA to several subjects at once, with a global template that the per-subject factors are tied to [2, 3, 4].
 
-This package re-implements these algorithms from scratch. It does not import BrainIAK. The design is described in `docs/superpowers/specs/2026-10-23-htfa-rewrite-design.md`.
+htfa is a from-scratch Python implementation of these algorithms, ported from the algorithm in [BrainIAK](https://brainiak.org). It does not import BrainIAK.
 
-Differences from BrainIAK, and whether each exists yet:
+- No MPI and no compiler: the core dependencies are pure Python wheels (numpy, scipy, scikit-learn, nibabel, joblib).
+- Analytic Jacobian for the center/width least-squares problem (`htfa/_kernels.py`).
+- A NumPy engine and a torch engine (CUDA, Apple Metal, CPU), chosen with the estimators' `backend` argument; `auto` uses a GPU only for large problems when torch is already installed.
+- Inputs: NIfTI files and folders, nilearn/nibabel objects, numpy arrays and 2D images.
+- Synthetic data with ground truth (`htfa.synthetic`), factor-level connectivity, a results object, and BrainNet Viewer-style 3D network plots (`htfa.brainnet`).
 
-| Point | Status |
-|-|-|
-| No MPI and no compiler needed; the core dependencies are pure Python wheels (numpy, scipy, scikit-learn, nibabel, joblib) | Implemented (packaging) |
-| Analytic Jacobian for the center/width least-squares problem | Implemented (`htfa/_kernels.py`) |
-| NumPy engine, plus a torch engine for CUDA, Apple Metal (MPS) and CPU, with an `auto` backend that uses a GPU only for large problems when torch is already installed | Implemented (`htfa/_engines.py`); selected with the estimators' `backend` argument |
-| Optional dependencies install themselves on first use | Implemented (`htfa/_lazy.py`) |
-| Synthetic data with ground truth, for 2D and 3D coordinate grids | Implemented (`htfa.synthetic`) |
-| 2D images as input (pillow/tifffile extras) | Implemented (`htfa/io.py`) |
-| NIfTI files, folders of NIfTI files, and nilearn/nibabel objects as input | Implemented (`htfa/io.py`) |
-| `TFA` and `HTFA` estimators and `htfa.fit` | Implemented (`htfa/tfa.py`, `htfa/htfa.py`, `htfa/fit.py`) |
+## Quick tour
 
-## Status and roadmap
+Generate synthetic data for three subjects with known factor parameters, fit HTFA, and compare the recovered centers with the truth:
 
-Implemented (plan Tasks 1 to 10):
+```python
+import htfa
+from htfa.synthetic import match_factors
 
-- Packaging and repository cleanup
-- Numerical kernels: factors, ridge weights, residual and analytic Jacobian
-- NumPy and torch engines and backend selection
-- On-demand installation of optional dependencies
-- Synthetic data generators and factor matching
-- TFA estimator
-- HTFA estimator
-- Loading inputs: NIfTI files and folders, images, nilearn/nibabel objects, arrays
-- Connectivity, results object and `htfa.fit`
-- Cross-check against BrainIAK (`pytest -m brainiak`, run in CI)
+Xs, Rs, truth = htfa.make_htfa_data(
+    n_subjects=3, grid_shape=(12, 12, 12), n_samples=60, K=5, random_state=0
+)
+res = htfa.fit(
+    Xs, K=5, coords=Rs, standardize=False, max_global_iter=30, random_state=0
+)
+print(res.global_centers.shape)  # template centers
+print(res.weights[0].shape)  # factor time courses of the first subject
+print(res.connectivity(0).shape)  # factor connectivity of the first subject
+perm = match_factors(truth["centers"][0], res.centers[0])
+print(abs(res.centers[0][perm] - truth["centers"][0]).max())
+```
 
-Not yet done (Tasks 11 to 13):
+Output:
 
-- Benchmarks, GPU accuracy checks and tuning of the `auto` backend threshold (Task 11; in progress)
-- Sphinx documentation and tutorials, including a check on real fMRI data (Task 12)
-- Release workflow and PyPI publication (Task 13)
+```
+(5, 3)
+(5, 60)
+(5, 5)
+0.01688680355447225
+```
 
-The full plan is in `docs/superpowers/plans/2026-10-23-htfa-rewrite.md`.
+For real data, pass a folder with one `.nii` / `.nii.gz` file per subject:
+
+```python
+res = htfa.fit("path/to/folder", K=50, random_state=0)
+```
+
+The inputs `htfa.fit` accepts, its parameters and the results object are described in the [documentation](https://htfa.readthedocs.io/en/latest/) and in [docs/API.md](docs/API.md).
 
 ## Installation
 
-The package is not on PyPI yet. Install from GitHub:
+htfa is not on PyPI yet. Install from GitHub:
 
 ```bash
 pip install git+https://github.com/ContextLab/htfa.git
@@ -62,15 +69,12 @@ For development, using [uv](https://docs.astral.sh/uv/):
 ```bash
 git clone https://github.com/ContextLab/htfa.git
 cd htfa
-uv venv
-uv pip install -e ".[dev]"
+make install
 ```
 
-Requires Python 3.10 or newer. On Apple Silicon Macs, torch is a core dependency.
+`make install` creates `.venv` (Python 3.12) and installs the package with the `dev` and `docs` extras. The package requires Python 3.10 or newer. On Apple Silicon Macs, torch is a core dependency.
 
 ### Optional extras
-
-These extras are declared in `pyproject.toml`:
 
 | Extra | Contents |
 |-|-|
@@ -90,57 +94,50 @@ import htfa
 htfa.set_autoinstall(False)
 ```
 
-## Example
+## Documentation
 
-Fit HTFA to a folder with one `.nii` / `.nii.gz` file per subject:
+The Sphinx site is built from `docs/` with `make docs` (output in `docs/_build/html`). Its pages:
 
-```python
-import htfa
+- [Installation](https://htfa.readthedocs.io/en/latest/installation.html)
+- [Inputs](https://htfa.readthedocs.io/en/latest/inputs.html)
+- [Optional dependencies](https://htfa.readthedocs.io/en/latest/optional_dependencies.html)
+- [Tutorials](https://htfa.readthedocs.io/en/latest/tutorials.html)
+- [Example gallery](https://htfa.readthedocs.io/en/latest/auto_examples/index.html)
+- [API reference](https://htfa.readthedocs.io/en/latest/api.html)
 
-res = htfa.fit("path/to/folder", K=50, max_global_iter=30, random_state=0)
-res.global_centers  # (K, 3) template centers, in world (mm) coordinates
-res.weights[0]  # (K, T) factor time courses of the first subject (file order)
-res.connectivity(0)  # (K, K) factor connectivity of the first subject
-```
+The hosted site at htfa.readthedocs.io is not live yet (Read the Docs is not configured); until it is, build the docs locally.
 
-On synthetic data with known parameters:
+## Status
 
-```python
-import htfa
-from htfa.synthetic import match_factors
+Done:
 
-Xs, Rs, truth = htfa.make_htfa_data(
-    n_subjects=3, grid_shape=(12, 12, 12), n_samples=60, K=5, random_state=0
-)
-res = htfa.fit(
-    Xs, K=5, coords=Rs, standardize=False, max_global_iter=30, random_state=0
-)
-perm = match_factors(truth["centers"][0], res.centers[0])
-print(abs(res.centers[0][perm] - truth["centers"][0]).max())
-```
+- Tasks 1 to 11 of the [rewrite plan](docs/superpowers/plans/2026-10-23-htfa-rewrite.md): packaging, numerical kernels, NumPy and torch engines, on-demand dependencies, synthetic data, the `TFA` and `HTFA` estimators, input loading, connectivity, results and `htfa.fit`, the BrainIAK cross-check (`pytest -m brainiak`, run in CI), and benchmarks.
+- Task 14: BrainNet Viewer-style network plots (`htfa.brainnet`).
+- The Sphinx documentation site and example gallery (Tasks 12a and 12b).
 
-Output:
+In progress:
 
-```
-0.01688680355447225
-```
+- Tutorials.
+- A faster solver.
 
-See [docs/API.md](docs/API.md) for the inputs `htfa.fit` accepts, its parameters and the results object.
+Not done:
+
+- Release workflow and PyPI publication (Task 13).
 
 ## Testing
 
 ```bash
-pytest
+make test
 ```
 
-By default, tests marked `brainiak` or `network` are skipped (`addopts = "--strict-markers -m 'not brainiak and not network'"`). Markers:
+By default, tests marked `brainiak` or `network` are skipped. Markers:
 
 - `brainiak`: compares against the reference BrainIAK implementation (requires brainiak)
 - `network`: requires network access (downloads data)
 - `gpu`: requires a GPU backend (torch with CUDA or MPS)
 - `slow`: long-running test
 
-For example, `pytest -m brainiak` runs the BrainIAK comparison tests.
+For example, `.venv/bin/pytest -m brainiak` runs the BrainIAK comparison tests.
 
 ## Citing
 
