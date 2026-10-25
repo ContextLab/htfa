@@ -600,55 +600,112 @@ def res_htfa():
     return _fit(Xs, coords=Rs, K=4, max_global_iter=3, random_state=0)
 
 
-def test_results_plot_network_matches_function(res_htfa, tmp_path):
-    img = res_htfa.plot_network(mesh=None, threshold=0.0, out=tmp_path / "g.png")
-    ref = htfa.plot_network(
-        res_htfa.global_centers, res_htfa.isfc(), sizes=res_htfa.global_widths,
-        mesh=None, threshold=0.0,
-    )  # fmt: skip
-    assert bn.image_diff(img, ref) == 0.0
-    sub = res_htfa.plot_network(subject=1, mesh=None, threshold=0.0)
-    ref1 = htfa.plot_network(
-        res_htfa.centers[1], res_htfa.connectivity(1), sizes=res_htfa.widths[1],
-        mesh=None, threshold=0.0,
-    )  # fmt: skip
-    assert bn.image_diff(sub, ref1) == 0.0
-    # estimators are accepted directly
-    via_model = bn.plot_network(res_htfa.model, res_htfa.isfc(), mesh=None, threshold=0)
-    assert bn.image_diff(via_model, ref) == 0.0
-    assert bn.image_diff(img, sub) > 0.05
+# The wrapper tests below check the arguments the wrappers resolve, exactly,
+# and render once through each wrapper. They do not compare two renders
+# pixel for pixel: Apple's software OpenGL renderer on the macOS 3.10/3.11 CI
+# runners does not render translucent edges deterministically (measured:
+# 25/25/25/5/5 differing pixels across 6 renders of the same scene).
 
 
-def test_results_animate_network(res_htfa, tmp_path):
-    out = res_htfa.animate_network(tmp_path / "s0.gif", subject=0, window=20, mesh=None)
-    with Image.open(out) as g:
-        assert g.n_frames == 30 - 20 + 1
-    out = res_htfa.animate_network(
-        tmp_path / "g.gif", window=25, mesh=None, frames_dir=tmp_path / "g"
-    )
-    assert len(list((tmp_path / "g").iterdir())) == 30 - 25 + 1
-    # Pillow merges identical consecutive GIF frames (here: windows with no
-    # edge above threshold) and adds up their durations
-    with Image.open(out) as g:
-        total = 0
-        for k in range(g.n_frames):
-            g.seek(k)
-            total += g.info["duration"]
-    print("gif frames", g.n_frames, "total ms", total)
-    assert total == (30 - 25 + 1) * 100
-
-
-def test_tfa_results_global_falls_back_to_subject_0(tmp_path):
+@pytest.fixture(scope="module")
+def res_tfa():
     X, R, _ = make_tfa_data((8, 8, 8), n_samples=20, K=3, random_state=2)
-    res = _fit(X, coords=R * 10.0 - 35.0, K=3, max_iter=5, random_state=0)
-    img = res.plot_network(mesh=None, threshold=0.0)
-    ref = htfa.plot_network(
-        res.centers[0], res.connectivity(0), sizes=res.widths[0], mesh=None,
-        threshold=0.0,
-    )  # fmt: skip
-    assert bn.image_diff(img, ref) == 0.0
+    return _fit(X, coords=R * 10.0 - 35.0, K=3, max_iter=5, random_state=0)
+
+
+def _same(got, expect):
+    assert len(got) == len(expect) == 3
+    for g, e in zip(got, expect, strict=True):
+        assert np.array_equal(g, e), (g, e)
+
+
+def test_network_inputs_global_and_subject(res_htfa):
+    r = res_htfa
+    _same(r._network_inputs(), (r.global_centers, r.global_widths, r.isfc()))
+    _same(r._network_inputs(subject=1), (r.centers[1], r.widths[1], r.connectivity(1)))
+    _same(
+        r._network_inputs(window=25),
+        (r.global_centers, r.global_widths, r.isfc(25)),
+    )
+    _same(
+        r._network_inputs(subject=0, window=20),
+        (r.centers[0], r.widths[0], r.dynamic_connectivity(0, 20)),
+    )
+    given = np.eye(4)
+    assert r._network_inputs(subject=1, connectivity=given)[2] is given
+    assert r._network_inputs(window=20)[2].shape == (30 - 20 + 1, 4, 4)
+    # estimators and results resolve to the same nodes in htfa.brainnet
+    for nodes in (r, r.model):
+        centers, sizes = bn._nodes(nodes, None, "global")
+        assert np.array_equal(centers, r.global_centers)
+        assert np.array_equal(sizes, r.global_widths)
+    centers, sizes = bn._nodes(r, None, 1)
+    assert np.array_equal(centers, r.centers[1]) and np.array_equal(sizes, r.widths[1])
+
+
+def test_network_inputs_tfa_falls_back_to_subject_0(res_tfa):
+    r = res_tfa
+    expect = (r.centers[0], r.widths[0], r.connectivity(0))
+    _same(r._network_inputs(), expect)
+    _same(r._network_inputs(subject=0), expect)
+    _same(
+        r._network_inputs(window=10),
+        (r.centers[0], r.widths[0], r.dynamic_connectivity(0, 10)),
+    )
+    centers, sizes = bn._nodes(r.model, None, "global")
+    assert np.array_equal(centers, r.centers[0]) and np.array_equal(sizes, r.widths[0])
     with pytest.raises(ValueError, match="no global template"):
-        bn.plot_network(res, mesh=None, subject="global")
+        bn.plot_network(r, mesh=None, subject="global")
+
+
+def _signed_edges(K):
+    """Edge 0-1 positive, edge 2-3 negative, nothing else."""
+    E = np.zeros((K, K))
+    E[0, 1] = E[1, 0] = 0.8
+    E[2, 3] = E[3, 2] = -0.8
+    return E
+
+
+def _midpoint_window(a, centers, i, j):
+    y, z = (centers[i, 1:] + centers[j, 1:]) / 2
+    return _window(a, y, z, half=3)
+
+
+def test_results_plot_network_renders(res_htfa, tmp_path):
+    r = res_htfa
+    out = tmp_path / "g.png"
+    img = r.plot_network(connectivity=_signed_edges(4), mesh=None, out=out)
+    with Image.open(out) as saved:
+        assert saved.size == (1600, 1000) and saved.mode == "RGB"
+    a = _rgb(img)
+    pos = _midpoint_window(a, r.global_centers, 0, 1)
+    neg = _midpoint_window(a, r.global_centers, 2, 3)
+    print("red/blue px at +edge", _red(pos).sum(), _blue(pos).sum())
+    print("red/blue px at -edge", _red(neg).sum(), _blue(neg).sum())
+    assert _red(pos).sum() >= 10 and _blue(pos).sum() == 0
+    assert _blue(neg).sum() >= 10 and _red(neg).sum() == 0
+
+
+def test_results_animate_network_renders(res_htfa, tmp_path):
+    r = res_htfa
+    E = _signed_edges(4)
+    out = r.animate_network(
+        tmp_path / "s1.gif", subject=1, connectivity=np.stack([E, -E]), mesh=None,
+        frames_dir=tmp_path / "f",
+    )  # fmt: skip
+    with Image.open(out) as g:
+        assert g.n_frames == 2 and g.size == (1600, 1000)
+    frames = []
+    for k in (1, 2):
+        with Image.open(tmp_path / "f" / f"{k}.png") as im:
+            assert im.size == (1600, 1000) and im.mode == "RGB"
+            frames.append(_rgb(im))
+    first = _midpoint_window(frames[0], r.centers[1], 0, 1)
+    second = _midpoint_window(frames[1], r.centers[1], 0, 1)
+    print("edge 0-1 red/blue px, frame 1:", _red(first).sum(), _blue(first).sum(),
+          "frame 2:", _red(second).sum(), _blue(second).sum())  # fmt: skip
+    assert _red(first).sum() >= 10 and _blue(first).sum() == 0
+    assert _blue(second).sum() >= 10 and _red(second).sum() == 0
 
 
 # ------------------------------------------------- JPEG output and configs
