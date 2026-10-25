@@ -31,7 +31,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from collections.abc import Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -839,7 +839,10 @@ def animate_network(
     connectivity : array of shape (T, K, K)
         One edge matrix per frame.
     out : path
-        ``.mp4`` (H.264 via imageio-ffmpeg) or ``.gif``.
+        ``.mp4`` (H.264 via imageio-ffmpeg) or ``.gif``. An mp4 is encoded
+        while frames render, holding one frame in memory at a time. A GIF
+        needs all frames for its shared palette, about 4.8 MB per
+        1600 x 1000 frame (see `write_animation`).
     fps : float
         Frames per second.
     captions : sequence of T str, optional
@@ -868,8 +871,8 @@ def animate_network(
     if folder is not None:
         folder.mkdir(parents=True, exist_ok=True)
     scene = _Scene(centers, node_sizes, load_mesh(mesh), **scene_opts)
-    images = []
-    try:
+
+    def frames() -> Iterator[Any]:
         for t, frame in enumerate(E):
             scene.set_edges(frame, **edge_opts)
             img = scene.image()
@@ -880,50 +883,67 @@ def animate_network(
             if folder is not None:
                 ext = ".png" if jpeg_quality is None else ".jpg"
                 _save(img, folder / f"{t + 1}{ext}", jpeg_quality)
-            images.append(img)
+            yield img
+
+    try:
+        return write_animation(frames(), out, fps=fps)
     finally:
         scene.close()
-    return write_animation(images, out, fps=fps)
 
 
 # ------------------------------------------------------------------ animations
 
 
 def write_animation(
-    images: Sequence[Any], out: str | os.PathLike, fps: float = 10
+    images: Iterable[Any], out: str | os.PathLike, fps: float = 10
 ) -> Path:
     """Write PIL images as an mp4 (H.264, yuv420p) or looping GIF, by suffix.
 
+    ``images`` may be any iterable, such as a generator. An mp4 is written
+    frame by frame as the iterable yields, so only one frame is held in
+    memory at a time.
+
     GIFs use one palette for all frames (white, white-to-red and white-to-blue
     ramps, plus median-cut colors of all frames), without dithering, so colors
-    do not flicker between frames.
+    do not flicker between frames. Choosing that palette needs every frame,
+    so a GIF holds all frames in memory: about 4.8 MB per 1600 x 1000 frame
+    (300 frames: about 1.4 GB). Use mp4 for long movies.
     """
     out = Path(out)
-    if not len(images):
-        raise ValueError("no frames to write")
-    frames = [im.convert("RGB") for im in images]
-    if len({f.size for f in frames}) != 1:
-        raise ValueError("all frames must have the same size")
     suffix = out.suffix.lower()
-    if suffix == ".mp4":
-        iio = lazy_import("imageio.v2", "brain3d", "mp4 export")
-        lazy_import("imageio_ffmpeg", "brain3d", "mp4 export")
-        w, h = frames[0].size
-        with iio.get_writer(
-            out,
-            fps=fps,
-            codec="libx264",
-            quality=8,
-            macro_block_size=2,
-            pixelformat="yuv420p",
-        ) as writer:
-            for f in frames:
-                writer.append_data(np.asarray(f.crop((0, 0, w - w % 2, h - h % 2))))
-        return out
+    if suffix not in (".mp4", ".gif"):
+        raise ValueError(f"out must end in .mp4 or .gif, got {out.name!r}")
     if suffix == ".gif":
+        frames = [im.convert("RGB") for im in images]
+        if not frames:
+            raise ValueError("no frames to write")
+        if len({f.size for f in frames}) != 1:
+            raise ValueError("all frames must have the same size")
         _write_gif(frames, out, fps)
         return out
-    raise ValueError(f"out must end in .mp4 or .gif, got {out.name!r}")
+    iio = lazy_import("imageio.v2", "brain3d", "mp4 export")
+    lazy_import("imageio_ffmpeg", "brain3d", "mp4 export")
+    size = None
+    with iio.get_writer(
+        out,
+        fps=fps,
+        codec="libx264",
+        quality=8,
+        macro_block_size=2,
+        pixelformat="yuv420p",
+    ) as writer:
+        for im in images:
+            frame = im.convert("RGB")
+            if size is None:
+                size = frame.size
+            elif frame.size != size:
+                raise ValueError("all frames must have the same size")
+            w, h = size
+            writer.append_data(np.asarray(frame.crop((0, 0, w - w % 2, h - h % 2))))
+    if size is None:
+        out.unlink(missing_ok=True)
+        raise ValueError("no frames to write")
+    return out
 
 
 def _write_gif(frames: list[Any], out: Path, fps: float) -> None:

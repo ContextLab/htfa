@@ -479,6 +479,71 @@ def test_animate_network_errors(tmp_path):
         bn.animate_network(CENTERS, _frames(), tmp_path / "a.avi", mesh=None)
     with pytest.raises(ValueError, match="no frames"):
         bn.write_animation([], tmp_path / "x.gif")
+    with pytest.raises(ValueError, match="no frames"):
+        bn.write_animation(iter([]), tmp_path / "x.mp4")
+    assert not (tmp_path / "x.mp4").exists()
+    a, b = Image.new("RGB", (40, 30)), Image.new("RGB", (42, 30))
+    for suffix in (".gif", ".mp4"):
+        with pytest.raises(ValueError, match="same size"):
+            bn.write_animation([a, b], tmp_path / f"y{suffix}")
+
+
+def test_write_animation_mp4_streams_frames(tmp_path):
+    """Each mp4 frame is released once encoded: no frame list is kept."""
+    import gc
+    import weakref
+
+    import imageio.v2 as iio
+
+    refs = []
+    alive_when_yielding = []
+
+    def frames(n=40):
+        for k in range(n):
+            gc.collect()
+            alive_when_yielding.append(sum(r() is not None for r in refs))
+            a = np.full((120, 160, 3), 255, np.uint8)
+            a[:, : 4 * (k + 1)] = (200, 0, 0)  # a growing red bar
+            img = Image.fromarray(a)
+            refs.append(weakref.ref(img))
+            yield img
+            del img
+
+    out = bn.write_animation(frames(), tmp_path / "s.mp4", fps=20)
+    print("frames alive when the next one was requested:", alive_when_yielding)
+    # when frame k is requested, earlier frames have been freed
+    assert max(alive_when_yielding) <= 1
+    reader = iio.get_reader(out, "ffmpeg")
+    try:
+        assert reader.count_frames() == 40
+        assert reader.get_meta_data()["fps"] == 20
+        last = reader.get_data(39)
+    finally:
+        reader.close()
+    assert (last[60, :155, 0] > 150).all() and (last[60, :155, 2] < 80).all()
+
+
+def test_animate_network_long_mp4(tmp_path):
+    """A 40-frame animate_network mp4 decodes to 40 frames with changing edges."""
+    import imageio.v2 as iio
+
+    T = 40
+    E = np.stack([_conn() * np.sign(np.sin(t / 3.0) + 1e-9) for t in range(T)])
+    out = bn.animate_network(CENTERS, E, tmp_path / "long.mp4", mesh=None,
+                             size=(400, 250), fps=10)  # fmt: skip
+    reader = iio.get_reader(out, "ffmpeg")
+    try:
+        assert reader.count_frames() == T
+        colors = []
+        for t in (0, 10):  # sin > 0 at t = 0 (red top edge), < 0 at t = 10 (blue)
+            f = reader.get_data(t).astype(int)
+            top = f[int(V0 / 4 - SCALE / 4 * 50) - 3 : int(V0 / 4 - SCALE / 4 * 50) + 4]
+            colors.append((_red(top).sum(), _blue(top).sum()))
+    finally:
+        reader.close()
+    print("red/blue px on the top edge at t=0 and t=10:", colors)
+    assert colors[0][0] > 20 and colors[0][1] == 0
+    assert colors[1][1] > 20 and colors[1][0] == 0
 
 
 # ------------------------------------------------------------------ panels
