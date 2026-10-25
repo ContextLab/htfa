@@ -566,6 +566,29 @@ class _Scene:
             window_size=[self.size[0] * s, self.size[1] * s],
             lighting="none",
         )
+        try:
+            self._build(
+                pv, pl, mesh, view, node_color, mesh_color, mesh_opacity, background
+            )
+        except BaseException:
+            pl.close()
+            raise
+        self.pl = pl
+        self._edges: Any = None
+
+    def _build(
+        self,
+        pv: Any,
+        pl: Any,
+        mesh: tuple[Array, Array] | None,
+        view: str,
+        node_color: Any,
+        mesh_color: Any,
+        mesh_opacity: float,
+        background: Any,
+    ) -> None:
+        """Add the background, mesh, nodes, camera and light to ``pl``."""
+        centers = self.centers
         pl.set_background(background)
         if mesh is not None:
             verts, faces = mesh
@@ -606,8 +629,6 @@ class _Scene:
                 positional=False,
             )
         )
-        self.pl = pl
-        self._edges: Any = None
 
     def set_edges(
         self,

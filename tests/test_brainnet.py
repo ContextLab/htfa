@@ -356,6 +356,18 @@ def test_views_frame_the_brain(ch2):
                          Image.fromarray(right.astype(np.uint8))) < 5  # fmt: skip
 
 
+def test_failed_scene_setup_closes_plotter():
+    """An error after the Plotter exists (bad color) still closes it."""
+    from pyvista.plotting import _ALL_PLOTTERS
+
+    before = set(_ALL_PLOTTERS)
+    for bad in ({"background": "notacolor"}, {"node_color": "notacolor"}):
+        with pytest.raises(ValueError):
+            bn.plot_network(CENTERS, mesh=None, **bad)
+    print("open plotters before/after:", len(before), len(_ALL_PLOTTERS))
+    assert set(_ALL_PLOTTERS) == before
+
+
 def test_plot_network_input_errors():
     with pytest.raises(ValueError, match=r"\(K, 3\) MNI"):
         bn.plot_network(np.zeros((4, 2)), mesh=None)
