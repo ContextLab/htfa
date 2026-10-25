@@ -126,6 +126,31 @@ def test_plot_reconstruction_3d_without_affine_leaves_no_figure():
     assert plt.get_fignums() == before
 
 
+def _lr_fontsizes(fig):
+    return [
+        t.get_fontsize()
+        for a in fig.axes
+        for t in a.texts
+        if t.get_text() in ("L", "R")
+    ]
+
+
+def test_3d_connectivity_in_given_axes_scales_labels(res3d, tmp_path):
+    """In a small axes the L/R labels shrink with it so they clear the outlines."""
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    res3d.plot_connectivity(0, ax=axes[2])
+    fig.savefig(tmp_path / "row.png", dpi=100)
+    small = _lr_fontsizes(fig)
+    fig, ax = plt.subplots(figsize=(6, 3))
+    res3d.plot_connectivity(0, ax=ax)
+    single = _lr_fontsizes(fig)
+    own = _lr_fontsizes(res3d.plot_connectivity(0).frame_axes.figure)
+    print("L/R font sizes: 1x3 row", small, "6x3 figure", single, "own figure", own)
+    assert small and all(s <= 9 for s in small)
+    assert all(s_ > s for s_, s in zip(single, small, strict=True))
+    assert own and all(s == 12 for s in own)  # nilearn's default, unchanged
+
+
 def _offsets(fig):
     """(row, column) of each scatter collection on the figure's first axes."""
     return [c.get_offsets()[:, ::-1] for c in fig.axes[0].collections]

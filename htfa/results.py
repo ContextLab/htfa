@@ -453,9 +453,16 @@ class HTFAResults:
         centers = self._plotted_centers(subject, snap, mask)
         if D == 3:
             plotting = lazy_import("nilearn.plotting", "plot", "3D plotting")
-            return plotting.plot_connectome(
-                conn, centers, edge_threshold=threshold, axes=ax
+            if ax is None:
+                return plotting.plot_connectome(conn, centers, edge_threshold=threshold)
+            # In a given (often small) axes, scale the L/R labels with the
+            # axes width (nilearn uses 12 pt) so they clear the outlines.
+            disp = plotting.plot_connectome(
+                conn, centers, edge_threshold=threshold, axes=ax, annotate=False
             )
+            width_pt = ax.get_position().width * ax.figure.get_figwidth() * 72
+            disp.annotate(size=float(np.clip(width_pt / 30, 6, 12)))
+            return disp
         plt = lazy_import("matplotlib.pyplot", "plot", "plotting")
         fig, ax = (ax.figure, ax) if ax is not None else plt.subplots()
         s = self.subjects[subject]
