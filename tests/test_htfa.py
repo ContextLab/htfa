@@ -252,3 +252,99 @@ def test_htfa_fit_runs_with_n_threads():
         a = HTFA(n_threads=1, **kw).fit(Xs, Rs)
         b = HTFA(n_threads=2, **kw).fit(Xs, Rs)
     np.testing.assert_allclose(a.global_centers_, b.global_centers_, rtol=PARALLEL_RTOL)
+
+
+def _small_htfa_data():
+    return make_htfa_data(3, (10, 10), 20, K=3, random_state=0)
+
+
+SMALL_HTFA = {
+    "K": 3,
+    "max_global_iter": 2,
+    "max_local_iter": 3,
+    "init": "power",
+    "standardize": False,
+    "random_state": 0,
+}
+
+
+def _fit_quiet(model, *args, **kwargs):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        return model.fit(*args, **kwargs)
+
+
+def test_htfa_exposes_free_fits_and_template_history():
+    Xs, Rs, _ = _small_htfa_data()
+    model = _fit_quiet(HTFA(**SMALL_HTFA), Xs, Rs)
+    assert len(model.free_fits_) == 3
+    for C, w in model.free_fits_:
+        assert C.shape == (3, 2) and w.shape == (3,)
+    t = model.template_subject_
+    history = model.template_history_
+    assert len(history) == model.n_iter_ + 1
+    np.testing.assert_array_equal(history[0][0], model.free_fits_[t][0])
+    np.testing.assert_array_equal(history[0][1], model.free_fits_[t][1])
+    np.testing.assert_array_equal(history[-1][0], model.global_centers_)
+    np.testing.assert_array_equal(history[-1][1], model.global_widths_)
+    assert not np.array_equal(history[0][0], history[1][0])
+
+
+def test_htfa_template_max_iter_controls_free_fits():
+    Xs, Rs, _ = _small_htfa_data()
+    zero = _fit_quiet(HTFA(template_max_iter=0, **SMALL_HTFA), Xs, Rs)
+    full = _fit_quiet(HTFA(**SMALL_HTFA), Xs, Rs)
+    assert HTFA().get_params()["template_max_iter"] == 100
+    # max_iter=0 keeps each start; the default iterates away from it.
+    diffs = [
+        float(np.max(np.abs(a[0] - b[0])))
+        for a, b in zip(zero.free_fits_, full.free_fits_, strict=True)
+    ]
+    print("free-fit center differences, 0 vs 100 iterations:", diffs)
+    assert min(diffs) > 0
+
+
+def test_htfa_starts_replace_free_fits_exactly():
+    """Passing a model's own free fits as starts reproduces it bit for bit."""
+    Xs, Rs, _ = _small_htfa_data()
+    a = _fit_quiet(HTFA(**SMALL_HTFA), Xs, Rs)
+    b = _fit_quiet(HTFA(**SMALL_HTFA), Xs, Rs, starts=a.free_fits_)
+    np.testing.assert_array_equal(a.global_centers_, b.global_centers_)
+    np.testing.assert_array_equal(a.global_widths_, b.global_widths_)
+    for s in range(3):
+        np.testing.assert_array_equal(a.centers_[s], b.centers_[s])
+    with pytest.raises(ValueError, match="starts"):
+        HTFA(**SMALL_HTFA).fit(Xs, Rs, starts=a.free_fits_[:2])
+    with pytest.raises(ValueError, match="starts"):
+        HTFA(**SMALL_HTFA).fit(Xs, Rs, starts=[(np.zeros((2, 2)), np.ones(2))] * 3)
+
+
+def test_htfa_resume_from_init_template():
+    """init_template sets the starting template; with the model's per-subject
+    estimates as starts this resumes a fit."""
+    Xs, Rs, _ = _small_htfa_data()
+    first = _fit_quiet(HTFA(**SMALL_HTFA), Xs, Rs)
+    resumed = _fit_quiet(
+        HTFA(**SMALL_HTFA),
+        Xs,
+        Rs,
+        starts=list(zip(first.centers_, first.widths_, strict=True)),
+        init_template=(first.global_centers_, first.global_widths_),
+    )
+    np.testing.assert_array_equal(
+        resumed.template_history_[0][0], first.global_centers_
+    )
+    np.testing.assert_array_equal(resumed.template_history_[0][1], first.global_widths_)
+    step_first = np.abs(first.template_history_[-1][0] - first.template_history_[-2][0])
+    step_resumed = np.abs(
+        resumed.template_history_[1][0] - resumed.template_history_[0][0]
+    )
+    print(
+        "last step of the first fit, first step after resuming:",
+        step_first.max(),
+        step_resumed.max(),
+    )
+    # The resumed fit continues the trajectory (measured: 0.147660 vs 0.147647).
+    np.testing.assert_allclose(step_resumed.max(), step_first.max(), rtol=1e-3)
+    with pytest.raises(ValueError, match="init_template"):
+        HTFA(**SMALL_HTFA).fit(Xs, Rs, init_template=(np.zeros((2, 2)), np.ones(2)))

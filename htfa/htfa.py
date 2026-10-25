@@ -19,8 +19,6 @@ from htfa.tfa import TFA
 
 Array = NDArray[np.float64]
 
-TEMPLATE_MAX_ITER = 100  # max_iter of the unpenalized per-subject TFA fits
-
 
 def map_update(
     prior_mean: ArrayLike,
@@ -129,6 +127,9 @@ class HTFA(BaseEstimator):
         Maximum number of template updates.
     max_local_iter : int
         ``max_iter`` of each subject's TFA per global iteration.
+    template_max_iter : int, default=100
+        ``max_iter`` of the unpenalized per-subject TFA fits (stage 0) that
+        give the initial template and the subjects' own starts.
     threshold : float
         Convergence threshold on the scaled template change
         ``max(max|dC| / length, max|dw| / w)``, as in `TFA`.
@@ -160,6 +161,15 @@ class HTFA(BaseEstimator):
         Posterior variance of the global widths.
     centers_, widths_, weights_ : list of ndarray
         Per-subject (K, D), (K,) and (K, T_s) estimates, in template order.
+    free_fits_ : list of (ndarray, ndarray)
+        Per-subject (centers (K, D), widths (K,)) of the unpenalized stage-0
+        fits, or the ``starts`` passed to `fit`.
+    template_subject_ : int
+        Index of the subject whose free fit is the initial template (when no
+        ``init_template`` is passed).
+    template_history_ : list of (ndarray, ndarray)
+        Global (centers, widths): the initial template, then the template after
+        each global iteration (``n_iter_ + 1`` entries).
     n_iter_ : int
     converged_ : bool
     engine_ : str
@@ -185,6 +195,7 @@ class HTFA(BaseEstimator):
         K: int = 50,
         max_global_iter: int = 10,
         max_local_iter: int = 10,
+        template_max_iter: int = 100,
         threshold: float = 1e-3,
         nlss_method: str = "bounded-lm",
         nlss_loss: str = "soft_l1",
@@ -208,6 +219,7 @@ class HTFA(BaseEstimator):
         self.K = K
         self.max_global_iter = max_global_iter
         self.max_local_iter = max_local_iter
+        self.template_max_iter = template_max_iter
         self.threshold = threshold
         self.nlss_method = nlss_method
         self.nlss_loss = nlss_loss
@@ -292,7 +304,13 @@ class HTFA(BaseEstimator):
         )
         return fits
 
-    def fit(self, X: list, coords: list) -> "HTFA":
+    def fit(
+        self,
+        X: list,
+        coords: list,
+        starts: Sequence[tuple[ArrayLike, ArrayLike]] | None = None,
+        init_template: tuple[ArrayLike, ArrayLike] | None = None,
+    ) -> "HTFA":
         """Fit the global template and per-subject factors.
 
         Parameters
@@ -301,6 +319,16 @@ class HTFA(BaseEstimator):
             Per-subject data.
         coords : list of array_like, each shape (V_s, D)
             Per-subject voxel coordinates (same D for all subjects).
+        starts : list of (centers, widths), optional
+            One (K, D), (K,) pair per subject, used in place of the unpenalized
+            stage-0 fits (which are then skipped), e.g. a previous model's
+            ``free_fits_``.
+        init_template : tuple of (centers, widths), optional
+            Initial global template, shapes (K, D) and (K,), in place of the
+            template subject's stage-0 fit. To resume a fit, pass
+            ``starts=list(zip(model.centers_, model.widths_))`` and
+            ``init_template=(model.global_centers_, model.global_widths_)``; the
+            template (co)variances restart from their initial values.
 
         Returns
         -------
@@ -310,8 +338,9 @@ class HTFA(BaseEstimator):
         Raises
         ------
         ValueError
-            On empty or mismatched lists, mixed dimensionalities or
-            ``max_global_iter < 1``.
+            On empty or mismatched lists, mixed dimensionalities,
+            ``max_global_iter < 1`` or ``starts``/``init_template`` of the wrong
+            length or shapes.
 
         Warns
         -----
@@ -345,7 +374,25 @@ class HTFA(BaseEstimator):
         Rs = [np.asarray(r, dtype=np.float64) for r in coords]
         if len({R.shape[1] for R in Rs}) != 1:
             raise ValueError("all subjects' coords must have the same dimension D")
-        n_subj, K = len(Xs), self.K
+        n_subj, K, D = len(Xs), self.K, Rs[0].shape[1]
+
+        def checked(
+            pair: tuple[ArrayLike, ArrayLike], name: str
+        ) -> tuple[Array, Array]:
+            C, w = np.asarray(pair[0], np.float64), np.asarray(pair[1], np.float64)
+            if C.shape != (K, D) or w.shape != (K,):
+                raise ValueError(
+                    f"{name} must be (centers ({K}, {D}), widths ({K},)), got "
+                    f"{C.shape} and {w.shape}"
+                )
+            return C, w
+
+        if starts is not None and len(starts) != n_subj:
+            raise ValueError(f"starts must have one entry per subject ({n_subj})")
+        given = None if starts is None else [checked(p, "starts") for p in starts]
+        template_start = (
+            None if init_template is None else checked(init_template, "init_template")
+        )
         rng = np.random.default_rng(self.random_state)
         seed_max = np.iinfo(np.int32).max
 
@@ -362,22 +409,21 @@ class HTFA(BaseEstimator):
         # random subject among those with the most samples.
         T_max = max(x.shape[1] for x in Xs)
         t = int(rng.choice([s for s in range(n_subj) if Xs[s].shape[1] == T_max]))
-        free = self._fit_subjects(
-            Xs,
-            Rs,
-            TEMPLATE_MAX_ITER,
-            None,
-            none,
-            rng.integers(seed_max, size=n_subj),
-            parallel,
-        )
-        template, R_t = free[t], Rs[t]
+        free_seeds = rng.integers(seed_max, size=n_subj)  # drawn either way
+        if given is None:
+            fitted = self._fit_subjects(
+                Xs, Rs, self.template_max_iter, None, none, free_seeds, parallel
+            )
+            given = [(f.centers_, f.widths_) for f in fitted]
+        self.free_fits_, self.template_subject_ = given, t
+        R_t = Rs[t]
         centers_cov = np.cov(R_t.T) * K ** (-2.0 / 3.0)
         widths_var = max_sigma(R_t)
         g_cov_scaled = centers_cov / n_subj
         g_var_scaled = widths_var / n_subj
-        C = template.centers_.copy()
-        w = template.widths_.copy()
+        C, w = given[t] if template_start is None else template_start
+        C, w = C.copy(), w.copy()
+        self.template_history_ = [(C, w)]
         C_cov = np.tile(centers_cov, (K, 1, 1))
         w_var = np.full(K, widths_var)
         length = np.sqrt(widths_var / 2.0)
@@ -396,14 +442,17 @@ class HTFA(BaseEstimator):
                 from_template = self._fit_subjects(
                     Xs, Rs, fit_local, prior, none, seeds, parallel
                 )
-                # The template subject's own start is the template: skip it.
-                others = [s for s in range(n_subj) if s != t]
+                # The template subject's own start is the template: skip it
+                # (unless an init_template replaced it).
+                others = [
+                    s for s in range(n_subj) if s != t or template_start is not None
+                ]
                 from_own = self._fit_subjects(
                     [Xs[s] for s in others],
                     [Rs[s] for s in others],
                     fit_local,
                     prior,
-                    [(free[s].centers_, free[s].widths_) for s in others],
+                    [given[s] for s in others],
                     seeds[others],
                     parallel,
                 )
@@ -439,6 +488,7 @@ class HTFA(BaseEstimator):
                 float(np.max(np.abs(new_w - w) / w)),
             )
             C, w, C_cov, w_var = new_C, new_w, new_C_cov, new_w_var
+            self.template_history_.append((C, w))
             if self.verbose:
                 print(
                     f"HTFA global iteration {n_iter}: scaled change {change:.6g}",
