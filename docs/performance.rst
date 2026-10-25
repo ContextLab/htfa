@@ -121,7 +121,9 @@ Other settings that change the cost of a fit
   keeps the one with the lowest final objective.
   ``init='power'`` runs one start. ``n_screen_iter > 0`` runs each start for that
   many iterations and continues only the best. Each start runs a K-means++ on
-  the coordinates (55 to 83 s per start at ``V = 69597``, ``K = 100``).
+  the coordinates with ``n_init=10`` on one thread, for reproducible sums (7.6
+  to 8.0 s per start at ``V = 69585``, ``K = 100`` at a load average of 7; 55 to 83 s
+  under a load average of 100 to 190).
 - ``n_jobs`` runs the per-subject fits of an HTFA in parallel (NumPy backend).
   ``n_threads`` sets the BLAS/OpenMP threads of each subject fit; by default
   HTFA takes the lowest limit already in effect (``OMP_NUM_THREADS``,
