@@ -224,11 +224,13 @@ def test_subject_threads_respect_caller_limits():
     import subprocess
     import sys
 
-    from threadpoolctl import threadpool_limits
+    from threadpoolctl import threadpool_info, threadpool_limits
 
     from htfa.htfa import _available_threads
 
     with threadpool_limits(2):
+        for pool in threadpool_info():
+            print(pool["user_api"], pool["prefix"], pool["num_threads"])
         assert _available_threads() == 2
         assert HTFA()._subject_threads(1) == 2
         assert HTFA()._subject_threads(4) == 1
@@ -348,3 +350,29 @@ def test_htfa_resume_from_init_template():
     np.testing.assert_allclose(step_resumed.max(), step_first.max(), rtol=1e-3)
     with pytest.raises(ValueError, match="init_template"):
         HTFA(**SMALL_HTFA).fit(Xs, Rs, init_template=(np.zeros((2, 2)), np.ones(2)))
+
+
+def test_subject_threads_without_limits_use_library_defaults():
+    """No limit set: the libraries' own default thread counts (not os.cpu_count)."""
+    import json
+    import os
+    import subprocess
+    import sys
+
+    code = (
+        "import json\n"
+        "from threadpoolctl import threadpool_info\n"
+        "from htfa.htfa import HTFA\n"
+        "counts = [p['num_threads'] for p in threadpool_info()]\n"
+        "one, many = HTFA()._subject_threads(1), HTFA()._subject_threads(10**6)\n"
+        "print(json.dumps([counts, one, many]))\n"
+    )
+    names = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
+    env = {k: v for k, v in os.environ.items() if k not in names}
+    out = subprocess.run(
+        [sys.executable, "-c", code], env=env, capture_output=True, text=True
+    )
+    print(out.stdout, out.stderr)
+    defaults, one, many = json.loads(out.stdout.splitlines()[-1])
+    assert defaults and one == min(defaults) >= 1
+    assert many == 1  # more workers than threads: one thread each

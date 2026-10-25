@@ -84,9 +84,10 @@ def assign_posterior(
 
 
 def _available_threads() -> int:
-    """Threads the caller allows: the lowest current BLAS/OpenMP limit (set by
-    ``OMP_NUM_THREADS``, ``OPENBLAS_NUM_THREADS``, ... or an enclosing
-    ``threadpoolctl.threadpool_limits``), else all CPUs."""
+    """Threads the caller allows: the lowest thread count the loaded BLAS/OpenMP
+    libraries report (a limit from ``OMP_NUM_THREADS``, ``OPENBLAS_NUM_THREADS``,
+    ... or an enclosing ``threadpoolctl.threadpool_limits``, else their defaults);
+    ``os.cpu_count()`` when none is loaded."""
     counts = [int(pool["num_threads"]) for pool in threadpool_info()]
     return min(counts, default=os.cpu_count() or 1)
 
@@ -142,10 +143,14 @@ class HTFA(BaseEstimator):
         Number of joblib workers for the subject fits (numpy engines only).
     n_threads : int, optional
         BLAS/OpenMP (and NumPy engine) threads per subject fit. ``None`` uses the
-        threads the caller allows -- the lowest limit currently in effect (from
-        ``OMP_NUM_THREADS``, ``OPENBLAS_NUM_THREADS`` and the like, or an
-        enclosing ``threadpoolctl.threadpool_limits``), all CPUs when none is
-        set -- divided among the ``n_jobs`` workers.
+        lowest thread count the loaded BLAS/OpenMP libraries currently report
+        (``threadpoolctl.threadpool_info``): a limit set by ``OMP_NUM_THREADS``,
+        ``OPENBLAS_NUM_THREADS`` and the like or by an enclosing
+        ``threadpoolctl.threadpool_limits``, else the libraries' own defaults
+        (usually the number of cores), divided among the ``n_jobs`` workers and
+        at least 1 per worker. ``n_jobs`` workers times ``n_threads`` can
+        therefore exceed the caller's limit when ``n_threads`` is given, or when
+        there are more workers than allowed threads.
     random_state : int, optional
         Seed for the template subject choice and per-subject fits.
     verbose : bool
