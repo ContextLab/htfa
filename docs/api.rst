@@ -92,6 +92,10 @@ Common model parameters
      - ``False``
      - Print per-iteration progress
 
+.. rubric:: Examples
+
+.. minigallery:: htfa.fit htfa.TFA htfa.HTFA htfa.HTFAResults
+
 Loading
 -------
 
@@ -103,6 +107,10 @@ Loading
    htfa.Subject
    htfa.io.load
    htfa.io.Subject
+
+.. rubric:: Examples
+
+.. minigallery:: htfa.load htfa.Subject
 
 Connectivity
 ------------
@@ -116,6 +124,10 @@ These functions work on any ``(K, T)`` weight matrices.
    htfa.static_connectivity
    htfa.dynamic_connectivity
    htfa.isfc
+
+.. rubric:: Examples
+
+.. minigallery:: htfa.static_connectivity htfa.dynamic_connectivity htfa.isfc
 
 Synthetic data
 --------------
@@ -131,6 +143,10 @@ The synthetic generators return data already on a z-scored scale, so fit them wi
    htfa.make_htfa_data
    htfa.synthetic.match_factors
 
+.. rubric:: Examples
+
+.. minigallery:: htfa.make_tfa_data htfa.make_htfa_data htfa.synthetic.match_factors
+
 Utilities
 ---------
 
@@ -140,3 +156,7 @@ Utilities
 
    htfa.set_autoinstall
    htfa.tfa.standardize_data
+
+.. rubric:: Examples
+
+.. minigallery:: htfa.set_autoinstall htfa.tfa.standardize_data

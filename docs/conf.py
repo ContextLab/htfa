@@ -21,7 +21,13 @@ extensions = [
     "nbsphinx",
 ]
 
-exclude_patterns = ["_build", "**.ipynb_checkpoints", "superpowers", "API.md"]
+exclude_patterns = [
+    "_build",
+    "**.ipynb_checkpoints",
+    "superpowers",
+    "API.md",
+    "auto_examples/*.ipynb",
+]
 default_role = "py:obj"
 autosummary_generate = True
 autodoc_typehints = "none"
@@ -46,6 +52,9 @@ sphinx_gallery_conf = {
     "filename_pattern": r"plot_",
     "download_all_examples": False,
     "remove_config_comments": True,
+    "doc_module": ("htfa",),
+    "backreferences_dir": "generated/backreferences",
+    "reference_url": {"htfa": None},
 }
 
 # sphinx_gallery_conf is not picklable into the environment cache.
