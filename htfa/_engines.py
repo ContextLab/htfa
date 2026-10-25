@@ -19,12 +19,15 @@ import numpy as np
 from numpy.typing import NDArray
 
 BACKENDS = ("auto", "numpy", "cpu", "torch", "cuda", "mps")
-# Minimum V*T*K for 'auto' to prefer a GPU. Measured on an M2 Max (MPS, under
-# load from other jobs; scripts/benchmark.py, 5 TFA iterations): MPS took 2.5x as
-# long as NumPy at 2e7 and 1.35x as long at 6e8, so no measured fit size reached
-# the 1.2x speedup required. A 1e10 fit did not finish one iteration in 3 h; there
-# the engine products alone ran 1.3-1.5x faster on MPS, so 1e10 is provisional.
-GPU_MIN_WORK = int(1e10)
+# Minimum V*T*K for 'auto' to prefer a GPU. Measured with the structured solver
+# on an M2 Max (MPS float32 vs NumPy, soft_l1, scripts/benchmark.py; other jobs
+# kept the CPU load at 60-180 on 12 cores, which handicaps NumPy): 5 iterations at
+# V*T*K = 6e8 (K=100) took 31 s on MPS vs 48 s, full fits 880 s vs 1627 s; at
+# 3e8 (K=50) MPS was slower (16.9 s vs 13.2 s). Smaller sizes favoured MPS too
+# but are dominated by load noise; 5e8 is the smallest size where MPS won with K
+# large enough for the T*K^2 Gauss-Newton product to dominate. Provisional until
+# measured on an idle machine.
+GPU_MIN_WORK = int(5e8)
 # Elements per voxel chunk (chunk rows * max(T, K**2)) in the structured solver's
 # data-term passes: bounds the (chunk, T) and (K, K, chunk) temporaries to 16 MB
 # each in float64 per NumPy thread, and to 32 MB each in float32 on a GPU (fewer,

@@ -12,10 +12,10 @@ from htfa.tfa import TFA
 # and the matched weights must correlate above 0.999.
 CENTER_SLACK_MM = 0.05
 WEIGHT_MIN_R = 0.999
-# One start ('power', the multi-start winner on raw synthetic data) for both
-# backends: with init='auto' the slowly converging 'kmeans' candidate kept the MPS
-# fit running for over an hour on an M2 Max.
-INIT = "power"
+# The default multi-start. With the structured solver both fits pick 'power' and
+# take 131 s (MPS) and 222 s (CPU) on an M2 Max under a CPU load of ~175 (with
+# scipy's trf the MPS fit had not finished after an hour).
+INIT = "auto"
 
 
 def _gpu() -> str | None:
