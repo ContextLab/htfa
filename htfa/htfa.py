@@ -154,8 +154,14 @@ class HTFA(BaseEstimator):
     --------
     >>> from htfa.synthetic import make_htfa_data
     >>> Xs, Rs, _ = make_htfa_data(3, (10, 10), 20, K=3, random_state=0)
-    >>> model = HTFA(K=3, max_global_iter=2, standardize=False, random_state=0)
-    >>> model = model.fit(Xs, Rs)
+    >>> model = HTFA(
+    ...     K=3, max_global_iter=2, max_local_iter=3, init="power",
+    ...     standardize=False, random_state=0,
+    ... )
+    >>> import warnings
+    >>> with warnings.catch_warnings():
+    ...     warnings.simplefilter("ignore")  # 2 global iterations: not converged
+    ...     model = model.fit(Xs, Rs)
     >>> model.global_centers_.shape
     (3, 2)
     """
@@ -278,6 +284,19 @@ class HTFA(BaseEstimator):
         ConvergenceWarning
             Once, when the template has not converged after ``max_global_iter``
             iterations (per-subject local warnings are suppressed).
+
+        Examples
+        --------
+        >>> import warnings
+        >>> from htfa.synthetic import make_htfa_data
+        >>> Xs, Rs, _ = make_htfa_data(2, (8, 8), 10, K=2, random_state=1)
+        >>> model = HTFA(K=2, max_global_iter=1, max_local_iter=2, init="power",
+        ...              random_state=0)
+        >>> with warnings.catch_warnings():
+        ...     warnings.simplefilter("ignore")  # one global iteration only
+        ...     model = model.fit(Xs, Rs)
+        >>> len(model.weights_), model.weights_[0].shape
+        (2, (2, 10))
         """
         if self.max_global_iter < 1:
             raise ValueError(

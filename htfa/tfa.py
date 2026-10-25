@@ -668,6 +668,18 @@ class TFA(BaseEstimator):
         Returns
         -------
         ndarray, shape (V, K)
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from htfa.synthetic import make_tfa_data
+        >>> X, R, _ = make_tfa_data((12, 12), 10, K=2, random_state=0)
+        >>> model = TFA(K=2, init="power", standardize=False, random_state=0)
+        >>> model = model.fit(X, R)
+        >>> model.factors().shape
+        (144, 2)
+        >>> model.factors(np.array([[0.0, 0.0], [5.5, 5.5]])).shape
+        (2, 2)
         """
         check_is_fitted(self, "centers_")
         D = self.centers_.shape[1]
@@ -683,6 +695,18 @@ class TFA(BaseEstimator):
         Returns
         -------
         ndarray, shape (V, T)
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from htfa.synthetic import make_tfa_data
+        >>> X, R, _ = make_tfa_data((12, 12), 10, K=2, random_state=0)
+        >>> model = TFA(K=2, init="power", standardize=False, random_state=0)
+        >>> recon = model.fit(X, R).reconstruct()
+        >>> recon.shape
+        (144, 10)
+        >>> bool(np.corrcoef(recon.ravel(), X.ravel())[0, 1] > 0.8)
+        True
         """
         check_is_fitted(self, "weights_")
         result: Array = self.factors() @ self.weights_
