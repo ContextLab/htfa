@@ -133,8 +133,8 @@ class _ChunkedDataTerm:
     """Data-term cost, ``(rho' r) W^T`` and Gauss-Newton matrix, in voxel chunks.
 
     Subclasses set ``_xp`` (array namespace), ``_X`` and ``_W`` (device arrays),
-    ``_W64`` (float64 NumPy copy of ``W``) and implement ``_put``, ``_get`` and
-    ``_permute``. Chunks run on `n_threads` threads (NumPy releases the GIL in
+    ``_W64`` (float64 NumPy copy of ``W``) and implement ``_put`` and ``_get``.
+    Chunks run on `n_threads` threads (NumPy releases the GIL in
     its array operations); each chunk's temporaries hold about
     ``chunk_elements`` elements.
     """
@@ -151,10 +151,6 @@ class _ChunkedDataTerm:
 
     @staticmethod
     def _get(t: Any) -> NDArray[np.float64]:
-        raise NotImplementedError
-
-    @staticmethod
-    def _permute(t: Any, dims: tuple[int, ...]) -> Any:
         raise NotImplementedError
 
     def _reset_cache(self) -> None:
@@ -209,8 +205,8 @@ class _ChunkedDataTerm:
         ----------
         F : ndarray, shape (V, K)
             Factors.
-        G : ndarray, shape (K, V, A)
-            ``G[k, v, a] = dF[v, k] / dtheta[k, a]`` for factor ``k``'s ``A``
+        G : ndarray, shape (K, A, V)
+            ``G[k, a, v] = dF[v, k] / dtheta[k, a]`` for factor ``k``'s ``A``
             parameters.
         s : float
             Residual scale, ``r = s (X - F W)``.
@@ -222,17 +218,17 @@ class _ChunkedDataTerm:
         cost : float
             ``0.5 * sum(rho(r**2))``.
         M : ndarray, shape (V, K)
-            ``(rho'(r**2) r) W^T``; the gradient is ``-s sum_v G[k, v, a] M[v, k]``.
-        H : ndarray, shape (A, K, A, K)
-            ``H[a, k, b, l] = s**2 sum_v G[k, v, a] G[l, v, b] Q_v[k, l]`` with
+            ``(rho'(r**2) r) W^T``; the gradient is ``-s sum_v G[k, a, v] M[v, k]``.
+        H : ndarray, shape (K, A, K, A)
+            ``H[k, a, l, b] = s**2 sum_v G[k, a, v] G[l, b, v] Q_v[k, l]`` with
             ``Q_v = W diag(u_v) W^T`` and scipy's loss weights
             ``u = max(rho' + 2 r**2 rho'', EPS)``. For the linear loss ``u = 1``,
-            so ``H = (G^T G) * (W W^T)``: one O(V K^2 A^2) product, independent of
+            so ``H = (G G^T) * (W W^T)``: one O(V K^2 A^2) product, independent of
             T. Otherwise ``Q_v`` costs one O(V T K^2 / 2) product and the
             contraction O(V K^2 A^2).
         """
         K, T = self._W64.shape
-        V, A = self._X.shape[0], G.shape[2]
+        V, A = self._X.shape[0], G.shape[1]
         Fd, Gd = self._put(F), self._put(G)
         linear = loss == "linear"
         if not linear:
@@ -242,34 +238,35 @@ class _ChunkedDataTerm:
             E, (rho, rho1, rho2) = self._residual_chunk(Fd, sl, s, loss)
             cost = float(np.sum(self._get(rho.sum(1))))
             M = self._get((rho1 * E) @ self._W.T)
-            Gc = Gd[:, sl, :]  # (K, B, A) = [l, v, b]
+            Gc = Gd[:, :, sl]  # (K, A, B)
             if linear:
-                Gs = self._permute(Gc, (1, 2, 0)).reshape(-1, A * K)  # [v, (a, k)]
-                return cost, sl, M, self._get(Gs.T @ Gs)
+                Gs = Gc.reshape(K * A, -1)  # [(k, a), v]
+                return cost, sl, M, self._get(Gs @ Gs.T)
             u = (rho1 + 2 * (E * E) * rho2).clip(min=EPS)
             Q = (u @ pairs).T[index]  # (K, K, B) = Q_v[l, k], symmetric
-            # acc[a][l, k, b - a] = sum_v Q_v[l, k] G[k, v, a] G[l, v, b], b >= a.
-            acc = [self._get((Q * Gc[None, :, :, a]) @ Gc[:, :, a:]) for a in range(A)]
+            # acc[a][l, k, b - a] = sum_v Q_v[l, k] G[k, a, v] G[l, b, v], b >= a.
+            GcT = Gc.swapaxes(1, 2)  # (K, B, A) view
+            acc = [self._get((Q * Gc[None, :, a, :]) @ GcT[:, :, a:]) for a in range(A)]
             return cost, sl, M, acc
 
         width = max(T, A * K) if linear else max(T, K * K)
         cost = 0.0
         M = np.empty((V, K))
-        H = np.zeros((A, K, A, K))
+        H = np.zeros((K, A, K, A))
         for c, sl, M_c, part in self._map(chunk, self._chunks(width)):
             cost += c
             M[sl] = M_c
             if linear:
-                H += part.reshape(A, K, A, K)
+                H += part.reshape(K, A, K, A)
             else:
                 for a in range(A):
-                    H[a, :, a:, :] += np.transpose(part[a], (1, 2, 0))
+                    H[:, a, :, a:] += np.transpose(part[a], (1, 0, 2))
         if linear:
-            H *= (self._W64 @ self._W64.T)[None, :, None, :]
+            H *= (self._W64 @ self._W64.T)[:, None, :, None]
         else:
             for a in range(A):
                 for b in range(a + 1, A):
-                    H[b, :, a, :] = H[a, :, b, :].T
+                    H[:, b, :, a] = H[:, a, :, b].T
         return 0.5 * cost, M, s**2 * H
 
 
@@ -292,10 +289,6 @@ class NumpyEngine(_ChunkedDataTerm):
     @staticmethod
     def _get(t: NDArray[np.float64]) -> NDArray[np.float64]:
         return t
-
-    @staticmethod
-    def _permute(t: NDArray[np.float64], dims: tuple[int, ...]) -> Any:
-        return np.transpose(t, dims)
 
     def set(self, X: NDArray[np.float64], W: NDArray[np.float64]) -> None:
         """Store data ``X`` (V, T) and weights ``W`` (K, T) as float64."""
@@ -342,10 +335,6 @@ class TorchEngine(_ChunkedDataTerm):
 
     def _put_index(self, index: NDArray[np.int64]) -> Any:
         return self._torch.from_numpy(index).to(self.device)
-
-    @staticmethod
-    def _permute(t: Any, dims: tuple[int, ...]) -> Any:
-        return t.permute(dims)
 
     def _put(self, a: NDArray[np.float64]) -> Any:
         t = self._torch.from_numpy(np.ascontiguousarray(a, dtype=np.float64))

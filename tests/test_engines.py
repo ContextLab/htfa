@@ -105,7 +105,7 @@ def test_torch_engine_gauss_newton_matches_numpy(device, loss):
     X = rng.standard_normal((V, T)) * 1.5
     W = rng.standard_normal((K, T))
     F = rng.uniform(size=(V, K))
-    G = rng.standard_normal((K, V, A))
+    G = rng.standard_normal((K, A, V))
     s = 0.7
     ref = NumpyEngine()
     ref.set(X, W)
@@ -134,7 +134,7 @@ def test_numpy_engine_threads_give_identical_results(loss):
     X = rng.standard_normal((V, T))
     W = rng.standard_normal((K, T))
     F = rng.uniform(size=(V, K))
-    G = rng.standard_normal((K, V, A))
+    G = rng.standard_normal((K, A, V))
     results = []
     for n in (1, 4):
         eng = NumpyEngine(n_threads=n)

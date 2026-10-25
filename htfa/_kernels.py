@@ -297,7 +297,7 @@ class ResidualProblem:
         Hess(r_i)``, with scipy's loss weights ``u = max(rho' + 2 r**2 rho'', EPS)``
         (exact wherever ``rho' + 2 r**2 rho'' >= 0``: always for the linear,
         soft_l1 and huber losses). ``J^T diag(u) J`` is assembled from the
-        per-factor structure ``dr[v, t] / dtheta[k, a] = -s G[k, v, a] W[k, t]``
+        per-factor structure ``dr[v, t] / dtheta[k, a] = -s G[k, a, v] W[k, t]``
         (`htfa._engines.Engine.gauss_newton`) instead of the V*T x P Jacobian; the
         second-order term is block diagonal per factor,
         ``-s sum_v M[v, k] d2F[v, k] / dtheta_k^2`` with ``M = (rho' r) W^T``, and
@@ -307,46 +307,52 @@ class ResidualProblem:
         C, w = self._unpack(x)
         K, D, P = self.K, self.D, self.n_params
         V, s = self.R.shape[0], self.s
-        delta = self.R[:, :, None] - C.T[None, :, :]  # (V, D, K)
-        d = np.sum(delta * delta, axis=1)
-        F = np.exp(-d / w)
-        Fw = F / w
-        G = np.empty((K, V, D + 1))
-        for j in range(D):
-            G[:, :, j] = (2.0 * Fw * delta[:, j]).T
-        G[:, :, D] = (Fw * d / w).T
-        cost, M, H_ak = self.engine.gauss_newton(F, G, s, loss)
-        grad_ak = -s * np.einsum("kva,vk->ak", G, M)
-        # Second derivatives of F = exp(-d / w) per factor, contracted with M.
-        FM = F * M
+        # Factor-major, voxel-last layout (K, ., V): contiguous elementwise passes
+        # and per-factor sums over voxels as batched matrix products.
+        E = np.empty((K, D + 2, V))  # [delta_1 .. delta_D, d, 1]
+        np.subtract(self.R.T[None, :, :], C[:, :, None], out=E[:, :D])
+        np.einsum("kjv,kjv->kv", E[:, :D], E[:, :D], out=E[:, D])
+        E[:, D + 1] = 1.0
+        d = E[:, D]
+        F = np.exp(-d / w[:, None])
+        Fw = F / w[:, None]
+        G = np.empty((K, D + 1, V))
+        np.multiply((2.0 * Fw)[:, None, :], E[:, :D], out=G[:, :D])
+        np.multiply(Fw, d / w[:, None], out=G[:, D])
+        cost, M, H_ka = self.engine.gauss_newton(np.ascontiguousarray(F.T), G, s, loss)
+        MT = np.ascontiguousarray(M.T)  # (K, V)
+        grad_ka = -s * (G @ MT[:, :, None])[:, :, 0]
+        # Second derivatives of F = exp(-d / w) per factor, contracted with M,
+        # from the moments m[k, a, b] = sum_v F M e_a e_b of e = (delta, d, 1).
+        m = ((F * MT)[:, None, :] * E) @ np.swapaxes(E, 1, 2)  # (K, D+2, D+2)
+        wk = w[:, None]
         S = np.empty((K, D + 1, D + 1))
-        for i in range(D):
-            for j in range(i, D):
-                term = 4.0 * delta[:, i] * delta[:, j] / w**2 - (2.0 / w) * (i == j)
-                S[:, i, j] = S[:, j, i] = np.sum(FM * term, axis=0)
-            term = 2.0 * delta[:, i] / w**2 * (d / w - 1.0)
-            S[:, i, D] = S[:, D, i] = np.sum(FM * term, axis=0)
-        S[:, D, D] = np.sum(FM * d / w**3 * (d / w - 2.0), axis=0)
+        S[:, :D, :D] = 4.0 / w[:, None, None] ** 2 * m[:, :D, :D]
+        S[:, range(D), range(D)] -= 2.0 / wk * m[:, D + 1, D + 1][:, None]
+        S[:, :D, D] = 2.0 / wk**2 * (m[:, :D, D] / wk - m[:, :D, D + 1])
+        S[:, D, :D] = S[:, :D, D]
+        S[:, D, D] = (m[:, D, D] / w - 2.0 * m[:, D, D + 1]) / w**3
         k = np.arange(K)
-        # (a, k) -> position in x = [centers.ravel(), widths].
-        pos = np.empty((D + 1, K), dtype=np.int64)
-        pos[:D] = (k[None, :] * D) + np.arange(D)[:, None]
-        pos[D] = K * D + k
+        # (k, a) -> position in x = [centers.ravel(), widths].
+        pos = np.empty((K, D + 1), dtype=np.int64)
+        pos[:, :D] = k[:, None] * D + np.arange(D)[None, :]
+        pos[:, D] = K * D + k
         pos = pos.ravel()
         grad = np.empty(P)
-        grad[pos] = grad_ak.ravel()
+        grad[pos] = grad_ka.ravel()
         gn = np.empty((P, P))
-        gn[np.ix_(pos, pos)] = H_ak.reshape(P, P)
-        H_ak[:] = 0.0
-        H_ak[:, k, :, k] = -s * S
+        gn[np.ix_(pos, pos)] = H_ka.reshape(P, P)
+        H_ka[:] = 0.0
+        H_ka[k, :, k, :] = -s * S
         second = np.empty((P, P))
-        second[np.ix_(pos, pos)] = H_ak.reshape(P, P)
+        second[np.ix_(pos, pos)] = H_ka.reshape(P, P)
         if self.prior is not None:
             c_p, g_p, H_p = self._prior_terms(C, w, loss, derivatives=True)
             cost, grad, gn = cost + c_p, grad + g_p, gn + H_p
         # Exactly symmetric (the two triangles are summed in different orders).
         gn = 0.5 * (gn + gn.T)
-        return cost, grad, gn, gn + second
+        hess = gn + second
+        return cost, grad, gn, 0.5 * (hess + hess.T)
 
     def column_norms(self, x: ArrayLike) -> Array:
         """Exact Euclidean norms (K*(D+1),) of the Jacobian columns at ``x``.
