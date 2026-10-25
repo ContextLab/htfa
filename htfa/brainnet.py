@@ -589,48 +589,89 @@ def _mni_mask() -> Array:
     return _MNI_CACHE[0]
 
 
-def _mask_coords(mask: Any) -> tuple[Array, float, float]:
-    """Voxel centers, voxel spacing and voxel volume of a mask.
+def _mask_coords(mask: Any, dim: int | None = None) -> tuple[Array, Array, float]:
+    """Voxel centers, per-axis voxel spacing and voxel volume of a mask.
 
-    ``mask`` is a (V, D) coordinate array (spacing: median nearest-neighbor
-    distance, assumed isotropic), a NIfTI-like image (nonzero voxels), or a
-    ``(volume, affine)`` pair. For images the spacing is the cube root of the
-    voxel volume ``|det(affine[:3, :3])|``.
+    ``mask`` is a (V, D) coordinate array, a NIfTI-like image (nonzero
+    voxels), or a ``(volume, affine)`` pair. For an image the spacing along
+    each world axis is the extent of one voxel along it and the volume is
+    ``|det(affine[:3, :3])|``. For coordinates the spacing along an axis is
+    the median gap between neighboring voxels on the same grid line, and the
+    volume is the product of the spacings; voxels off the grid of the first
+    voxel (e.g. a union of subjects' differently aligned grids) are moved to
+    the nearest point of that grid, so that every region is counted once.
+    ``dim``, if given, is the number of dimensions the mask must have.
     """
-    if isinstance(mask, tuple):
-        volume, affine = mask
-        return _volume_coords(np.asarray(volume), np.asarray(affine, dtype=float))
-    if hasattr(mask, "affine") and hasattr(mask, "dataobj"):
-        return _volume_coords(np.asarray(mask.dataobj), np.asarray(mask.affine))
+    if isinstance(mask, tuple) or (
+        hasattr(mask, "affine") and hasattr(mask, "dataobj")
+    ):
+        volume, affine = (
+            mask if isinstance(mask, tuple) else (mask.dataobj, mask.affine)
+        )
+        out = _volume_coords(np.asarray(volume), np.asarray(affine, dtype=float))
+        _check_dim(out[0], dim)
+        return out
     coords = np.asarray(mask, dtype=np.float64)
     if coords.ndim != 2:
         raise ValueError(f"mask coordinates must be (V, D), got {coords.shape}")
+    _check_dim(coords, dim)
     if len(coords) == 0:
         raise ValueError("mask has no voxels")
     if len(coords) == 1:
         raise ValueError("mask coordinates need at least 2 voxels to set the spacing")
-    d = cKDTree(coords).query(coords, k=2)[0][:, 1]
-    h = float(np.median(d))
-    return coords, h, h ** coords.shape[1]
+    spacing = _grid_spacing(coords)
+    if not np.all(spacing > 0):
+        raise ValueError("mask voxels coincide: cannot tell the voxel spacing")
+    idx = (coords - coords[0]) / spacing
+    if np.abs(idx - np.round(idx)).max() > 1e-3:
+        grid = np.unique(np.floor(idx + 0.5), axis=0)
+        coords = coords[0] + grid * spacing
+    return coords, spacing, float(np.prod(spacing))
 
 
-def _volume_coords(volume: Array, affine: Array) -> tuple[Array, float, float]:
+def _check_dim(coords: Array, dim: int | None) -> None:
+    if dim is not None and coords.shape[1] != dim:
+        raise ValueError(
+            f"mask has {coords.shape[1]} dimensions but centers have {dim}"
+        )
+
+
+def _grid_spacing(coords: Array) -> Array:
+    """Per-axis median gap between neighboring voxels on one grid line."""
+    q = np.round(coords, 3)
+    spacing = np.empty(q.shape[1])
+    for a in range(q.shape[1]):
+        other = np.delete(q, a, axis=1)
+        order = np.lexsort((q[:, a], *other.T[::-1]))
+        same = np.all(other[order][1:] == other[order][:-1], axis=1)
+        gaps = np.diff(q[order, a])[same]
+        gaps = gaps[gaps > 1e-6]
+        if len(gaps):
+            spacing[a] = np.median(gaps)
+        else:  # no two voxels share a line along this axis
+            spacing[a] = np.median(cKDTree(coords).query(coords, k=2)[0][:, 1])
+    return spacing
+
+
+def _volume_coords(volume: Array, affine: Array) -> tuple[Array, Array, float]:
     ijk = np.argwhere(volume.astype(bool))
     if not len(ijk):
         raise ValueError("mask has no voxels")
-    vol = float(abs(np.linalg.det(affine[:3, :3])))
-    return ijk @ affine[:3, :3].T + affine[:3, 3], vol ** (1 / 3), vol
+    A = affine[:3, :3]
+    coords = ijk @ A.T + affine[:3, 3]
+    return coords, np.abs(A).sum(axis=1), float(abs(np.linalg.det(A)))
 
 
-def _lowest_tied(tree: Any, points: Array, h: float, p: float) -> tuple[Array, Array]:
+def _lowest_tied(tree: Any, points: Array, tol: float, p: float) -> tuple[Array, Array]:
     """Nearest voxel of each point, the lowest voxel index among near-ties.
 
-    Returns the voxel indices and whether another voxel was tied.
+    Distances within ``tol`` of the nearest count as tied. Returns the voxel
+    indices and whether another voxel was tied.
     """
     k = min(8, tree.n)
     d, i = tree.query(points, k=k, p=p)
     d, i = d.reshape(len(points), k), i.reshape(len(points), k)
-    tied = d <= d[:, :1] + _TIE_TOL * h
+    tied = d <= d[:, :1] + tol
     best = np.where(tied, i, tree.n).min(axis=1)
     return best, tied.sum(axis=1) > 1
 
@@ -671,9 +712,11 @@ def effective_nodes(
         the mask stays, any other goes to the nearest mask voxel, and the
         widths and masses are NaN.
     mask : array of shape (V, D), NIfTI image or (volume, affine)
-        The in-brain voxels: voxel centers (an isotropic grid; its spacing is
-        the median nearest-neighbor distance), or a mask image whose nonzero
-        voxels count. `mni_mask` gives the MNI152 brain.
+        The in-brain voxels: voxel centers on a regular grid (its spacing
+        may differ per axis; a union of differently aligned grids is moved
+        onto the grid of the first voxel), or a mask image whose nonzero
+        voxels count. "Within half a voxel" is per axis. `mni_mask` gives
+        the MNI152 brain.
 
     Returns
     -------
@@ -703,13 +746,13 @@ def effective_nodes(
     if c.ndim != 2:
         raise ValueError(f"centers must be (K, D), got {c.shape}")
     K, D = c.shape
-    coords, h, voxel_volume = _mask_coords(mask)
-    if coords.shape[1] != D:
-        raise ValueError(f"mask has {coords.shape[1]} dimensions but centers have {D}")
+    coords, spacing, voxel_volume = _mask_coords(mask, D)
     w = None if widths is None else _per_node(widths, K, "widths")
     if w is not None and not np.all(w > 0):
         raise ValueError("widths must be positive")
     tree = cKDTree(coords)
+    grid = cKDTree(coords / spacing)  # voxel units: "inside" is <= 0.5 per axis
+    half = 0.5 * (1 + 1e-9)
     out = c.copy()
     sigma = np.full(K, np.nan)
     mass = np.full(K, np.nan)
@@ -733,17 +776,14 @@ def effective_nodes(
                 / (np.pi * w[k]) ** (D / 2)
             )
             out[k] = m
-    inside = tree.query(out, p=np.inf)[0] <= h / 2 * (1 + 1e-9)
+    inside = grid.query(out / spacing, p=np.inf)[0] <= half
     for k in np.flatnonzero(~inside).tolist():
         snapped[k] = True
-        step = np.linalg.norm(c[k] - out[k])
-        n = max(1, int(np.ceil(step / (h / 4))))
-        seg = out[k] + np.linspace(0, 1, n + 1)[:, None] * (c[k] - out[k])
-        hit = np.flatnonzero(tree.query(seg, p=np.inf)[0] <= h / 2 * (1 + 1e-9))
-        if len(hit):
-            i, tie = _lowest_tied(tree, seg[hit[:1]], h, np.inf)
+        hit = _first_hit(grid, out[k] / spacing, c[k] / spacing)
+        if hit is not None:
+            i, tie = _lowest_tied(grid, hit[None], _TIE_TOL, np.inf)
         else:
-            i, tie = _lowest_tied(tree, out[k : k + 1], h, 2.0)
+            i, tie = _lowest_tied(tree, out[k : k + 1], _TIE_TOL * spacing.min(), 2.0)
         out[k], ambiguous[k] = coords[i[0]], tie[0]
     widths_eff = 2 * sigma**2
     info = {
@@ -755,6 +795,19 @@ def effective_nodes(
         "width_ratio": widths_eff / w if w is not None else np.full(K, np.nan),
     }
     return out, widths_eff, info
+
+
+def _first_hit(grid: Any, start: Array, stop: Array) -> Array | None:
+    """First point within half a voxel of the mask on the segment start-stop.
+
+    Both ends are in voxel units (coordinates / spacing); the walk takes
+    quarter-voxel steps.
+    """
+    d = stop - start
+    n = max(1, int(np.ceil(np.linalg.norm(d) / 0.25)))
+    seg = start + np.linspace(0.0, 1.0, n + 1)[:, None] * d
+    hit = np.flatnonzero(grid.query(seg, p=np.inf)[0] <= 0.5 * (1 + 1e-9))
+    return np.asarray(seg[hit[0]]) if len(hit) else None
 
 
 def _default_mask(nodes: Any, subject: Any) -> Any:

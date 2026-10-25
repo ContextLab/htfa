@@ -980,6 +980,53 @@ def test_effective_nodes_flat_boundary_half_mass():
     assert not info["snapped"][0]
 
 
+def _box(spacing, half=60.0, offset=(0.0, 0.0, 0.0)):
+    """A box grid with per-axis spacing, as (V, 3) coordinates."""
+    axes = [
+        np.arange(-half, half + s / 2, s) + o
+        for s, o in zip(spacing, offset, strict=True)
+    ]
+    return np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3)
+
+
+def test_effective_nodes_anisotropic_grid():
+    """On a 3 x 3 x 4 mm grid an interior node between slices stays, mass ~1."""
+    affine = np.diag([3.0, 3.0, 4.0, 1.0])
+    affine[:3, 3] = -60.0
+    coords = _box((3.0, 3.0, 4.0))
+    centers = np.array([[0.0, 0.0, 2.0], [1.5, -1.0, -6.0]])
+    widths = np.array([60.0, 150.0])
+    vol = np.ones((41, 41, 31), bool)
+    for mask in (coords, (vol, affine)):
+        c_eff, w_eff, info = bn.effective_nodes(centers, widths, mask)
+        print("anisotropic", c_eff, info)
+        assert not info["snapped"].any()
+        assert info["distance"].max() < 1e-3
+        np.testing.assert_allclose(info["mass_fraction"], 1.0, atol=2e-3)
+        np.testing.assert_allclose(w_eff / widths, 1.0, atol=2e-3)
+    spacing, volume = bn._mask_coords(coords)[1:]
+    np.testing.assert_allclose(spacing, [3.0, 3.0, 4.0])
+    assert volume == pytest.approx(36.0)
+
+
+@pytest.mark.parametrize("shift", [(1.0, 1.0, 1.0), (1.0, 0.0, 0.0), (0.7, -1.3, 0.4)])
+def test_effective_nodes_union_of_shifted_grids(shift):
+    """Two subjects' 2 mm grids offset from each other: an interior node stays
+    unsnapped with mass ~1, and a node outside lands inside the union."""
+    a = _box((2.0, 2.0, 2.0), half=40.0)
+    b = _box((2.0, 2.0, 2.0), half=40.0, offset=shift)
+    union = np.unique(np.vstack([a, b]), axis=0)
+    centers = np.array([[0.3, 0.9, -1.7], [0.0, 0.0, 70.0]])
+    widths = np.array([50.0, 100.0])
+    c_eff, w_eff, info = bn.effective_nodes(centers, widths, union)
+    print(shift, "union", c_eff, info)
+    assert not info["snapped"][0] and info["distance"][0] < 0.05
+    assert info["mass_fraction"][0] == pytest.approx(1.0, abs=0.03)
+    assert w_eff[0] / widths[0] == pytest.approx(1.0, abs=0.03)
+    assert not _outside(c_eff, union).any()
+    assert c_eff[1, 2] < 42.0
+
+
 def test_effective_nodes_mask_forms_agree():
     """Coordinates, a NIfTI image and a (volume, affine) pair give one answer."""
     import nibabel as nib
@@ -1021,6 +1068,8 @@ def test_effective_nodes_point_nodes_and_errors():
         bn.effective_nodes(centers, None, np.zeros((0, 3)))
     with pytest.raises(ValueError, match="dimensions"):
         bn.effective_nodes(centers, None, np.zeros((5, 2)))
+    with pytest.raises(ValueError, match="coincide"):
+        bn.effective_nodes(centers, None, np.zeros((5, 3)))
 
 
 def _gray(a, y, z, half=4):
@@ -1130,8 +1179,9 @@ def _outside(points, mask):
     """Which points are not within half a voxel (per axis) of a mask voxel."""
     from scipy.spatial import cKDTree
 
-    coords, h, _ = bn._mask_coords(mask)
-    return cKDTree(coords).query(points, p=np.inf)[0] > h / 2 * (1 + 1e-9)
+    coords, spacing, _ = bn._mask_coords(mask)
+    tree = cKDTree(coords / spacing)
+    return tree.query(np.asarray(points) / spacing, p=np.inf)[0] > 0.5 * (1 + 1e-9)
 
 
 def _check_display_inside(res):
