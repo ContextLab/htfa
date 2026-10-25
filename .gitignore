@@ -630,3 +630,5 @@ docs/generated
 docs/sg_execution_times.rst
 htmlcov
 .coverage
+
+.playwright-mcp/
