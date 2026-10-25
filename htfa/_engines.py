@@ -27,7 +27,9 @@ BACKENDS = ("auto", "numpy", "cpu", "torch", "cuda", "mps")
 # 3e8 (K=50) MPS was slower (16.9 s vs 13.2 s). Smaller sizes favoured MPS too
 # but are dominated by load noise; 5e8 is the smallest size where MPS won with K
 # large enough for the T*K^2 Gauss-Newton product to dominate. Provisional until
-# measured on an idle machine.
+# measured on an idle machine. Accuracy at that size (20000x300, K=100, init
+# 'power', 30 iterations): MPS max matched center error 5.6681 vs CPU 5.6684
+# (both unconverged), centers within 3.5e-4, weights r = 0.9999999999.
 GPU_MIN_WORK = int(5e8)
 # Elements per voxel chunk (chunk rows * max(T, K**2)) in the structured solver's
 # data-term passes: bounds the (chunk, T) and (K, K, chunk) temporaries to 16 MB
