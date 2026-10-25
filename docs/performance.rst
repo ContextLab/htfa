@@ -95,13 +95,17 @@ row, from the same start):
      - 2.5% / 14%
 
 The default ``threshold=1e-3`` is therefore out of reach, so a subsampled fit
-evaluates the full-data objective after every iteration and stops when it falls
-by less than a relative ``1e-4`` in one iteration (``converged_reason_ ==
-'objective'``; no ``ConvergenceWarning``). On synthetic data with the same mask,
-shape and caps 3000 x 300, the relative decrease fell from 1.5e-2 after the first
-iteration to 9.2e-5 at iteration 12, where the median center error was 2.32 mm
-(2.16 to 2.32 mm from iteration 9 on, 2.18 mm at iteration 20). The fit also
-still stops when the scaled change has not reached a new minimum for five
+evaluates the full-data objective after every iteration and stops when the lowest
+objective so far has fallen by less than a relative ``1e-4`` per iteration over
+the last three iterations (``converged_reason_ == 'objective'``; no
+``ConvergenceWarning``). The running minimum and the window keep a single noisy
+step up (the full-data objective is not minimized by any one subsample) from
+stopping a fit that is still improving. On synthetic data with the same mask,
+shape and caps 3000 x 300, the one-iteration relative decrease fell from 1.5e-2
+after the first iteration to between 4.9e-5 and 1.4e-4 at iterations 12 to 15;
+applied to those recorded objectives, the rule stops at iteration 15, where the median center error was 2.20 mm (2.16
+to 2.32 mm from iteration 9 on, 2.18 mm at iteration 20). The fit also still
+stops when the scaled change has not reached a new minimum for five
 iterations (``'plateau'``).
 
 Each evaluation of the full-data objective at that shape took 2.0 to 2.2 s with
