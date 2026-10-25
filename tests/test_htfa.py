@@ -224,13 +224,11 @@ def test_subject_threads_respect_caller_limits():
     import subprocess
     import sys
 
-    from threadpoolctl import threadpool_info, threadpool_limits
+    from threadpoolctl import threadpool_limits
 
     from htfa.htfa import _available_threads
 
     with threadpool_limits(2):
-        for pool in threadpool_info():
-            print(pool["user_api"], pool["prefix"], pool["num_threads"])
         assert _available_threads() == 2
         assert HTFA()._subject_threads(1) == 2
         assert HTFA()._subject_threads(4) == 1
@@ -353,7 +351,8 @@ def test_htfa_resume_from_init_template():
 
 
 def test_subject_threads_without_limits_use_library_defaults():
-    """No limit set: the libraries' own default thread counts (not os.cpu_count)."""
+    """No limit set: the BLAS libraries' own default thread counts (OpenMP's when
+    no BLAS library is visible, as with macOS Accelerate), not os.cpu_count."""
     import json
     import os
     import subprocess
@@ -363,7 +362,10 @@ def test_subject_threads_without_limits_use_library_defaults():
         "import json\n"
         "from threadpoolctl import threadpool_info\n"
         "from htfa.htfa import HTFA\n"
-        "counts = [p['num_threads'] for p in threadpool_info()]\n"
+        "pools = threadpool_info()\n"
+        "blas = [p['num_threads'] for p in pools if p['user_api'] == 'blas']\n"
+        "omp = [p['num_threads'] for p in pools if p['user_api'] == 'openmp']\n"
+        "counts = blas or omp\n"
         "one, many = HTFA()._subject_threads(1), HTFA()._subject_threads(10**6)\n"
         "print(json.dumps([counts, one, many]))\n"
     )
@@ -376,3 +378,29 @@ def test_subject_threads_without_limits_use_library_defaults():
     defaults, one, many = json.loads(out.stdout.splitlines()[-1])
     assert defaults and one == min(defaults) >= 1
     assert many == 1  # more workers than threads: one thread each
+
+
+def test_available_threads_ignores_serial_openmp_stub():
+    """torch on Windows loads libiompstubs5md.dll, a serial OpenMP stub that
+    reports 1 thread under any limit (CI: windows-latest, after test_engines);
+    the caller's limit must still read as 2 with torch imported first."""
+    import json
+    import subprocess
+    import sys
+
+    pytest.importorskip("torch")
+    code = (
+        "import json, torch\n"
+        "from threadpoolctl import threadpool_info, threadpool_limits\n"
+        "from htfa.htfa import _available_threads\n"
+        "with threadpool_limits(2):\n"
+        "    pools = [(p['user_api'], p['prefix'], p['num_threads'], p['filepath'])\n"
+        "             for p in threadpool_info()]\n"
+        "    print(json.dumps([pools, _available_threads()]))\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    print(out.stdout, out.stderr[-2000:])
+    pools, available = json.loads(out.stdout.splitlines()[-1])
+    for pool in pools:
+        print(pool)
+    assert available == 2

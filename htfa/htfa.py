@@ -84,12 +84,22 @@ def assign_posterior(
 
 
 def _available_threads() -> int:
-    """Threads the caller allows: the lowest thread count the loaded BLAS/OpenMP
-    libraries report (a limit from ``OMP_NUM_THREADS``, ``OPENBLAS_NUM_THREADS``,
-    ... or an enclosing ``threadpoolctl.threadpool_limits``, else their defaults);
-    ``os.cpu_count()`` when none is loaded."""
-    counts = [int(pool["num_threads"]) for pool in threadpool_info()]
-    return min(counts, default=os.cpu_count() or 1)
+    """Threads the caller allows: the lowest thread count of the loaded BLAS
+    libraries (a limit from ``OPENBLAS_NUM_THREADS``, ``OMP_NUM_THREADS``, ... or
+    an enclosing ``threadpoolctl.threadpool_limits``, else their defaults), or of
+    the OpenMP libraries when no BLAS library is visible (macOS Accelerate);
+    ``os.cpu_count()`` when neither is.
+
+    BLAS is where the subject fits spend their threads. OpenMP pools are not
+    trusted when BLAS is visible: torch on Windows loads the serial stub
+    ``libiompstubs5md.dll``, which always reports 1 thread whatever the limit.
+    """
+    pools = threadpool_info()
+    for api in ("blas", "openmp"):
+        counts = [int(p["num_threads"]) for p in pools if p["user_api"] == api]
+        if counts:
+            return min(counts)
+    return os.cpu_count() or 1
 
 
 def _fit_subject(
@@ -143,8 +153,9 @@ class HTFA(BaseEstimator):
         Number of joblib workers for the subject fits (numpy engines only).
     n_threads : int, optional
         BLAS/OpenMP (and NumPy engine) threads per subject fit. ``None`` uses the
-        lowest thread count the loaded BLAS/OpenMP libraries currently report
-        (``threadpoolctl.threadpool_info``): a limit set by ``OMP_NUM_THREADS``,
+        lowest thread count the loaded BLAS libraries currently report (the
+        OpenMP libraries when no BLAS library is visible to
+        ``threadpoolctl.threadpool_info``): a limit set by ``OMP_NUM_THREADS``,
         ``OPENBLAS_NUM_THREADS`` and the like or by an enclosing
         ``threadpoolctl.threadpool_limits``, else the libraries' own defaults
         (usually the number of cores), divided among the ``n_jobs`` workers and
