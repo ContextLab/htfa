@@ -384,6 +384,11 @@ class TFA(BaseEstimator):
     cost_ : float
         Final objective of the winning start: ``0.5 * sum(rho(r**2))`` over the
         full-data residual ``r`` (with the prior penalties when a prior is given).
+    objective_history_ : list of float
+        With subsampling, the stopping objective of the winning start at its
+        start and after every iteration (empty without subsampling). The
+        returned centers and widths are those of its minimum, unless the fit
+        stopped on the threshold (then the last iterate).
     init_ : str
         Name of the winning start (``'prior'`` when a prior was given).
     init_objectives_ : dict of str to float
@@ -516,21 +521,26 @@ class TFA(BaseEstimator):
         sizes: tuple[int, int],
         label: str,
         objective: Callable[[Array], float],
+        history: list[float],
     ) -> Iterator[tuple[Array, int, str | None]]:
         """Outer loop from ``x``, one iteration per step.
 
         Yields ``(x, n_iter, reason)`` after every iteration; ``reason`` is
         ``None`` until the last one, which carries the stop reason. With
-        subsampling, ``objective(x)`` (the full-data objective) is evaluated
-        after every iteration for the ``'objective'`` stopping rule.
+        subsampling, ``objective(x)`` is evaluated at the start and after every
+        iteration (appended to ``history``) for the ``'objective'`` stopping
+        rule, and the yielded ``x`` is the iterate with the lowest objective so
+        far (the last one when the fit stops on the threshold).
         """
         (V, T), (Vs, Ts) = X.shape, sizes
         K, D = self.K, R.shape[1]
         length = np.sqrt(max_sigma(R) / 2.0)
         subsampled = Vs < V or Ts < T
         best, stale = np.inf, 0
-        # Running minimum of the full-data objective, from the start on.
-        lowest = [objective(x)] if subsampled and self.max_iter > 0 else []
+        # Running minimum of the objective, from the start on, and its iterate.
+        if subsampled and self.max_iter > 0:
+            history.append(objective(x))
+        lowest, x_best = list(history), x
         for n_iter in range(1, self.max_iter + 1):
             vi = np.sort(rng.choice(V, Vs, replace=False)) if Vs < V else slice(None)
             ti = np.sort(rng.choice(T, Ts, replace=False)) if Ts < T else slice(None)
@@ -557,29 +567,34 @@ class TFA(BaseEstimator):
             )
             x = np.concatenate([C_new.ravel(), w_new])
             message = f"TFA {label} iteration {n_iter}: scaled change {change:.6g}"
-            if subsampled:
+            if lowest:
                 cost = objective(x)
+                history.append(cost)
                 change_obj = (lowest[-1] - cost) / abs(lowest[-1])
+                if cost < lowest[-1]:
+                    x_best = x
                 lowest.append(min(lowest[-1], cost))
-                message += f", full-data objective decrease {change_obj:.3g}"
+                message += f", objective decrease {change_obj:.3g}"
+            else:
+                x_best = x
             if self.verbose:
                 print(message, flush=True)
             if change <= self.threshold:
                 yield x, n_iter, "threshold"
                 return
-            if subsampled and len(lowest) > OBJECTIVE_WINDOW:
+            if len(lowest) > OBJECTIVE_WINDOW:
                 ref = lowest[-1 - OBJECTIVE_WINDOW]
                 window_decrease = (ref - lowest[-1]) / abs(ref)
             else:
                 window_decrease = np.inf
             if window_decrease < OBJECTIVE_WINDOW * OBJECTIVE_RTOL:
-                yield x, n_iter, "objective"
+                yield x_best, n_iter, "objective"
                 return
             best, stale = (change, 0) if change < best else (best, stale + 1)
             if subsampled and stale >= PLATEAU_PATIENCE:
-                yield x, n_iter, "plateau"
+                yield x_best, n_iter, "plateau"
                 return
-            yield x, n_iter, "max_iter" if n_iter == self.max_iter else None
+            yield x_best, n_iter, "max_iter" if n_iter == self.max_iter else None
 
     def fit(
         self,
@@ -658,6 +673,7 @@ class TFA(BaseEstimator):
             starts = _initial_starts(X, R, K, names, rng, lb[-1], ub[-1])
         runs: dict[str, tuple[Array, int, str | None]] = {}
         loops = {}
+        histories: dict[str, list[float]] = {name: [] for name in starts}
         for name, (centers, widths) in starts.items():
             x0 = np.clip(np.concatenate([np.ravel(centers), np.ravel(widths)]), lb, ub)
             runs[name] = (x0, 0, None if self.max_iter > 0 else "max_iter")
@@ -672,6 +688,7 @@ class TFA(BaseEstimator):
                 sizes,
                 name,
                 lambda x: self._objective(X, R, x, engine, full_prior)[0],
+                histories[name],
             )
 
         def advance(name: str, n_steps: int) -> None:
@@ -694,6 +711,7 @@ class TFA(BaseEstimator):
         self.init_objectives_ = {n: score[0] for n, score in scores.items()}
         self.cost_, self.weights_ = scores[self.init_]
         x, self.n_iter_, reason = runs[self.init_]
+        self.objective_history_ = histories[self.init_]
         self.converged_reason_ = reason
         self.converged_ = reason != "max_iter"
         if self.max_iter > 0 and not self.converged_:

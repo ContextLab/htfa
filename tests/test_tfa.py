@@ -567,9 +567,8 @@ def test_subsampled_fit_stops_on_full_data_objective():
     assert model.converged_reason_ == "objective" and model.converged_
     assert not caught
     assert OBJECTIVE_WINDOW <= n < model.max_iter
-    # The same fit cut short replays the same subsamples (same seeds); max_iter=0
-    # evaluates the start.
-    costs = [_subsampled_2d(max_iter=m)[0].cost_ for m in range(n)] + [model.cost_]
+    costs = model.objective_history_
+    assert len(costs) == n + 1  # the start and every iteration
     lowest = np.minimum.accumulate(costs)
     W = OBJECTIVE_WINDOW
     rel = [(lowest[m - W] - lowest[m]) / abs(lowest[m - W]) for m in range(W, n + 1)]
@@ -578,21 +577,26 @@ def test_subsampled_fit_stops_on_full_data_objective():
     assert rel[-1] < W * OBJECTIVE_RTOL
 
 
+def test_subsampled_fit_returns_lowest_objective_iterate():
+    """The returned iterate is the argmin of the recorded objectives, not the
+    last one (here the stopping objective is the full-data one: V is small)."""
+    model, _ = _subsampled_2d()
+    costs = model.objective_history_
+    print(f"objectives {costs}; cost_ {model.cost_}; last {costs[-1]}")
+    assert model.cost_ == min(costs)
+    assert costs[-1] > min(costs)  # this fit's last iterate is not its best
+
+
 def test_subsampled_fit_survives_one_noisy_objective_increase():
     """make_tfa_data (20, 20), K=4, voxel_ratio=0.5: the full-data objective rises
     at iteration 6 while the fit is still improving; the fit must go on."""
     X, R, _ = make_tfa_data((20, 20), 40, K=4, noise=0.1, random_state=0)
     kw = {"K": 4, "init": "ncorr", "standardize": False, "random_state": 0}
-    costs = [
-        TFA(voxel_ratio=0.5, max_iter=m, threshold=0.0, **kw).fit(X, R).cost_
-        if m
-        else TFA(voxel_ratio=0.5, max_iter=0, **kw).fit(X, R).cost_
-        for m in range(7)
-    ]
-    print(f"objectives at iterations 0-6: {costs}")
-    assert costs[6] > costs[5]  # the noisy step this test is about
     model = TFA(voxel_ratio=0.5, **kw).fit(X, R)
+    costs = model.objective_history_
+    print(f"objectives {costs}")
     print(f"n_iter {model.n_iter_}, reason {model.converged_reason_}")
+    assert costs[6] > costs[5]  # the noisy step this test is about
     assert model.n_iter_ > 6
 
 
