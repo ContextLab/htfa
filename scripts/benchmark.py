@@ -16,6 +16,7 @@ brainiak is importable here, and otherwise in ``--brainiak-python`` (default:
 
 import argparse
 import importlib.metadata
+import importlib.util
 import json
 import os
 import platform
@@ -49,9 +50,11 @@ import json, sys, time
 import numpy as np
 from brainiak.factoranalysis.tfa import TFA
 data = np.load(sys.argv[1])
-X, R, K = data["X"], data["R"], int(data["K"])
+X, R, K, seed = data["X"], data["R"], int(data["K"]), int(data["seed"])
 t0 = time.perf_counter()
-model = TFA(K=K, max_num_voxel=X.shape[0], max_num_tr=X.shape[1]).fit(X, R)
+model = TFA(
+    K=K, max_num_voxel=X.shape[0], max_num_tr=X.shape[1], seed=seed
+).fit(X, R)
 seconds = time.perf_counter() - t0
 centers = model.get_centers(model.local_posterior_)
 print(json.dumps({"seconds": seconds, "centers": centers.tolist()}))
@@ -101,11 +104,12 @@ def run_htfa(X, R, K, backend, seed, init, max_iter):
     return seconds, model.centers_, notes
 
 
-def run_brainiak(X, R, K, python, timeout):
-    """One BrainIAK TFA fit in ``python``; returns (seconds, centers, notes)."""
+def run_brainiak(X, R, K, seed, python, timeout):
+    """One BrainIAK TFA fit (``seed`` seeds its NumPy RNG) in ``python``; returns
+    (seconds, centers, notes)."""
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "data.npz")
-        np.savez(path, X=X, R=R, K=K)
+        np.savez(path, X=X, R=R, K=K, seed=seed)
         try:
             out = subprocess.run(
                 [python, "-c", BRAINIAK_FIT, path],
@@ -123,10 +127,19 @@ def run_brainiak(X, R, K, python, timeout):
 
 
 def available(backend: str) -> bool:
-    """Whether an htfa GPU backend has its device here."""
+    """Whether an htfa GPU backend can run here; prints why not when it cannot.
+
+    Without torch (no ``gpu`` extra) the row is skipped rather than letting
+    `htfa._lazy.ensure_torch` install torch; a missing device raises RuntimeError,
+    and ImportError covers a torch that cannot be imported or installed.
+    """
+    if importlib.util.find_spec("torch") is None:
+        print(f"skipping {backend}: torch is not installed", file=sys.stderr)
+        return False
     try:
         select_engine(backend, 1, 1, 1)
-    except RuntimeError:
+    except (RuntimeError, ImportError) as err:
+        print(f"skipping {backend}: {err}", file=sys.stderr)
         return False
     return True
 
@@ -182,7 +195,9 @@ def main() -> None:
                 python = brainiak_python(args.brainiak_python)
                 if size not in BRAINIAK_SIZES or python is None:
                     continue
-                results[backend] = run_brainiak(X, R, K, python, args.brainiak_timeout)
+                results[backend] = run_brainiak(
+                    X, R, K, args.seed, python, args.brainiak_timeout
+                )
             elif backend in ("mps", "cuda") and not available(backend):
                 continue
             else:
