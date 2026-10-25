@@ -297,16 +297,22 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _fetch_archive(dest: Path, folder: Path, attempts: int = 3) -> None:
-    """Download `MESH_ARCHIVE_URL` to ``dest``.
+_ZIP_MAGIC = b"PK\x03\x04"
+
+
+def _fetch_archive(
+    dest: Path, folder: Path, attempts: int = 3, url: str = MESH_ARCHIVE_URL
+) -> None:
+    """Download the zip archive at ``url`` to ``dest``.
 
     NITRC sometimes answers with an HTML error page (status 200) instead of
-    the archive; such answers are retried.
+    the archive; a response that does not start with the zip signature is
+    retried. The SHA-256 check in `_download_meshes` guards the content.
     """
     from . import __version__
 
     request = urllib.request.Request(
-        MESH_ARCHIVE_URL,
+        url,
         headers={
             "User-Agent": f"htfa/{__version__} (+https://github.com/ContextLab/htfa)"
         },
@@ -317,19 +323,21 @@ def _fetch_archive(dest: Path, folder: Path, attempts: int = 3) -> None:
             time.sleep(2.0 * attempt)
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
-                kind = response.headers.get("Content-Type", "")
-                if kind != "application/zip":
+                head = response.read(len(_ZIP_MAGIC))
+                if head != _ZIP_MAGIC:
+                    kind = response.headers.get("Content-Type", "")
                     raise urllib.error.URLError(
-                        f"server returned {kind!r} from {response.url} "
-                        "instead of the zip archive"
+                        f"{response.url} returned {kind!r} content that is not a "
+                        "zip archive"
                     )
                 with open(dest, "wb") as out:
+                    out.write(head)
                     shutil.copyfileobj(response, out)
             return
         except (urllib.error.URLError, OSError) as e:
             err = e
     raise ConnectionError(
-        f"could not download the BrainNet Viewer meshes from {MESH_ARCHIVE_URL} "
+        f"could not download the BrainNet Viewer meshes from {url} "
         f"({err}). Download that file by hand and put the .nv files from "
         f"{_MESH_DIR_IN_ARCHIVE} in {folder}, or pass mesh= a path to a .nv file."
     ) from err

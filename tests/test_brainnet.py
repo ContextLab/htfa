@@ -199,6 +199,62 @@ def test_fetch_mesh_repairs_corrupt_cache(monkeypatch, tmp_path):
     )
 
 
+@pytest.fixture
+def http_folder(tmp_path):
+    """A real local HTTP server serving files from a folder.
+
+    Responses carry the Content-Type named by a ``<file>.type`` sidecar.
+    """
+    import http.server
+    import threading
+
+    root = tmp_path / "www"
+    root.mkdir()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            path = root / self.path.lstrip("/")
+            body = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", (root / (path.name + ".type")).read_text())
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield root, f"http://127.0.0.1:{server.server_address[1]}/"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_fetch_archive_checks_zip_signature(http_folder, tmp_path):
+    import zipfile
+
+    root, base = http_folder
+    with zipfile.ZipFile(root / "a.zip", "w") as z:
+        z.writestr("x.txt", "hello")
+    # a real zip passes whatever its Content-Type variant
+    for kind in ("application/zip; charset=binary", "application/x-zip-compressed"):
+        (root / "a.zip.type").write_text(kind)
+        dest = tmp_path / "got.zip"
+        bn._fetch_archive(dest, tmp_path, attempts=1, url=base + "a.zip")
+        assert dest.read_bytes() == (root / "a.zip").read_bytes()
+    # an HTML error page labelled as a zip is rejected
+    (root / "err.html").write_text("<html>NITRC Under Maintenance</html>")
+    (root / "err.html.type").write_text("application/zip")
+    with pytest.raises(ConnectionError, match="not a zip archive"):
+        bn._fetch_archive(
+            tmp_path / "bad.zip", tmp_path, attempts=2, url=base + "err.html"
+        )
+
+
 # --------------------------------------------------------------- rendering
 
 
