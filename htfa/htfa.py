@@ -327,8 +327,11 @@ class HTFA(BaseEstimator):
             Initial global template, shapes (K, D) and (K,), in place of the
             template subject's stage-0 fit. To resume a fit, pass
             ``starts=list(zip(model.centers_, model.widths_))`` and
-            ``init_template=(model.global_centers_, model.global_widths_)``; the
-            template (co)variances restart from their initial values.
+            ``init_template=(model.global_centers_, model.global_widths_)``.
+            This approximates continuing the fit rather than reproducing it:
+            the template (co)variances restart from their initial values and
+            the first global iteration's two-start step (from the template and
+            from each subject's own start) is run again.
 
         Returns
         -------
