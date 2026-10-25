@@ -31,6 +31,7 @@ def _gpu() -> str | None:
 
 
 @pytest.mark.gpu
+@pytest.mark.slow
 def test_mps_fit_matches_cpu_accuracy() -> None:
     device = _gpu()
     if device is None:
