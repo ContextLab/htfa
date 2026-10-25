@@ -442,16 +442,60 @@ def load_mesh(mesh: Any) -> tuple[Array, Array] | None:
 # ------------------------------------------------------------------- rendering
 
 
-def node_radius(sizes: Array, lo: float = 2.0, hi: float = 7.0) -> Array:
-    """Map node sizes linearly onto ``[lo, hi]`` mm (BrainNet: size by value).
+def node_radius(
+    sizes: Any,
+    lo: float = 2.0,
+    hi: float = 7.0,
+    *,
+    k: float | None = None,
+    b: float | None = None,
+    clip: tuple[float, float] | None = None,
+) -> Array:
+    """Sphere radii in mm from node sizes, BrainNet Viewer's ``k * size + b``.
 
-    All-equal sizes give 4 mm, as in BrainNet Viewer.
+    By default ``k`` and ``b`` map the smallest size to ``lo`` and the
+    largest to ``hi`` (BrainNet "size by value": 2-7 mm). All-equal sizes
+    give 4 mm, as in BrainNet Viewer.
+
+    Parameters
+    ----------
+    sizes : array of shape (K,)
+    lo, hi : float
+        Radii of the smallest and largest size, ``lo < hi``.
+    k, b : float, optional
+        A fixed mapping ``k * size + b`` instead (both needed), e.g. the
+        ``nod.k`` / ``nod.b`` stored in a BrainNet option file, so that radii
+        are comparable across plots.
+    clip : (float, float), optional
+        Clip the radii to this range afterwards.
+
+    Returns
+    -------
+    ndarray, shape (K,)
+
+    Examples
+    --------
+    >>> from htfa.brainnet import node_radius
+    >>> node_radius([1.0, 2.0, 3.0]).tolist()
+    [2.0, 4.5, 7.0]
+    >>> node_radius([1.0, 2.0, 3.0], k=3.0, b=0.0, clip=(0.0, 7.0)).tolist()
+    [3.0, 6.0, 7.0]
     """
     s = np.asarray(sizes, dtype=np.float64)
-    if s.max() == s.min():
-        return np.full_like(s, 4.0)
-    k = (hi - lo) / (s.max() - s.min())
-    return k * s + (hi - k * s.max())
+    if (k is None) != (b is None):
+        raise ValueError("give both k and b, or neither")
+    if not lo < hi:
+        raise ValueError(f"need lo < hi, got lo={lo}, hi={hi}")
+    if clip is not None and not clip[0] <= clip[1]:
+        raise ValueError(f"clip must be (min, max) with min <= max, got {clip}")
+    if k is not None and b is not None:
+        r = k * s + b
+    elif s.max() == s.min():
+        r = np.full_like(s, 4.0)
+    else:
+        slope = (hi - lo) / (s.max() - s.min())
+        r = slope * s + (hi - slope * s.max())
+    return r if clip is None else np.clip(r, clip[0], clip[1])
 
 
 def _centers(centers: Any) -> Array:
@@ -824,12 +868,23 @@ class _Scene:
         mesh_opacity: float,
         background: Any,
         node_opacity: Array | None = None,
+        radius_range: tuple[float, float] = (2.0, 7.0),
+        radius_kb: tuple[float, float] | None = None,
+        radius_clip: tuple[float, float] | None = None,
     ) -> None:
         pv = lazy_import("pyvista", "brain3d", "network plots")
         if view not in VIEWS:
             raise ValueError(f"unknown view {view!r}; choose from {sorted(VIEWS)}")
         self.centers = centers
-        self.radii = node_radius(sizes)
+        k, b = (None, None) if radius_kb is None else radius_kb
+        self.radii = node_radius(
+            sizes, radius_range[0], radius_range[1], k=k, b=b, clip=radius_clip
+        )
+        if not np.all(self.radii > 0):
+            raise ValueError(
+                f"node radii must be positive, got min {self.radii.min():.3g} mm; "
+                "set radius_clip"
+            )
         self.node_opacity = node_opacity
         self.size = (int(size[0]), int(size[1]))
         s = _SUPERSAMPLE
@@ -1014,6 +1069,9 @@ def _style(kwargs: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         "mesh_color": kwargs.pop("mesh_color", (0.95, 0.95, 0.95)),
         "mesh_opacity": kwargs.pop("mesh_opacity", 0.2),
         "background": kwargs.pop("background", "white"),
+        "radius_range": tuple(kwargs.pop("radius_range", (2.0, 7.0))),
+        "radius_kb": kwargs.pop("radius_kb", None),
+        "radius_clip": kwargs.pop("radius_clip", None),
     }
     edges = {
         "threshold": float(kwargs.pop("threshold", 0.25)),
@@ -1056,7 +1114,8 @@ def plot_network(
     connectivity : array of shape (K, K), optional
         Edge weights (upper triangle used). ``None`` draws nodes only.
     sizes : array of shape (K,), optional
-        Node sizes; mapped linearly onto 2-7 mm radii (`node_radius`).
+        Node sizes; mapped linearly onto 2-7 mm radii (`node_radius`; see the
+        ``radius_*`` style options).
         Defaults to the (effective, with ``snap``) widths, or equal sizes
         (4 mm) when no widths are known.
     widths : array of shape (K,), optional
@@ -1104,7 +1163,11 @@ def plot_network(
         ``|E|`` mm at opacity 0.7; ``"flat"``: 0.5 mm, opaque),
         ``positive_color`` ("red"), ``negative_color`` ("blue"),
         ``node_color`` (0.502 gray), ``mesh_color`` (0.95 gray),
-        ``mesh_opacity`` (0.2), ``background`` ("white"). See also
+        ``mesh_opacity`` (0.2), ``background`` ("white"),
+        ``radius_range`` ((2, 7) mm: radii of the smallest and largest
+        size), ``radius_kb`` (a fixed ``(k, b)``: radius ``k * size + b``
+        mm, comparable across plots), ``radius_clip`` (``(min, max)`` mm
+        applied to the radii); see `node_radius`. See also
         `config_style`.
 
     Returns

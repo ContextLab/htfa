@@ -154,6 +154,63 @@ def test_node_radius_reproduces_2014_k_b():
     np.testing.assert_array_equal(bn.node_radius([3.0, 3.0]), [4.0, 4.0])
 
 
+def test_node_radius_range_fixed_k_b_and_clip():
+    """The min-max range, a fixed BrainNet k * size + b, and clipping."""
+    s = np.array([1.0, 2.0, 3.0])
+    np.testing.assert_allclose(bn.node_radius(s, lo=1.0, hi=5.0), [1.0, 3.0, 5.0])
+    k, b = 0.17500875043752173, -29.683584179208935
+    sizes = np.array([150.0, 181.04, 209.61, 250.0])
+    np.testing.assert_allclose(bn.node_radius(sizes, k=k, b=b), k * sizes + b)
+    clipped = bn.node_radius(sizes, k=k, b=b, clip=(2.0, 7.0))
+    print("fixed k, b radii", k * sizes + b, "clipped", clipped)
+    np.testing.assert_allclose(clipped, np.clip(k * sizes + b, 2.0, 7.0))
+    np.testing.assert_allclose(bn.node_radius(s, clip=(3.0, 6.0)), [3.0, 4.5, 6.0])
+    # equal sizes: BrainNet's 4 mm, clipped like any radius
+    np.testing.assert_array_equal(bn.node_radius([3.0, 3.0], clip=(5, 9)), [5.0, 5.0])
+    with pytest.raises(ValueError, match="both k and b"):
+        bn.node_radius(s, k=1.0)
+    with pytest.raises(ValueError, match="lo < hi"):
+        bn.node_radius(s, lo=5.0, hi=5.0)
+    with pytest.raises(ValueError, match="clip"):
+        bn.node_radius(s, clip=(4.0, 1.0))
+
+
+def _gray_run(a, y, z):
+    """Width in pixels of the gray run through the image point of (y, z)."""
+    c, r = _px(y, z)
+    row = a[r]
+    gray = (row.max(axis=1) < 235) & (np.abs(row[:, 0] - row[:, 2]) < 10)
+    lo = hi = c
+    while gray[lo - 1]:
+        lo -= 1
+    while gray[hi + 1]:
+        hi += 1
+    return hi - lo + 1
+
+
+def test_plot_network_radius_options():
+    """radius_range, radius_kb and radius_clip set the drawn sphere radii."""
+    centers = np.array([[0.0, -40.0, 0.0], [0.0, 40.0, 0.0]])
+    sizes = np.array([1.0, 2.0])
+
+    def radii_px(**style):
+        a = _rgb(bn.plot_network(centers, sizes=sizes, mesh=None, snap=False, **style))
+        return [_gray_run(a, y, 0) for y in (-40, 40)]
+
+    for style, radii in [
+        ({}, (2.0, 7.0)),
+        ({"radius_range": (5.0, 10.0)}, (5.0, 10.0)),
+        ({"radius_kb": (6.0, 0.0)}, (6.0, 12.0)),
+        ({"radius_kb": (6.0, 0.0), "radius_clip": (3.0, 9.0)}, (6.0, 9.0)),
+    ]:
+        got = radii_px(**style)
+        expect = [2 * r * SCALE for r in radii]
+        print(style, "diameter px", got, "expected", np.round(expect, 1))
+        np.testing.assert_allclose(got, expect, atol=3)
+    with pytest.raises(ValueError, match="radii must be positive"):
+        bn.plot_network(centers, sizes=sizes, mesh=None, radius_kb=(1.0, -1.5))
+
+
 def test_fetch_mesh_checksums(ch2):
     verts, faces = ch2
     print("ch2 mesh:", verts.shape, faces.shape, verts.min(0), verts.max(0))
