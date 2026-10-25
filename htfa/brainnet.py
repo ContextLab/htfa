@@ -566,6 +566,10 @@ class _Scene:
             window_size=[self.size[0] * s, self.size[1] * s],
             lighting="none",
         )
+        # Depth peeling (needed for the translucent mesh and edges) draws no
+        # translucent geometry into a multisampled framebuffer on Mesa
+        # (llvmpipe, Linux CI). The 2x supersampling above anti-aliases.
+        pl.render_window.SetMultiSamples(0)
         try:
             self._build(
                 pv, pl, mesh, view, node_color, mesh_color, mesh_opacity, background
