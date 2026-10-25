@@ -567,6 +567,16 @@ def mni_mask() -> Array:
     ImportError
         If nilearn is missing and cannot be installed; pass ``mask=`` or
         ``snap=False`` instead.
+
+    Examples
+    --------
+    >>> from htfa.brainnet import effective_nodes, mni_mask
+    >>> mask = mni_mask()
+    >>> mask.shape[1]
+    3
+    >>> c, _, info = effective_nodes([[0.0, 95.0, 0.0]], None, mask)  # frontal pole
+    >>> bool(info["snapped"][0]), bool(c[0, 1] < 75)
+    (True, True)
     """
     return _mni_mask().copy()
 
