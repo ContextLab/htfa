@@ -47,36 +47,39 @@ noise 0.1):
 Real fMRI: data
 ---------------
 
-The real-data checks use the adult participants of nilearn's ``development_fmri``
-dataset (`nilearn.datasets.fetch_development_fmri`) that were present locally: six
-adults (``sub-pixar123`` to ``sub-pixar128``). All participants watched the same
-short movie (Pixar's "Partly Cloudy"); each run has 168 volumes, TR = 2 s, 4 mm MNI
-space. Voxels are those of nilearn's MNI152 brain mask resampled to the data,
-excluding voxels whose mean intensity is below 10% of the median and voxels that
-are nearly constant over any quarter of the run (about 23,700 to 27,900 voxels per
-subject). Each segment of data used is linearly detrended and the dataset's reduced
-confound set (6 motion parameters, framewise displacement, 6 aCompCor components,
-CSF and white-matter signals) is regressed out. ``scripts/validation_data.py``
-does this preprocessing.
+The real-data results below were computed with the package at commit ``ff7fe1f``
+(default solver ``nlss_method='bounded-lm'``) by the scripts in ``scripts/``.
+
+They use the first twelve adult participants of nilearn's ``development_fmri``
+dataset (`nilearn.datasets.fetch_development_fmri`, ``sub-pixar123`` to
+``sub-pixar134``). All participants watched the same short movie (Pixar's "Partly
+Cloudy"); each run has 168 volumes, TR = 2 s, 4 mm MNI space. Voxels are those of
+nilearn's MNI152 brain mask resampled to the data, excluding voxels whose mean
+intensity is below 10% of the median and voxels that are nearly constant over any
+quarter of the run (23,726 to 27,986 voxels per subject). Each segment of data
+used is linearly detrended and the dataset's reduced confound set (6 motion
+parameters, framewise displacement, 6 aCompCor components, CSF and white-matter
+signals) is regressed out. ``scripts/validation_data.py`` does this
+preprocessing.
 
 Held-out reconstruction: does inference help?
 ---------------------------------------------
 
 ``scripts/validation_heldout.py`` asks whether fitting the centers and widths
 (inference) improves on the start it begins from, on data the fit never saw. For
-each of the six adults:
+each subject:
 
 - Samples 0-79 are the training segment and samples 88-167 the test segment (an
   8-sample gap). Each segment is cleaned on its own samples; z-scoring means and
   SDs are estimated on the training segment and applied unchanged to the test
   segment, which is passed with ``standardize=False``.
-- TFA (K = 50, ``max_voxels=5000``, ``max_trs=84``, ``random_state=0``) is fitted
-  on the training segment from the 'ncorr' start and from the 'kmeans' start
-  (BrainIAK's), once with ``max_iter=0`` (the start itself, "frozen") and once
-  with ``max_iter=10`` (inference). Within each pair, the start, K, preprocessing
-  and weight estimator are identical; only the iterations differ. Ten of the 12
-  fits stopped at ``max_iter``, two on the plateau rule; none converged on
-  ``threshold``.
+- TFA (K = 50, ``max_voxels=10000``, ``max_trs=84``, so all 80 training samples,
+  ``random_state=0``) is fitted on the training segment from the 'ncorr' start and
+  from the 'kmeans' start (BrainIAK's), once with ``max_iter=0`` (the start
+  itself, "frozen") and once with ``max_iter=20`` (inference). Within each pair,
+  the start, K, preprocessing and weight estimator are identical; only the
+  iterations differ. All 24 fits stopped on the plateau rule for subsampled fits,
+  after 6 to 20 iterations; none stopped on ``threshold``.
 - Baselines: the first 50 PCA spatial components of the training segment, and 50
   random voxel locations as centers with the median fitted width.
 - Test: the voxels are split into two sets of 16 mm spatial blocks
@@ -96,76 +99,119 @@ each of the six adults:
      - ncorr fitted
      - PCA (K = 50)
    * - sub-pixar123
-     - 0.0182
+     - 0.0186
      - 0.0233
-     - 0.0272
+     - 0.0268
      - 0.0245
-     - 0.0311
+     - 0.0330
      - 0.0324
    * - sub-pixar124
-     - 0.0778
+     - 0.0802
      - 0.0910
-     - 0.0949
+     - 0.0959
      - 0.0839
-     - 0.0942
+     - 0.0952
      - 0.0969
    * - sub-pixar125
      - 0.0258
      - 0.0326
-     - 0.0382
+     - 0.0391
      - 0.0342
-     - 0.0416
+     - 0.0418
      - 0.0492
    * - sub-pixar126
-     - 0.0186
+     - 0.0191
      - 0.0226
-     - 0.0257
+     - 0.0253
      - 0.0229
-     - 0.0270
+     - 0.0278
      - 0.0419
    * - sub-pixar127
-     - 0.0409
+     - 0.0425
      - 0.0492
-     - 0.0576
+     - 0.0570
      - 0.0531
-     - 0.0618
+     - 0.0622
      - 0.0652
    * - sub-pixar128
-     - 0.0258
+     - 0.0263
      - 0.0339
-     - 0.0372
+     - 0.0375
      - 0.0336
-     - 0.0402
+     - 0.0411
      - 0.0440
+   * - sub-pixar129
+     - 0.0109
+     - 0.0153
+     - 0.0187
+     - 0.0162
+     - 0.0214
+     - 0.0228
+   * - sub-pixar130
+     - 0.0271
+     - 0.0330
+     - 0.0390
+     - 0.0340
+     - 0.0418
+     - 0.0522
+   * - sub-pixar131
+     - 0.0230
+     - 0.0303
+     - 0.0346
+     - 0.0290
+     - 0.0350
+     - 0.0374
+   * - sub-pixar132
+     - 0.0161
+     - 0.0246
+     - 0.0289
+     - 0.0252
+     - 0.0360
+     - 0.0418
+   * - sub-pixar133
+     - 0.0211
+     - 0.0259
+     - 0.0304
+     - 0.0265
+     - 0.0315
+     - 0.0367
+   * - sub-pixar134
+     - 0.0159
+     - 0.0188
+     - 0.0239
+     - 0.0224
+     - 0.0283
+     - 0.0413
    * - mean
-     - 0.0345
-     - 0.0421
+     - 0.0272
+     - 0.0334
+     - 0.0381
+     - 0.0338
+     - 0.0413
      - 0.0468
-     - 0.0420
-     - 0.0493
-     - 0.0549
 
-- Inference raised the held-out R² over its own frozen start in 6 of 6 subjects
-  from both starts: by 0.0041 to 0.0103 (mean 0.0073) from 'ncorr' and by 0.0030
-  to 0.0084 (mean 0.0047) from 'kmeans'. It also lowered the training objective in
-  every fit (by 0.6% to 0.8% from 'ncorr').
-- Both starts beat random centers, and the fitted 'ncorr' solution has the higher
-  held-out R² of the two fitted solutions in 5 of 6 subjects and the lower
-  training objective in 6 of 6.
-- Matched-K PCA reconstructs the held-out voxels better than every TFA condition
-  (mean 0.0549; 0.0960 with ordinary least-squares test weights, where the ridge
-  penalty of 1 no longer shrinks the unit-norm PCA maps). With OLS test weights
-  the gain of inference is unchanged from 'ncorr' (mean 0.0073) and smaller from
-  'kmeans' (mean 0.0022, positive in 6 of 6). PCA components are unconstrained
-  spatial maps, whereas TFA factors are 50 radial basis functions.
+- Inference raised the held-out R² over its own frozen start in 12 of 12 subjects
+  from both starts: by 0.0050 to 0.0113 (mean 0.0075) from 'ncorr' and by 0.0027
+  to 0.0079 (mean 0.0047) from 'kmeans'. It also lowered the training objective in
+  every fit (by 0.55% to 1.1% from 'ncorr' and 0.47% to 0.88% from 'kmeans').
+- Both starts beat random centers in every subject. The fitted 'ncorr' solution
+  has the higher held-out R² of the two fitted solutions in 11 of 12 subjects and
+  the lower training objective in 12 of 12.
+- Matched-K PCA reconstructs the held-out voxels better than both fitted TFA
+  solutions in 11 of 12 subjects (mean 0.0468; 0.0814 with ordinary least-squares
+  test weights, where the ridge penalty of 1 no longer shrinks the unit-norm PCA
+  maps). With OLS test weights the gain of inference is unchanged from 'ncorr'
+  (mean 0.0074) and smaller from 'kmeans' (mean 0.0023, positive in 12 of 12).
+  PCA components are unconstrained spatial maps, whereas TFA factors are 50
+  radial basis functions.
 - The absolute values are small: after confound regression and per-voxel
-  z-scoring, 50 factors explain 3% to 7% of the training-segment variance. A
+  z-scoring, 50 factors explain 2.4% to 7.4% of the training-segment variance. A
   model-free reference that predicts each voxel by the unweighted mean of the
-  other set's voxels within 8 mm scores below zero in four of six subjects (mean
-  -0.020).
+  other set's voxels within 8 mm scores below zero in 10 of 12 subjects (mean
+  -0.029).
 - The fitted 'ncorr' and 'kmeans' solutions do not converge to the same factors:
-  their matched centers are 16.1 mm apart on average at the start and 20.5 mm
-  after 10 iterations.
+  their matched centers are 16.4 mm apart on average at the start and 21.5 mm
+  after fitting.
 
 .. image:: _static/validation/heldout.png
    :alt: Held-out R² per condition; one gray line per subject and the mean in blue.
@@ -173,34 +219,37 @@ each of the six adults:
 HTFA template update (audit)
 ----------------------------
 
-``scripts/validation_template.py`` fits `htfa.HTFA` unchanged to the six adults
-(cleaned full runs, ``standardize='auto'``; K = 30, ``max_global_iter=10``,
-``max_local_iter=3``, ``max_voxels=1000``, ``max_trs=40``, ``init='ncorr'``,
+``scripts/validation_template.py`` fits `htfa.HTFA` unchanged to the twelve adults
+(cleaned full runs, ``standardize='auto'``; K = 50, ``max_global_iter=15``,
+``max_local_iter=5``, ``max_voxels=5000``, ``max_trs=168``, ``init='ncorr'``
+only, because the 'kmeans' start costs about a minute per subject,
 ``random_state=0``) and records, through wrappers around ``htfa.htfa.map_update``
-and ``HTFA._fit_subjects``, what enters and leaves each template update.
+and ``HTFA._fit_subjects``, what enters and leaves each template update. The fit
+ran all 15 global iterations without reaching ``threshold`` (scaled change 0.011
+at the last iteration).
 
 The template update follows BrainIAK: each global iteration computes a Gaussian
 posterior of the template from the subjects' current local estimates, and that
 posterior becomes the prior of the next iteration, which revisits the same
-subjects. With the subject-level covariance ``Sigma`` (initialized from the
-template subject's coordinate covariance, ``K^(-2/3)`` scaled) and the initial
-prior covariance ``S0`` (equal to ``Sigma`` here), the posterior covariance after
-``i`` iterations with ``n`` subjects is
-``S_i = (S0^-1 + i n Sigma^-1)^-1``: each pass counts the same subjects again. The
-covariance does not depend on the data, and it is identical for every factor. The
-same holds for the width variance, ``v_i = v0 / (1 + i n)``.
+subjects. With the subject-level covariance ``Sigma`` (the template subject's
+coordinate covariance scaled by ``K^(-2/3)``) and the initial prior covariance
+``S0`` (equal to ``Sigma`` in the package), the posterior covariance after ``i``
+iterations with ``n`` subjects is ``S_i = (S0^-1 + i n Sigma^-1)^-1``: each pass
+counts the same subjects again. The covariance does not depend on the data, and it
+is identical for every factor. The width variance follows the same recursion,
+``v_i = v0 / (1 + i n)``.
 
 Checks on the recorded real-data inputs:
 
 - The package's MAP update agrees with an independent precision-form Gaussian
   posterior (``P = S0^-1 + n Sigma^-1``, ``m = P^-1 (S0^-1 m0 + Sigma^-1 sum(obs))``)
-  to 4.3e-14 mm for the means and 2.8e-16 (relative) for the covariances, over all
-  300 factor updates.
-- The recorded posterior covariance matches the closed form above to 2.5e-16
+  to 4.3e-14 mm for the means and 4.4e-16 (relative) for the covariances, over all
+  750 factor updates.
+- The recorded posterior covariance matches the closed form above to 7.8e-16
   (relative) at every iteration, and is identical across factors (largest
   difference 0).
 
-.. list-table:: Template audit, 6 subjects, K = 30 (``template_audit.csv``)
+.. list-table:: Template audit, 12 subjects, K = 50 (``template_audit.csv``)
    :header-rows: 1
 
    * - global iteration
@@ -209,39 +258,45 @@ Checks on the recorded real-data inputs:
      - 3
      - 5
      - 10
+     - 15
    * - posterior SD of each template center (mm, per axis)
-     - 4.25
-     - 3.12
-     - 2.58
-     - 2.02
-     - 1.44
+     - 2.64
+     - 1.90
+     - 1.57
+     - 1.22
+     - 0.87
+     - 0.71
    * - mean template movement (mm)
-     - 8.68
-     - 2.49
-     - 1.53
-     - 0.84
-     - 0.37
+     - 10.56
+     - 1.72
+     - 0.79
+     - 0.40
+     - 0.18
+     - 0.12
    * - mean distance of local centers to the prior template (mm)
-     - 20.1
-     - 17.6
-     - 16.5
-     - 17.1
-     - 15.3
+     - 19.5
+     - 15.7
+     - 14.9
+     - 14.1
+     - 13.1
+     - 12.2
    * - mean distance of local centers to their across-subject mean (mm)
-     - 18.0
-     - 17.0
-     - 16.2
      - 16.6
+     - 15.3
      - 14.8
+     - 14.0
+     - 13.0
+     - 12.1
 
-The posterior SD of each template center falls from 4.25 mm after the first pass
-to 1.44 mm after 10 passes, as the closed form predicts (``sqrt(1/(1 + 10 * 6))``
-of the prior), while the subjects' local centers stay 15 to 20 mm from the
-template. The width variance falls in the same way, from about 3.3e3 to 54.5 mm².
+The posterior SD of each template center falls from 2.64 mm after the first pass
+to 0.71 mm after 15 passes, as the closed form predicts, while the subjects' local
+centers stay 12 to 20 mm from the template. The width variance falls in the same
+way, to 18.5 mm² after 15 passes (from about 3.4e3 mm²).
 
 As a control (``--fixed-cov``, not the package's behaviour), the script recomputes
-every center update from the initial prior covariance, so the template covariance
-stays at its one-pass value (posterior SD 4.25 mm). With the same seed:
+every center update from the initial prior covariance, so the template center
+covariance stays at its one-pass value (posterior SD 2.64 mm); the widths are
+unchanged. With the same seed:
 
 .. list-table:: Shrinking (HTFA as implemented) versus fixed template covariance
    :header-rows: 1
@@ -249,45 +304,47 @@ stays at its one-pass value (posterior SD 4.25 mm). With the same seed:
    * - global iteration
      - 2
      - 4
-     - 6
      - 8
-     - 10
+     - 12
+     - 15
    * - mean template movement, shrinking (mm)
-     - 2.49
-     - 1.06
-     - 0.63
-     - 0.45
-     - 0.37
+     - 1.72
+     - 0.50
+     - 0.22
+     - 0.13
+     - 0.12
    * - mean template movement, fixed (mm)
-     - 4.63
-     - 3.56
-     - 2.99
-     - 3.90
-     - 3.05
+     - 3.31
+     - 1.38
+     - 0.99
+     - 1.03
+     - 1.32
    * - local-center spread around the subject mean, shrinking (mm)
-     - 17.0
-     - 16.3
-     - 16.1
      - 15.3
-     - 14.8
+     - 14.3
+     - 13.3
+     - 12.6
+     - 12.1
    * - local-center spread around the subject mean, fixed (mm)
-     - 17.0
-     - 16.6
-     - 16.9
-     - 16.8
-     - 17.1
+     - 15.3
+     - 14.6
+     - 14.3
+     - 14.2
+     - 14.2
 
-With the shrinking covariance, the template movement decreases steadily and the
-subjects' local centers move closer together (spread 18.0 to 14.8 mm). With the
-covariance held at its one-pass value, the template keeps moving by about 3 mm per
-iteration and the spread stays near 17 mm. The decrease of the template movement,
-which the HTFA stopping rule measures, therefore comes in part from the shrinking
-prior covariance rather than from the subjects' estimates settling. Whether to
+With the shrinking covariance, the template movement keeps decreasing (to 0.12 mm
+per iteration) and the subjects' local centers keep moving closer together
+(spread 16.6 mm after the first iteration, 12.1 mm after 15). With the covariance
+held at its one-pass value, the template movement stays between 0.88 and 1.40 mm
+per iteration from iteration 6 on, and the spread stays between 14.2 and 14.5 mm. The
+continued decrease of the template movement, which the HTFA stopping rule
+measures, and the continued pull of the subjects toward each other therefore come
+in part from the shrinking prior covariance rather than from the data. Whether to
 keep BrainIAK's update is an open decision; the package currently keeps it.
 
 .. image:: _static/validation/template_audit.png
    :alt: Template center posterior SD, template movement, and local-center
-         distances over 10 global iterations.
+         distances over 15 global iterations.
 
 Timepoint decoding
 ------------------
@@ -295,8 +352,8 @@ Timepoint decoding
 Because all participants watched the same movie, a moment of the movie should
 evoke similar factor activity in different people. ``scripts/validation_decoding.py``
 tests this with across-group timepoint decoding, after Manning et al. (2018,
-NeuroImage, doi:10.1016/j.neuroimage.2018.01.071): the six adults are split into
-two groups of three (all 10 distinct splits); each feature is z-scored over time
+NeuroImage, doi:10.1016/j.neuroimage.2018.01.071): the twelve adults are split into
+two groups of six (all 462 distinct splits); each feature is z-scored over time
 within subject and averaged over the subjects of each group; the time course is
 averaged within non-overlapping windows of 1 or 6 samples; and every window of one
 group is matched to the window of the other group with the highest Pearson
@@ -308,40 +365,42 @@ windows.
 Features (from the cleaned full runs, z-scored per voxel):
 
 - ``htfa_template``: ridge weights of each subject's data on the fitted HTFA
-  template factors (K = 30, the fit of the audit above);
+  template factors (K = 50, the fit of the audit above);
 - ``htfa_local``: each subject's own HTFA weights (``weights_``, in template order);
-- ``frozen_start``: ridge weights on the 'ncorr' start of one subject without
-  iterations (``max_iter=0``), same K;
+- ``frozen_start``: ridge weights on the 'ncorr' start of one subject
+  (``sub-pixar123``) without iterations (``max_iter=0``), same K, applied to every
+  subject;
 - ``atlas``: mean signal in each of the 48 Harvard-Oxford cortical parcels
   (maximum-probability map, 25% threshold).
 
-.. list-table:: Decoding accuracy, mean over 10 splits (``decoding.csv``)
+.. list-table:: Decoding accuracy, mean over 462 splits (``decoding.csv``)
    :header-rows: 1
 
    * - features
      - 1-sample windows (168; chance 0.006)
      - 6-sample windows (28; chance 0.036)
    * - frozen start
-     - 0.047 (null 0.013)
-     - 0.175 (null 0.025)
+     - 0.178 (null 0.005)
+     - 0.570 (null 0.016)
    * - HTFA template factors
-     - 0.042 (null 0.010)
-     - 0.200 (null 0.030)
+     - 0.154 (null 0.005)
+     - 0.549 (null 0.018)
    * - HTFA local weights
-     - 0.016 (null 0.005)
-     - 0.086 (null 0.030)
+     - 0.065 (null 0.006)
+     - 0.341 (null 0.025)
    * - Harvard-Oxford atlas, 48 parcels
-     - 0.071 (null 0.006)
-     - 0.307 (null 0.027)
+     - 0.161 (null 0.006)
+     - 0.484 (null 0.019)
 
-All four feature sets decode above chance and above the shift null. With 6-sample
-windows, the fitted template factors (0.200) decode better than the frozen start
-(0.175), and the 48-parcel atlas decodes best (0.307). Each subject's own HTFA
-weights decode worst (0.086): their factors are matched to the template by index,
-but the local centers lie 12.8 to 16.6 mm from the template centers on average (audit
-above), so factor ``k`` does not cover the same region in every subject. With only
-three subjects per group and 10 splits, these accuracies are noisy (the minimum
-over splits is in ``decoding.csv``).
+All four feature sets decode far above chance and above the shift null. The
+fitted template factors do not decode better than the frozen start they are
+compared with (0.549 versus 0.570 with 6-sample windows, 0.154 versus 0.178 with
+single samples); both decode better than the 48-parcel atlas with 6-sample
+windows. Each subject's own HTFA weights decode worst (0.341): their factors are
+matched to the template by index, but the local centers lie 10.2 to 14.6 mm from
+the template centers on average (audit above), so factor ``k`` does not cover the
+same region in every subject. The splits share subjects, so the 462 accuracies
+are not independent; the minimum over splits is in ``decoding.csv``.
 
 .. image:: _static/validation/decoding.png
    :alt: Decoding accuracy per feature set for 1- and 6-sample windows, with chance

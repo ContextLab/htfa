@@ -42,8 +42,8 @@ from htfa._kernels import factors
 from htfa.tfa import TFA
 
 K = 50
-N_ITER = 10
-MAX_VOXELS = 5000
+N_ITER = 20
+MAX_VOXELS = 10000
 MAX_TRS = 84
 TRAIN, GAP = 80, 8
 BLOCK_MM = 16.0

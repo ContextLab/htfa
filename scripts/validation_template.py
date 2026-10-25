@@ -37,11 +37,11 @@ from validation_data import OUT, STATIC, adult_ids, clean, load_subject
 import htfa.htfa as htfa_mod
 from htfa._matching import match_factors
 
-K = 30
-MAX_GLOBAL_ITER = 10
-MAX_LOCAL_ITER = 3
-MAX_VOXELS = 1000
-MAX_TRS = 40
+K = 50
+MAX_GLOBAL_ITER = 15
+MAX_LOCAL_ITER = 5
+MAX_VOXELS = 5000
+MAX_TRS = 168
 SEED = 0
 
 MAP_CALLS: list[tuple] = []
