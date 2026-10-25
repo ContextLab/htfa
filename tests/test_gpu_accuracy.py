@@ -4,6 +4,7 @@ import time
 
 import numpy as np
 import pytest
+from sklearn.exceptions import ConvergenceWarning
 
 from htfa.synthetic import make_tfa_data, match_factors
 from htfa.tfa import TFA
@@ -55,3 +56,47 @@ def test_mps_fit_matches_cpu_accuracy() -> None:
     print(f"weights r = {r:.8f}; center err {device} {gpu_err:.4f}, cpu {cpu_err:.4f}")
     assert gpu_err <= cpu_err + CENTER_SLACK_MM
     assert r > WEIGHT_MIN_R
+
+
+# K=100 (the real workload's K), small enough to run in minutes while still
+# splitting the voxels into chunks on both engines (GPU: 2**23 // K**2 = 838 rows,
+# 8 chunks; CPU: 209 rows, 29 chunks). Measured on an M2 Max (power start, 10
+# iterations, not converged): MPS 12.9 s vs CPU 26.0 s, matched center error 4.1293
+# on both, centers within 3.0e-5, weights r = 1.0000000000 (10 digits). The bounds
+# leave a 30x margin on the centers.
+K100_MAX_CENTER_DIFF = 1e-3
+K100_MIN_WEIGHT_R = 0.99999
+
+
+@pytest.mark.gpu
+@pytest.mark.slow
+def test_gpu_fit_matches_cpu_at_k100() -> None:
+    device = _gpu()
+    if device is None:
+        pytest.skip("needs torch with an MPS or CUDA device")
+    X, R, truth = make_tfa_data(
+        (20, 20, 15), 200, K=100, min_separation=1.0, random_state=0
+    )
+    fits = {}
+    for backend in (device, "cpu"):
+        t0 = time.perf_counter()
+        model = TFA(
+            K=100, max_iter=10, standardize=False, init="power", backend=backend,
+            random_state=0,
+        )  # fmt: skip
+        with pytest.warns(ConvergenceWarning):
+            model.fit(X, R)
+        perm = match_factors(truth["centers"], model.centers_)
+        err = np.linalg.norm(model.centers_[perm] - truth["centers"], axis=1)
+        fits[backend] = (model.centers_[perm], model.weights_[perm], err.max())
+        print(
+            f"{backend}: {time.perf_counter() - t0:.1f} s, engine {model.engine_}, "
+            f"max center err {err.max():.4f}, cost {model.cost_:.8g}"
+        )
+    (C_g, W_g, e_g), (C_c, W_c, e_c) = fits[device], fits["cpu"]
+    diff = float(np.abs(C_g - C_c).max())
+    r = np.corrcoef(W_g.ravel(), W_c.ravel())[0, 1]
+    print(f"max |dC| {device} vs cpu {diff:.3e}; weights r {r:.10f}")
+    assert e_g <= e_c + CENTER_SLACK_MM
+    assert diff < K100_MAX_CENTER_DIFF
+    assert r > K100_MIN_WEIGHT_R

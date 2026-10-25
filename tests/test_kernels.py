@@ -772,3 +772,29 @@ def test_bounded_lm_raises_clearly_on_non_finite_values():
         bounded_lm(prob, x0, (lb, ub), "soft_l1", np.ones_like(x0))
     with pytest.raises(FloatingPointError, match="non-finite"):
         solve_centers_widths(prob, x0, (lb, ub), x_scale=np.ones_like(x0))
+
+
+@pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+def test_bounded_lm_falls_back_to_gauss_newton_on_non_finite_hessian():
+    """A width of 1e-110 makes that factor exactly 0 (exp underflow), so cost,
+    gradient and Gauss-Newton matrix are finite, but the second-order term divides
+    0 by w**3 = 0 (underflow) and is NaN. The solver must take Gauss-Newton steps
+    (scipy's cho_factor raises ValueError on the NaN Hessian) and still descend."""
+    from htfa._kernels import bounded_lm
+
+    rng = np.random.default_rng(920)
+    R = rng.uniform(0.0, 10.0, size=(60, 2))
+    C = np.array([[3.3, 4.1], [6.2, 7.7]])
+    W = rng.normal(size=(2, 7))
+    X = factors(R, C, np.array([8.0, 5.0])) @ W + 0.1 * rng.normal(size=(60, 7))
+    prob = ResidualProblem(X, W, R, NumpyEngine())
+    x0 = np.concatenate([C.ravel(), [8.0, 1e-110]])
+    cost0, g, gn, hess = prob.cost_grad_hess(x0, "soft_l1")
+    assert np.isfinite(cost0) and np.all(np.isfinite(g)) and np.all(np.isfinite(gn))
+    assert not np.all(np.isfinite(hess))
+    lb = np.array([0.0, 0.0, 0.0, 0.0, 1e-120, 1e-120])
+    ub = np.array([10.0, 10.0, 10.0, 10.0, 50.0, 50.0])
+    x, cost, status, nfev = bounded_lm(prob, x0, (lb, ub), "soft_l1", np.ones(6))
+    print(f"cost {cost0:.6f} -> {cost:.6f}, status {status}, nfev {nfev}, x {x}")
+    assert np.all(np.isfinite(x)) and cost < cost0
+    assert status in (1, 2, 3, 4)
