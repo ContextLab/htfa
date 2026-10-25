@@ -10,7 +10,7 @@ from joblib import Parallel, delayed, effective_n_jobs
 from numpy.typing import ArrayLike, NDArray
 from sklearn.base import BaseEstimator
 from sklearn.exceptions import ConvergenceWarning
-from threadpoolctl import threadpool_limits
+from threadpoolctl import threadpool_info, threadpool_limits
 
 from htfa._engines import select_engine, thread_limit
 from htfa._kernels import Prior, max_sigma
@@ -85,6 +85,14 @@ def assign_posterior(
     return centers[perm], widths[perm], centers_cov[perm], widths_var[perm]
 
 
+def _available_threads() -> int:
+    """Threads the caller allows: the lowest current BLAS/OpenMP limit (set by
+    ``OMP_NUM_THREADS``, ``OPENBLAS_NUM_THREADS``, ... or an enclosing
+    ``threadpoolctl.threadpool_limits``), else all CPUs."""
+    counts = [int(pool["num_threads"]) for pool in threadpool_info()]
+    return min(counts, default=os.cpu_count() or 1)
+
+
 def _fit_subject(
     params: dict[str, Any],
     X: Array,
@@ -131,6 +139,12 @@ class HTFA(BaseEstimator):
         for the template fits, the only ones with several candidate starts).
     n_jobs : int, optional
         Number of joblib workers for the subject fits (numpy engines only).
+    n_threads : int, optional
+        BLAS/OpenMP (and NumPy engine) threads per subject fit. ``None`` uses the
+        threads the caller allows -- the lowest limit currently in effect (from
+        ``OMP_NUM_THREADS``, ``OPENBLAS_NUM_THREADS`` and the like, or an
+        enclosing ``threadpoolctl.threadpool_limits``), all CPUs when none is
+        set -- divided among the ``n_jobs`` workers.
     random_state : int, optional
         Seed for the template subject choice and per-subject fits.
     verbose : bool
@@ -187,6 +201,7 @@ class HTFA(BaseEstimator):
         n_screen_iter: int = 0,
         backend: str = "auto",
         n_jobs: int | None = None,
+        n_threads: int | None = None,
         random_state: int | None = None,
         verbose: bool = False,
     ) -> None:
@@ -209,6 +224,7 @@ class HTFA(BaseEstimator):
         self.n_screen_iter = n_screen_iter
         self.backend = backend
         self.n_jobs = n_jobs
+        self.n_threads = n_threads
         self.random_state = random_state
         self.verbose = verbose
 
@@ -222,6 +238,17 @@ class HTFA(BaseEstimator):
         params["max_iter"] = max_iter
         params["threshold"] = self.threshold
         return params
+
+    def _subject_threads(self, n_workers: int) -> int:
+        """Threads per subject fit with ``n_workers`` concurrent fits."""
+        if self.n_threads is not None:
+            if not isinstance(self.n_threads, (int, np.integer)) or self.n_threads < 1:
+                raise ValueError(
+                    f"n_threads must be a positive integer or None, "
+                    f"got {self.n_threads!r}"
+                )
+            return int(self.n_threads)
+        return max(1, _available_threads() // n_workers)
 
     def _fit_subjects(
         self,
@@ -240,16 +267,23 @@ class HTFA(BaseEstimator):
         """
         params = self._tfa_params(max_iter)
         quiet = prior is not None
-        n, n_cpu = len(Xs), os.cpu_count() or 1
+        n = len(Xs)
+        n_workers = min(n, effective_n_jobs(self.n_jobs)) if parallel else 1
+        n_threads = self._subject_threads(n_workers)
         if not parallel:
             return [
                 _fit_subject(
-                    params, Xs[s], Rs[s], prior, starts[s], int(seeds[s]), n_cpu, quiet
+                    params,
+                    Xs[s],
+                    Rs[s],
+                    prior,
+                    starts[s],
+                    int(seeds[s]),
+                    n_threads,
+                    quiet,
                 )
                 for s in range(n)
             ]
-        n_workers = min(n, effective_n_jobs(self.n_jobs))
-        n_threads = max(1, n_cpu // n_workers)
         fits: list[TFA] = Parallel(n_jobs=n_workers, backend="loky")(
             delayed(_fit_subject)(
                 params, Xs[s], Rs[s], prior, starts[s], int(seeds[s]), n_threads, quiet
@@ -406,7 +440,10 @@ class HTFA(BaseEstimator):
             )
             C, w, C_cov, w_var = new_C, new_w, new_C_cov, new_w_var
             if self.verbose:
-                print(f"HTFA global iteration {n_iter}: scaled change {change:.6g}")
+                print(
+                    f"HTFA global iteration {n_iter}: scaled change {change:.6g}",
+                    flush=True,
+                )
             if change <= self.threshold:
                 self.converged_ = True
                 break

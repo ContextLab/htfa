@@ -216,3 +216,39 @@ def test_htfa_validation_errors() -> None:
         HTFA(K=3).fit(Xs, [Rs[0], R3])
     with pytest.raises(ValueError, match="max_global_iter must be >= 1"):
         HTFA(K=3, max_global_iter=0).fit(Xs, Rs)
+
+
+def test_subject_threads_respect_caller_limits():
+    """n_threads=None takes the caller's BLAS/OpenMP limit, never all CPUs."""
+    import os
+    import subprocess
+    import sys
+
+    from threadpoolctl import threadpool_limits
+
+    from htfa.htfa import _available_threads
+
+    with threadpool_limits(2):
+        assert _available_threads() == 2
+        assert HTFA()._subject_threads(1) == 2
+        assert HTFA()._subject_threads(4) == 1
+        assert HTFA(n_threads=3)._subject_threads(4) == 3
+    code = "from htfa.htfa import HTFA; print(HTFA()._subject_threads(1))"
+    env = os.environ | {"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1"}
+    out = subprocess.run(
+        [sys.executable, "-c", code], env=env, capture_output=True, text=True
+    )
+    print(out.stdout, out.stderr)
+    assert out.stdout.strip() == "1"
+    with pytest.raises(ValueError, match="n_threads"):
+        HTFA(n_threads=0)._subject_threads(1)
+
+
+def test_htfa_fit_runs_with_n_threads():
+    Xs, Rs, _ = make_htfa_data(2, (12, 12), 10, K=2, random_state=0)
+    kw = {"K": 2, "max_global_iter": 1, "max_local_iter": 2, "random_state": 0}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        a = HTFA(n_threads=1, **kw).fit(Xs, Rs)
+        b = HTFA(n_threads=2, **kw).fit(Xs, Rs)
+    np.testing.assert_allclose(a.global_centers_, b.global_centers_, rtol=PARALLEL_RTOL)
