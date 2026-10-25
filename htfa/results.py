@@ -515,16 +515,16 @@ class HTFAResults:
         2
         """
         D = self._dim()
-        plt = lazy_import("matplotlib.pyplot", "plot", "plotting")
         s = self.subjects[subject]
+        if D == 3 and s.affine is None:
+            raise ValueError("3D plot_reconstruction needs NIfTI input (affine)")
+        plt = lazy_import("matplotlib.pyplot", "plot", "plotting")
         orig = standardize_data(s.data, self.model.standardize)[:, sample]
         recon = self.reconstruct(subject)[:, sample]
         fig, axes = plt.subplots(1, 2, figsize=(10, 4))
         titles = ("original", "reconstruction")
         if D == 3:
             plotting = lazy_import("nilearn.plotting", "plot", "3D plotting")
-            if s.affine is None:
-                raise ValueError("3D plot_reconstruction needs NIfTI input (affine)")
             for ax, v, t in zip(axes, (orig, recon), titles, strict=True):
                 img = s.to_image(v)
                 img = type(img)(np.nan_to_num(np.asarray(img.dataobj)), img.affine)

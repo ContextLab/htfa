@@ -115,6 +115,17 @@ def test_plots_render_png(kind, dim, res2d, res2d_img, res3d, tmp_path):
     assert path.exists() and path.stat().st_size > PNG_MIN_BYTES, path.stat().st_size
 
 
+def test_plot_reconstruction_3d_without_affine_leaves_no_figure():
+    """The no-affine error is raised before a figure is created."""
+    Xs, Rs, _ = make_htfa_data(2, (6, 6, 6), n_samples=10, K=2, random_state=0)
+    res = _fit_quiet(Xs, coords=Rs, **{**OPTS, "K": 2})
+    before = plt.get_fignums()
+    with pytest.raises(ValueError, match="affine"):
+        res.plot_reconstruction(0)
+    print("open figures before/after:", before, plt.get_fignums())
+    assert plt.get_fignums() == before
+
+
 def _offsets(fig):
     """(row, column) of each scatter collection on the figure's first axes."""
     return [c.get_offsets()[:, ::-1] for c in fig.axes[0].collections]
