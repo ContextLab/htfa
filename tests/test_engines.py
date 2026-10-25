@@ -5,7 +5,6 @@ import importlib.util
 import numpy as np
 import pytest
 
-from htfa import _engines
 from htfa._engines import GPU_MIN_WORK, NumpyEngine, TorchEngine, select_engine
 
 
@@ -40,8 +39,15 @@ def test_auto_small_problem_uses_numpy():
     assert select_engine("auto", 100, 10, 5).name == "numpy"
 
 
-def test_gpu_min_work_value():
-    assert GPU_MIN_WORK == 2e8
+def test_auto_switches_to_gpu_at_gpu_min_work():
+    below = select_engine("auto", GPU_MIN_WORK - 1, 1, 1)
+    at = select_engine("auto", GPU_MIN_WORK, 1, 1)
+    print(f"GPU_MIN_WORK={GPU_MIN_WORK:.3g}: below -> {below.name}, at -> {at.name}")
+    assert below.name == "numpy"
+    if _has_gpu():
+        assert at.name in ("torch-cuda", "torch-mps")
+    else:
+        assert at.name == "numpy"
 
 
 def test_unavailable_device_raises():
@@ -83,12 +89,3 @@ def test_torch_backend_picks_best_device():
     eng = select_engine("torch", 10, 5, 2)
     best = "cuda" if "cuda" in _devices() else "mps" if "mps" in _devices() else "cpu"
     assert eng.name == f"torch-{best}"
-
-
-@pytest.mark.gpu
-def test_auto_large_problem_uses_gpu_when_available():
-    if not _has_gpu():
-        pytest.skip("no cuda or mps device")
-    eng = select_engine("auto", 10000, 1000, 100)
-    assert eng.name in ("torch-cuda", "torch-mps")
-    assert _engines.GPU_MIN_WORK <= 10000 * 1000 * 100

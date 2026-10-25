@@ -12,8 +12,12 @@ import numpy as np
 from numpy.typing import NDArray
 
 BACKENDS = ("auto", "numpy", "cpu", "torch", "cuda", "mps")
-# Minimum V*T*K for 'auto' to prefer a GPU; tuned from measurements in Task 11.
-GPU_MIN_WORK = int(2e8)
+# Minimum V*T*K for 'auto' to prefer a GPU. Measured on an M2 Max (MPS, under
+# load from other jobs; scripts/benchmark.py, 5 TFA iterations): MPS took 2.5x as
+# long as NumPy at 2e7 and 1.35x as long at 6e8, so no measured fit size reached
+# the 1.2x speedup required. A 1e10 fit did not finish one iteration in 3 h; there
+# the engine products alone ran 1.3-1.5x faster on MPS, so 1e10 is provisional.
+GPU_MIN_WORK = int(1e10)
 
 
 class Engine(Protocol):
