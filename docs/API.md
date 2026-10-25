@@ -128,6 +128,7 @@ The object returned by `htfa.fit`:
 | `dynamic_connectivity(subject=0, window=20)` | `(T - window + 1, K, K)` sliding-window connectivity |
 | `isfc(window=None)` | Inter-subject factor correlation `(K, K)`, or sliding-window with `window`; needs equal `T` across subjects |
 | `plot_nodes(subject="global")`, `plot_connectivity(subject=0)`, `plot_reconstruction(subject=0, sample=0)` | Plots (need the `plot` extra) |
+| `plot_network(subject="global", connectivity=None, **kw)`, `animate_network(out, subject="global", window=20, connectivity=None, **kw)` | BrainNet Viewer-style 3D network image / mp4 or GIF (need the `brain3d` extra; see below). Connectivity defaults to `isfc` for `"global"` and to `connectivity` / `dynamic_connectivity` for a subject |
 
 Factors are in template order for HTFA fits. Factor `k` of every subject
 corresponds to global factor `k`.
@@ -171,6 +172,66 @@ These work on any `(K, T)` weight matrices:
 - `htfa.isfc(list_of_weights, window=None)`: correlation of each subject's
   factor time courses with the mean of the others. The result is symmetrized
   and averaged over subjects in Fisher-z space.
+
+## BrainNet Viewer-style network plots
+
+`htfa.plot_network` and `htfa.animate_network` draw factor centers as gray
+spheres inside a translucent brain surface and edges with `|E| > threshold`
+as tubes, red for positive and blue for negative weights. The drawing rules
+follow BrainNet Viewer 1.43 (Xia, Wang & He, 2013, PLoS ONE 8: e68910):
+white background, mesh 0.95 gray at opacity 0.2, node radii scaled linearly
+onto 2-7 mm from the node sizes (factor widths for a fit), edge diameter
+`|E|` mm at opacity 0.7, orthographic left lateral view. Rendering is off
+screen with pyvista (the `brain3d` extra). Centers must be `(K, 3)`
+coordinates in MNI mm for the nodes to sit inside the brain surface.
+
+```python
+import htfa
+
+res = htfa.fit("path/to/folder", K=50, max_global_iter=30, random_state=0)
+img = res.plot_network(threshold=0.25, out="network.png")  # PIL image, 1600 x 1000
+res.animate_network("network.mp4", subject=0, window=20, fps=10)
+
+# arbitrary nodes and connectivity
+htfa.plot_network(centers, E, sizes=widths, view="dorsal", out="dorsal.png")
+htfa.animate_network(
+    centers, E_t, "movie.gif", captions=[f"TR {t}" for t in range(len(E_t))]
+)
+```
+
+| Argument | Default | Meaning |
+|-|-|-|
+| `nodes` | | `HTFAResults`, fitted `TFA`/`HTFA`, or `(K, 3)` centers |
+| `connectivity` | `None` | `(K, K)` for `plot_network` (`None`: nodes only), `(T, K, K)` for `animate_network` |
+| `sizes` | fit widths, else equal | Node sizes, mapped onto 2-7 mm radii |
+| `subject` | `"global"` | Which centers of a fit to draw |
+| `mesh` | `"ch2"` | `"ch2"` (Ch2 with cerebellum), `"icbm152"`, `"icbm152_smoothed"`, a `.nv` path, `(vertices, faces)`, or `None` |
+| `threshold` | 0.25 | Edges with `\|E\| > threshold` are drawn |
+| `view` | `"lateral"` | `"lateral"`/`"left"`, `"right"`, `"dorsal"`, `"ventral"`, `"anterior"`, `"posterior"` |
+| `edge_style` | `"intensity"` | `"intensity"` (diameter `\|E\|` mm, opacity 0.7) or `"flat"` (0.5 mm, opaque) |
+| `size` | `(1600, 1000)` | Image size in pixels |
+| `positive_color`, `negative_color`, `node_color`, `mesh_color`, `mesh_opacity` | red, blue, 0.502 gray, 0.95 gray, 0.2 | Colors |
+| `out` | `None` | `plot_network`: save PNG/JPEG. `animate_network`: required, `.mp4` (H.264) or `.gif` |
+| `fps`, `captions`, `frames_dir` | 10, `None`, `None` | `animate_network` only: frame rate, one caption per frame (drawn in a band above the brain), folder for per-frame PNGs |
+
+In a GIF, Pillow merges consecutive identical frames and adds up their
+durations, so the playing time is unchanged but `n_frames` can be smaller
+than `T`.
+
+The brain meshes are BrainNet Viewer's own. BrainNet Viewer is distributed
+under the GNU GPL, so htfa does not include them: on first use htfa downloads
+BrainNet Viewer 1.43 (21 MB) from NITRC, checks SHA-256 checksums, and keeps
+the three meshes in `$HTFA_DATA_DIR/brainnet`, or by default
+`~/.cache/htfa/brainnet` (`%LOCALAPPDATA%\htfa\brainnet` on Windows). Without
+network access and without a cached copy, `fetch_mesh` raises
+`ConnectionError`.
+
+`htfa.brainnet` also has readers and writers for BrainNet files
+(`read_node`/`write_node`, `read_edge`/`write_edge`, `read_nv`/`write_nv`),
+`fetch_mesh`, `node_radius`, `write_animation(images, out, fps)`,
+`image_diff(a, b)`, and two annotated layouts that keep text off the brain:
+`annotate_pair(left, right, titles, caption)` (two frames side by side under
+a header band) and `montage(images, row_labels, col_labels, title)` (a grid).
 
 ## Synthetic data
 

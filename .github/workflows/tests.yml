@@ -18,8 +18,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      # off-screen pyvista rendering (htfa.brainnet): Xvfb on Linux, Mesa on Windows
+      - uses: pyvista/setup-headless-display-action@v5
+      # BrainNet Viewer meshes are downloaded from NITRC on first use; keep them
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/htfa-data
+          key: brainnet-meshes-1.43-${{ runner.os }}
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: ruff format --check .
       - run: pytest -q
+        env:
+          HTFA_DATA_DIR: ${{ runner.temp }}/htfa-data

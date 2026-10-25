@@ -78,6 +78,7 @@ These extras are declared in `pyproject.toml`:
 | `images` | pillow, tifffile |
 | `nilearn` | nilearn |
 | `gpu` | torch |
+| `brain3d` | pyvista, imageio, imageio-ffmpeg, pillow (BrainNet Viewer-style network plots and animations, `htfa.brainnet`) |
 | `dev` | pytest, pytest-cov, ruff, mypy, build, twine, plus the optional libraries above |
 | `docs` | sphinx, furo, numpydoc, sphinx-gallery, nbsphinx, and others |
 
