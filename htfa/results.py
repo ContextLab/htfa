@@ -512,8 +512,34 @@ class HTFAResults:
             ax.set_title(t)
         return fig
 
-    def _network_subject(self, subject: Any) -> Any:
-        return 0 if subject == "global" and self.global_centers is None else subject
+    def _network_inputs(
+        self, subject: Any = "global", connectivity: Any = None, window: Any = None
+    ) -> tuple[Array, Array, Array]:
+        """Centers, node sizes and connectivity for the network wrappers.
+
+        ``"global"`` means the HTFA template (``global_centers``,
+        ``global_widths``) with `isfc`; a TFA fit has no template, so it falls
+        back to subject 0. A subject uses its own centers and widths with
+        `connectivity`. With ``window`` (animations) the defaults are
+        ``isfc(window)`` and ``dynamic_connectivity(subject, window)``.
+        A given ``connectivity`` is returned unchanged.
+        """
+        if subject == "global" and self.global_centers is None:
+            subject = 0
+        if subject == "global":
+            centers, sizes = self.global_centers, self.global_widths
+            assert centers is not None and sizes is not None
+            if connectivity is None:
+                connectivity = self.isfc(window)
+        else:
+            centers, sizes = self.centers[subject], self.widths[subject]
+            if connectivity is None:
+                connectivity = (
+                    self.connectivity(subject)
+                    if window is None
+                    else self.dynamic_connectivity(subject, window)
+                )
+        return centers, sizes, connectivity
 
     def plot_network(
         self, subject: Any = "global", connectivity: Any = None, **kwargs: Any
@@ -522,15 +548,13 @@ class HTFAResults:
 
         ``connectivity`` defaults to `isfc` for ``"global"`` (the HTFA
         template; subject 0 for a TFA fit) and to `connectivity` otherwise.
-        Node sizes are the factor widths. Other keyword arguments go to
-        `htfa.brainnet.plot_network`. Needs the ``brain3d`` extra.
+        Node sizes are the factor widths unless ``sizes`` is given. Other
+        keyword arguments go to `htfa.brainnet.plot_network`. Needs the
+        ``brain3d`` extra.
         """
-        subject = self._network_subject(subject)
-        if connectivity is None:
-            connectivity = (
-                self.isfc() if subject == "global" else self.connectivity(subject)
-            )
-        return plot_network(self, connectivity, subject=subject, **kwargs)
+        centers, sizes, conn = self._network_inputs(subject, connectivity)
+        kwargs.setdefault("sizes", sizes)
+        return plot_network(centers, conn, **kwargs)
 
     def animate_network(
         self,
@@ -547,11 +571,6 @@ class HTFAResults:
         arguments go to `htfa.brainnet.animate_network`. Needs the ``brain3d``
         extra.
         """
-        subject = self._network_subject(subject)
-        if connectivity is None:
-            connectivity = (
-                self.isfc(window)
-                if subject == "global"
-                else self.dynamic_connectivity(subject, window)
-            )
-        return animate_network(self, connectivity, out, subject=subject, **kwargs)
+        centers, sizes, conn = self._network_inputs(subject, connectivity, window)
+        kwargs.setdefault("sizes", sizes)
+        return animate_network(centers, conn, out, **kwargs)
