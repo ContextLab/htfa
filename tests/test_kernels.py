@@ -407,7 +407,8 @@ LOSS_FD_STEP = 1e-4
 LOSS_FD_RTOL = 1e-7
 # Gradient (and Hessian) vs central differences, relative to the largest entry.
 GRAD_FD_RTOL = 1e-6
-# Structured gradient vs dense J^T (rho' r): same sums, different order.
+# Structured gradient and Gauss-Newton matrix vs dense J^T (rho' r) and J^T u J:
+# same sums, different order.
 GN_RTOL = 1e-11
 # Acceptance (brief T11b): the structured solver's cost may exceed trf's by at most
 # 1e-6 relative, and its centers must match trf's within 1e-3 (unless its cost is
@@ -490,7 +491,7 @@ def test_cost_matches_residual(loss, D, use_prior):
 @pytest.mark.parametrize("use_prior", [False, True], ids=["prior=None", "prior=Prior"])
 def test_gradient_matches_finite_differences(loss, D, use_prior):
     prob, x, _ = _gn_problem(D, use_prior, 200 + D)
-    _, g, _ = prob.cost_grad_hess(x, loss)
+    _, g, _, _ = prob.cost_grad_hess(x, loss)
     g_fd = np.empty_like(x)
     for j in range(x.size):
         e = np.zeros_like(x)
@@ -506,7 +507,8 @@ def test_gradient_matches_finite_differences(loss, D, use_prior):
 def test_hessian_matches_finite_differences(loss, D):
     """Data-term Hessian = central differences of the (FD-checked) gradient, with
     scipy's EPS floor on the loss weight u = rho' + 2 r^2 rho'' in the J^T u J part
-    (it binds only for cauchy and arctan, where u < 0 for large residuals)."""
+    (it binds only for cauchy and arctan, where u < 0 for large residuals); the
+    Gauss-Newton matrix = dense J^T diag(max(u, EPS)) J."""
     from htfa._engines import EPS, loss_terms
 
     prob, x, _ = _gn_problem(D, False, 300 + D)
@@ -515,7 +517,7 @@ def test_hessian_matches_finite_differences(loss, D):
     _, rho1, rho2 = loss_terms(loss, r * r)
     u = rho1 + 2 * r * r * rho2
     floor = J.T @ ((np.maximum(u, EPS) - u)[:, None] * J)
-    _, g, H = prob.cost_grad_hess(x, loss)
+    _, g, gn, H = prob.cost_grad_hess(x, loss)
     H_fd = np.empty_like(H)
     for j in range(x.size):
         e = np.zeros_like(x)
@@ -533,6 +535,11 @@ def test_hessian_matches_finite_differences(loss, D):
     assert rel < GRAD_FD_RTOL
     np.testing.assert_allclose(g, J.T @ (rho1 * r), rtol=GN_RTOL, atol=1e-13)
     np.testing.assert_array_equal(H, H.T)
+    gn_dense = J.T @ (np.maximum(u, EPS)[:, None] * J)
+    gn_rel = np.abs(gn - gn_dense).max() / np.abs(gn_dense).max()
+    print(f"{loss} D={D}: max|GN - J^T u J| / max = {gn_rel:.3e}")
+    assert gn_rel < GN_RTOL
+    np.testing.assert_array_equal(gn, gn.T)
 
 
 @pytest.mark.parametrize("loss", ["linear", "soft_l1"])
@@ -576,16 +583,18 @@ def test_prior_hessian_terms_match_finite_differences(loss, D):
     assert np.all(np.linalg.eigvalsh(H) >= 0)
 
 
-def test_cost_grad_hess_independent_of_chunk_size():
+@pytest.mark.parametrize("loss", ["linear", "soft_l1"])
+def test_cost_grad_hess_independent_of_chunk_size(loss):
     prob, x, _ = _gn_problem(3, True, 500, V=97, T=11, K=4)
-    whole = prob.cost_grad_hess(x, "soft_l1")
-    prob.engine.chunk_elements = 3 * 16  # 3 voxels per chunk (K**2 = 16 > T)
-    chunked = prob.cost_grad_hess(x, "soft_l1")
+    whole = prob.cost_grad_hess(x, loss)
+    prob.engine.chunk_elements = 3 * 16  # 3 voxels per chunk (K**2 = A*K = 16 > T)
+    chunked = prob.cost_grad_hess(x, loss)
     assert len(prob.engine._chunks(16)) == 33
     assert chunked[0] == pytest.approx(whole[0], rel=1e-13)
     np.testing.assert_allclose(chunked[1], whole[1], rtol=1e-12, atol=1e-14)
-    np.testing.assert_allclose(chunked[2], whole[2], rtol=1e-12, atol=1e-14)
-    assert prob.cost(x, "soft_l1") == pytest.approx(whole[0], rel=1e-13)
+    for i in (2, 3):
+        np.testing.assert_allclose(chunked[i], whole[i], rtol=1e-12, atol=1e-14)
+    assert prob.cost(x, loss) == pytest.approx(whole[0], rel=1e-13)
 
 
 def _trf_and_lm(prob, x0, bnds, loss):
@@ -632,7 +641,7 @@ def test_bounded_lm_active_bounds_kkt(loss):
     x0 = np.clip(x0, lb, ub)
     scale = 1.0 / prob.column_norms(x0)
     x, cost, status, nfev = bounded_lm(prob, x0, (lb, ub), loss, scale)
-    _, g, _ = prob.cost_grad_hess(x, loss)
+    _, g, _, _ = prob.cost_grad_hess(x, loss)
     at_ub = x >= ub
     print(f"{loss}: status {status}, nfev {nfev}, at ub {at_ub.nonzero()[0]}")
     assert np.all(at_ub[nc:]) and np.all(g[nc:] < 0)

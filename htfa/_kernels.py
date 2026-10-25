@@ -283,8 +283,15 @@ class ResidualProblem:
             total += self._prior_terms(C, w, loss, derivatives=False)[0]
         return total
 
-    def cost_grad_hess(self, x: ArrayLike, loss: str) -> tuple[float, Array, Array]:
-        """Cost (as :meth:`cost`), gradient (P,) and Hessian (P, P) of the objective.
+    def cost_grad_hess(
+        self, x: ArrayLike, loss: str
+    ) -> tuple[float, Array, Array, Array]:
+        """Cost (as :meth:`cost`), gradient (P,), positive semidefinite
+        Gauss-Newton matrix (P, P) and Hessian (P, P) of the objective.
+
+        The Gauss-Newton matrix is the Hessian without the data term's
+        second-order part ``sum_i rho'_i r_i Hess(r_i)`` (the prior terms keep
+        their exact, floored Hessian, which is positive semidefinite).
 
         The data part of the Hessian is ``J^T diag(u) J + sum_i rho'_i r_i
         Hess(r_i)``, with scipy's loss weights ``u = max(rho' + 2 r**2 rho'', EPS)``
@@ -321,7 +328,6 @@ class ResidualProblem:
             S[:, i, D] = S[:, D, i] = np.sum(FM * term, axis=0)
         S[:, D, D] = np.sum(FM * d / w**3 * (d / w - 2.0), axis=0)
         k = np.arange(K)
-        H_ak[:, k, :, k] -= s * S
         # (a, k) -> position in x = [centers.ravel(), widths].
         pos = np.empty((D + 1, K), dtype=np.int64)
         pos[:D] = (k[None, :] * D) + np.arange(D)[:, None]
@@ -329,13 +335,18 @@ class ResidualProblem:
         pos = pos.ravel()
         grad = np.empty(P)
         grad[pos] = grad_ak.ravel()
-        H = np.empty((P, P))
-        H[np.ix_(pos, pos)] = H_ak.reshape(P, P)
+        gn = np.empty((P, P))
+        gn[np.ix_(pos, pos)] = H_ak.reshape(P, P)
+        H_ak[:] = 0.0
+        H_ak[:, k, :, k] = -s * S
+        second = np.empty((P, P))
+        second[np.ix_(pos, pos)] = H_ak.reshape(P, P)
         if self.prior is not None:
             c_p, g_p, H_p = self._prior_terms(C, w, loss, derivatives=True)
-            cost, grad, H = cost + c_p, grad + g_p, H + H_p
+            cost, grad, gn = cost + c_p, grad + g_p, gn + H_p
         # Exactly symmetric (the two triangles are summed in different orders).
-        return cost, grad, 0.5 * (H + H.T)
+        gn = 0.5 * (gn + gn.T)
+        return cost, grad, gn, gn + second
 
     def column_norms(self, x: ArrayLike) -> Array:
         """Exact Euclidean norms (K*(D+1),) of the Jacobian columns at ``x``.
@@ -402,16 +413,25 @@ def bounded_lm(
     lb, ub = bounds
     x = np.clip(np.asarray(x0, dtype=np.float64), lb, ub)
     max_nfev = 100 * x.size if max_nfev is None else max_nfev
-    cost, g, H = problem.cost_grad_hess(x, loss)
+    cost, g, gn, hess = problem.cost_grad_hess(x, loss)
     nfev, nu = 1, 2.0
-    lam = LM_TAU * max(float(np.max(scale**2 * np.diag(H))), EPS)
+    lam = LM_TAU * max(float(np.max(scale**2 * np.diag(gn))), EPS)
     while True:
         free = ~(((x <= lb) & (g > 0)) | ((x >= ub) & (g < 0)))
         if not free.any() or np.max(np.abs(g[free])) < GTOL:
             return x, cost, 1, nfev
         d = scale[free]
         g_s = d * g[free]
-        H_s = d[:, None] * H[np.ix_(free, free)] * d[None, :]
+        # Newton model where the Hessian is positive definite on the free
+        # variables, else the Gauss-Newton model (damping alone does not bound a
+        # step along negative curvature, which can jump to another basin).
+        H = hess
+        H_s = d[:, None] * hess[np.ix_(free, free)] * d[None, :]
+        try:
+            scipy.linalg.cho_factor(H_s)
+        except np.linalg.LinAlgError:
+            H = gn
+            H_s = d[:, None] * gn[np.ix_(free, free)] * d[None, :]
         while True:
             if nfev >= max_nfev:
                 return x, cost, 0, nfev
@@ -445,7 +465,7 @@ def bounded_lm(
                 return x, cost_new if accepted else cost, status, nfev
             if accepted:
                 break
-        cost, g, H = problem.cost_grad_hess(x, loss)
+        cost, g, gn, hess = problem.cost_grad_hess(x, loss)
         nfev += 1
 
 
