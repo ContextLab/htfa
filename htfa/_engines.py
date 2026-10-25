@@ -121,6 +121,7 @@ class Engine(Protocol):
     """What :class:`htfa._kernels.ResidualProblem` needs from an engine."""
 
     name: str
+    eps: float
 
     def set(self, X: NDArray[np.float64], W: NDArray[np.float64]) -> None: ...
 
@@ -294,6 +295,7 @@ class NumpyEngine(_ChunkedDataTerm):
 
     name = "numpy"
     _xp = np
+    eps = EPS
 
     def __init__(self, n_threads: int | None = None) -> None:
         self.n_threads = default_threads() if n_threads is None else n_threads
@@ -335,7 +337,10 @@ class TorchEngine(_ChunkedDataTerm):
 
     ``X`` and ``W`` stay resident on the device (float32 on MPS, which has no
     float64; float64 elsewhere). Each call moves in only the V x K-sized operands
-    and returns float64 NumPy; sums over voxels are accumulated in float64.
+    and returns float64 NumPy. In the structured solver's passes, sums over
+    samples and over the voxels of one chunk run in the device dtype (float32 on
+    MPS); per-voxel costs and per-chunk partial sums are accumulated in float64.
+    `eps` is the device dtype's machine epsilon.
     """
 
     def __init__(self, device: str) -> None:
@@ -347,6 +352,7 @@ class TorchEngine(_ChunkedDataTerm):
         self.device = device
         self.name = f"torch-{device}"
         self._dtype = torch.float32 if device == "mps" else torch.float64
+        self.eps = float(torch.finfo(self._dtype).eps)
         self._X = torch.empty((0, 0), dtype=self._dtype, device=device)
         self._W = torch.empty((0, 0), dtype=self._dtype, device=device)
         self._W64 = np.empty((0, 0))

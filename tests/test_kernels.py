@@ -747,3 +747,28 @@ def test_bounded_lm_matches_trf_on_tfa_data(case, use_prior, loss):
         f"(rel {(c_lm - c_trf) / c_trf:+.2e}), lm {time.perf_counter() - t0:.2f} s"
     )
     assert c_lm <= c_trf * (1 + SAME_OPTIMUM_COST_RTOL)
+
+
+def test_ftol_for_engine_precision():
+    from htfa._kernels import FTOL, ftol_for
+
+    assert NumpyEngine().eps == np.finfo(np.float64).eps
+    assert ftol_for(NumpyEngine().eps) == FTOL == 1e-8
+    assert ftol_for(float(np.finfo(np.float32).eps)) == pytest.approx(1.19e-7, rel=1e-2)
+
+
+def test_bounded_lm_raises_clearly_on_non_finite_values():
+    """A NaN in the data makes cost, gradient and Hessian NaN (scipy's
+    cho_factor would raise an unrelated ValueError): a clear error instead."""
+    from htfa._kernels import bounded_lm
+
+    rng = np.random.default_rng(910)
+    R, centers, widths, W, X = _random_problem_inputs(rng, 2, K=2)
+    X[3, 2] = np.nan
+    prob = ResidualProblem(X, W, R, NumpyEngine())
+    x0 = np.concatenate([centers.ravel(), widths])
+    lb, ub = bounds(R, 2, 0.02, 4.0)
+    with pytest.raises(FloatingPointError, match="non-finite"):
+        bounded_lm(prob, x0, (lb, ub), "soft_l1", np.ones_like(x0))
+    with pytest.raises(FloatingPointError, match="non-finite"):
+        solve_centers_widths(prob, x0, (lb, ub), x_scale=np.ones_like(x0))

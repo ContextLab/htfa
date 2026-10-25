@@ -111,6 +111,7 @@ def test_torch_engine_gauss_newton_matches_numpy(device, loss):
     ref.set(X, W)
     eng = TorchEngine(device)
     eng.set(X, W)
+    assert eng.eps == float(np.finfo(np.float32 if device == "mps" else np.float64).eps)
     eng.chunk_elements = 50 * T  # several chunks, also on the GPU
     eng.min_chunk_rows = 1
     want = ref.gauss_newton(F, G, s, loss)

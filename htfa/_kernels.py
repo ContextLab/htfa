@@ -25,6 +25,19 @@ NLSS_METHODS = ("bounded-lm", "trf", "dogbox")
 # scipy.optimize.least_squares' default tolerances, used by the structured solver
 # with the same meaning (see `bounded_lm`).
 FTOL = XTOL = GTOL = 1e-8
+
+
+def ftol_for(eps: float) -> float:
+    """``ftol`` for an engine whose arithmetic has machine epsilon ``eps``.
+
+    ``FTOL`` (1e-8) is below float32 resolution: on MPS the relative noise of a
+    cost evaluation is of order 1e-8 (float32 sums over samples, float64 over
+    voxels), so near convergence steps would be accepted or rejected on noise.
+    The tolerance is raised to ``eps`` (1.2e-7 in float32; unchanged in float64).
+    """
+    return max(FTOL, eps)
+
+
 # Initial damping relative to the largest diagonal entry of the scaled Hessian
 # (Madsen, Nielsen & Tingleff 2004, sec. 3.2).
 LM_TAU = 1e-3
@@ -376,6 +389,15 @@ class ResidualProblem:
         return np.sqrt(np.concatenate([sq_c.ravel(), sq_w]))
 
 
+def _check_finite(cost: float, g: Array, gn: Array, x: Array) -> None:
+    if not (np.isfinite(cost) and np.all(np.isfinite(g)) and np.all(np.isfinite(gn))):
+        raise FloatingPointError(
+            "bounded-lm: non-finite cost, gradient or Gauss-Newton matrix at "
+            f"x = {np.array2string(x, precision=4, threshold=12)}; check the data "
+            "and weights for NaN/Inf"
+        )
+
+
 def bounded_lm(
     problem: ResidualProblem,
     x0: Array,
@@ -397,12 +419,21 @@ def bounded_lm(
     Nielsen's rule (divided by up to 3 on success, multiplied by 2, 4, 8, ...
     on failure).
 
-    Stopping rules, with scipy's meaning and defaults: ``ftol`` (an accepted step
+    Stopping rules, with scipy's defaults: ``ftol`` (as scipy: an accepted step
     with ratio > 0.25 lowered the cost by less than ``FTOL`` times the cost
-    including ``problem.cost_offset``), ``xtol``
-    (a trial step shorter than ``XTOL * (XTOL + ||x||)``), ``gtol`` (largest
-    gradient entry over the free variables below ``GTOL``) and ``max_nfev``
-    (cost evaluations, default ``100 * P`` as for scipy's trf).
+    including ``problem.cost_offset``), ``xtol`` (as scipy: a trial step shorter
+    than ``XTOL * (XTOL + ||x||)``), ``gtol`` (the largest unscaled gradient
+    entry over the free variables is below ``GTOL``; scipy's trf instead
+    multiplies the gradient by its Coleman-Li distance-to-bound vector) and
+    ``max_nfev`` (cost evaluations, default ``100 * P`` as for scipy's trf).
+    Finite-precision engines (float32 on MPS) use ``ftol`` no smaller than
+    `ftol_for` of their dtype.
+
+    Raises
+    ------
+    FloatingPointError
+        When the cost, gradient or Gauss-Newton matrix is not finite (a
+        non-finite Hessian alone falls back to the Gauss-Newton model).
 
     Returns
     -------
@@ -419,10 +450,12 @@ def bounded_lm(
     lb, ub = bounds
     x = np.clip(np.asarray(x0, dtype=np.float64), lb, ub)
     max_nfev = 100 * x.size if max_nfev is None else max_nfev
+    ftol = ftol_for(problem.engine.eps)
     cost, g, gn, hess = problem.cost_grad_hess(x, loss)
     nfev, nu = 1, 2.0
     lam = LM_TAU * max(float(np.max(scale**2 * np.diag(gn))), EPS)
     while True:
+        _check_finite(cost, g, gn, x)
         free = ~(((x <= lb) & (g > 0)) | ((x >= ub) & (g < 0)))
         if not free.any() or np.max(np.abs(g[free])) < GTOL:
             return x, cost, 1, nfev
@@ -434,8 +467,8 @@ def bounded_lm(
         H = hess
         H_s = d[:, None] * hess[np.ix_(free, free)] * d[None, :]
         try:
-            scipy.linalg.cho_factor(H_s)
-        except np.linalg.LinAlgError:
+            scipy.linalg.cho_factor(H_s)  # ValueError if not finite
+        except (np.linalg.LinAlgError, ValueError):
             H = gn
             H_s = d[:, None] * gn[np.ix_(free, free)] * d[None, :]
         while True:
@@ -457,7 +490,7 @@ def bounded_lm(
             ratio = float(actual / predicted) if predicted > 0 else 0.0
             # Relative to the full objective: the compressed problem's cost
             # excludes cost_offset.
-            ftol_ok = actual < FTOL * (cost + problem.cost_offset) and ratio > 0.25
+            ftol_ok = actual < ftol * (cost + problem.cost_offset) and ratio > 0.25
             xtol_ok = np.linalg.norm(step) < XTOL * (XTOL + np.linalg.norm(x))
             accepted = ratio > 0
             if accepted:
