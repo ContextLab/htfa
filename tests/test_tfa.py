@@ -106,7 +106,7 @@ def test_tfa_recovers_known_parameters_2d():
 def test_tfa_subsampling_still_recovers():
     X, R, truth = make_tfa_data((20, 20, 20), 100, K=8, noise=0.1, random_state=0)
     # A fresh subsample every iteration keeps the scaled change above 1e-3, so the
-    # fit stops on the full-data objective (or a plateau) instead; it must not warn.
+    # fit stops on the objective rule (or a plateau) instead; it must not warn.
     with warnings.catch_warnings():
         warnings.simplefilter("error", ConvergenceWarning)
         c_err, w_err, r = _fit_and_score(X, R, truth, voxel_ratio=0.25, tr_ratio=0.5)
@@ -554,10 +554,10 @@ def _subsampled_2d(**kwargs):
     return model, [w for w in caught if issubclass(w.category, ConvergenceWarning)]
 
 
-def test_subsampled_fit_stops_on_full_data_objective():
+def test_subsampled_fit_stops_on_objective_rule():
     """Under subsampling the unreachable threshold gives way to the objective rule:
     the fit stops at the first iteration where the running minimum of the
-    full-data objective fell by less than a relative 1e-4 per iteration over the
+    stopping objective fell by less than a relative 1e-4 per iteration over the
     last 3 iterations, without a ConvergenceWarning."""
     from htfa.tfa import OBJECTIVE_RTOL, OBJECTIVE_WINDOW
 
@@ -589,8 +589,9 @@ def test_subsampled_fit_returns_lowest_objective_iterate():
 
 
 def test_subsampled_fit_survives_one_noisy_objective_increase():
-    """make_tfa_data (20, 20), K=4, voxel_ratio=0.5: the full-data objective rises
-    at iteration 6 while the fit is still improving; the fit must go on."""
+    """make_tfa_data (20, 20), K=4, voxel_ratio=0.5: the stopping objective (all
+    voxels and samples here) rises at iteration 6 while the fit is still
+    improving; the fit must go on."""
     X, R, _ = make_tfa_data((20, 20), 40, K=4, noise=0.1, random_state=0)
     kw = {"K": 4, "init": "ncorr", "standardize": False, "random_state": 0}
     model = TFA(voxel_ratio=0.5, **kw).fit(X, R)
