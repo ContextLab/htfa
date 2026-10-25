@@ -95,24 +95,62 @@ row, from the same start):
      - 2.5% / 14%
 
 The default ``threshold=1e-3`` is therefore out of reach, so a subsampled fit
-evaluates the full-data objective after every iteration and stops when the lowest
-objective so far has fallen by less than a relative ``1e-4`` per iteration over
-the last three iterations (``converged_reason_ == 'objective'``; no
-``ConvergenceWarning``). The running minimum and the window keep a single noisy
-step up (the full-data objective is not minimized by any one subsample) from
-stopping a fit that is still improving. On synthetic data with the same mask,
-shape and caps 3000 x 300, the one-iteration relative decrease fell from 1.5e-2
-after the first iteration to between 4.9e-5 and 1.4e-4 at iterations 12 to 15;
-applied to those recorded objectives, the rule stops at iteration 15, where the median center error was 2.20 mm (2.16
-to 2.32 mm from iteration 9 on, 2.18 mm at iteration 20). The fit also still
-stops when the scaled change has not reached a new minimum for five
-iterations (``'plateau'``).
+evaluates the objective after every iteration and stops when its lowest value so
+far has fallen by less than a relative ``1e-4`` per iteration over the last three
+iterations, after at least five iterations (``converged_reason_ ==
+'objective'``; no ``ConvergenceWarning``). It then returns the iterate with the
+lowest objective, not the last one; ``objective_history_`` records the values.
+The running minimum and the window keep a single noisy step up (the objective is
+not minimized by any one subsample) from stopping a fit that is still improving.
+The fit also still stops when the scaled change has not reached a new minimum for
+five iterations (``'plateau'``).
 
-Each evaluation of the full-data objective at that shape took 2.0 to 2.2 s with
-``nlss_loss='linear'`` and 13.6 to 17.8 s with ``'soft_l1'`` (NumPy, machine
-loaded as below), against 0.7 to 1.1 s for one subsampled iteration with caps
-3000 x 300 and the linear loss. Larger caps lower the noise floor (and the error
-of the result) more than more iterations do.
+The stopping objective is computed on one fixed random subsample per fit,
+``max(2 Vs, 6000)`` voxels (``Vs`` the per-iteration voxel count; all voxels if
+fewer) and all time points unless ``max_trs`` caps them, so that its values are
+comparable across iterations at a fraction of the full-data cost. ``cost_`` is
+still the full-data objective at the returned iterate. Measured on synthetic data
+with the real mask (69585 voxels, 1137 time points, ``K = 100``, caps 3000 x 300,
+load average about 5):
+
+.. list-table::
+   :header-rows: 1
+
+   * - loss, stopping objective
+     - stop (iteration)
+     - final full-data cost
+     - median center error
+     - one evaluation
+     - per iteration (with evaluation)
+   * - ``soft_l1``, 6000 x 300 subsample
+     - 12
+     - 13368240
+     - 2.369 mm
+     - 0.05 s
+     - 0.34 to 0.51 s (about 13% for the evaluation)
+   * - ``soft_l1``, all data
+     - 12
+     - 13368240
+     - 2.369 mm
+     - 1.73 s
+     - 2.13 to 2.91 s
+   * - ``linear``, 6000 x 300 subsample
+     - 14
+     - 16216090
+     - 2.168 mm
+     - 0.02 s
+     - 0.07 to 0.09 s
+   * - ``linear``, all data
+     - 15
+     - 16215297
+     - 2.204 mm
+     - 0.42 s
+     - 0.45 to 0.48 s
+
+The one-iteration relative decreases on the subsample differed from the
+full-data ones by at most 1.2e-4 (4e-5 from iteration 6 on); a 10000 x 300
+subsample took 0.08 s and 20000 x 300 0.16 s per evaluation. Larger caps lower
+the noise floor (and the error of the result) more than more iterations do.
 
 Other settings that change the cost of a fit
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

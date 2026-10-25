@@ -50,7 +50,7 @@ RAW_VAR_LIMIT = 10.0
 PLATEAU_PATIENCE = 5
 # With subsampling, the scaled change has a noise floor (two subsample optima differ:
 # 0.56 at caps 3000x300 and 0.31 at 10000x300 on real data, V~70k, T=1137, K=100), so
-# the fit stops when the lowest full-data objective so far has fallen by less than
+# the fit stops when the lowest objective so far has fallen by less than
 # OBJECTIVE_RTOL per iteration over the last OBJECTIVE_WINDOW iterations. The window
 # (and the running minimum) keeps one noisy upward step from stopping a fit that is
 # still improving: on make_tfa_data (20, 20), K=4, voxel_ratio=0.5 the objective rose
@@ -64,6 +64,18 @@ OBJECTIVE_WINDOW = 3
 # The objective rule never stops a fit before this many iterations; with a smaller
 # max_iter the stopping objective is not evaluated at all.
 OBJECTIVE_MIN_ITER = OBJECTIVE_WINDOW + 2
+# The stopping objective is evaluated on one fixed random subsample per fit (so that
+# its values are comparable across iterations): max(EVAL_VOXEL_FACTOR * Vs,
+# EVAL_MIN_VOXELS) voxels (at most V) and all samples unless max_trs caps them.
+# Measured on the pilot-shaped synthetic data (69585 x 1137, K=100, caps 3000x300,
+# load ~5): with 6000 x 300, soft_l1 stopped at the same iteration (12) on the same
+# iterate as with the full-data objective (one-step decreases within 1.2e-4); one
+# evaluation took 0.05 s against 1.73 s on all data and ~0.4 s per iteration (12%
+# overhead; 10000 x 300: 0.08 s; 20000 x 300: 0.16 s). Linear loss: stop at 14
+# instead of 15, final full-data cost 5e-5 higher, median center error 2.17 vs
+# 2.20 mm; 0.02 s per evaluation against ~0.06 s per iteration.
+EVAL_VOXEL_FACTOR = 2
+EVAL_MIN_VOXELS = 6000
 # Relative floor added to the K-means sample weights so that every voxel counts.
 TINY_WEIGHT = 1e-12
 
@@ -297,12 +309,14 @@ class TFA(BaseEstimator):
         30000, 300   0.31           0.85               2.5% / 14%
         ===========  =============  =================  ======================
 
-        So with subsampling the fit also stops when the lowest full-data
-        objective so far (evaluated after every iteration) has fallen by less
-        than a relative 1e-4 per iteration over the last 3 iterations, after at
-        least 5 iterations ("objective"), or when the change has not reached a
-        new minimum for 5 consecutive iterations ("plateau"); it then returns
-        the iterate with the lowest objective.
+        So with subsampling the fit also evaluates the objective after every
+        iteration, on one fixed random subsample of ``max(2 Vs, 6000)`` voxels
+        (``Vs`` the per-iteration voxel count, at most V) and all samples
+        (``max_trs`` if set), and stops when its lowest value so far has fallen
+        by less than a relative 1e-4 per iteration over the last 3 iterations,
+        after at least 5 iterations ("objective"), or when the change has not
+        reached a new minimum for 5 consecutive iterations ("plateau"); it then
+        returns the iterate with the lowest such objective.
     nlss_method : {'bounded-lm', 'trf', 'dogbox'}, default='bounded-lm'
         Center/width solver. ``'bounded-lm'`` is a bounded Levenberg-Marquardt
         method on the explicit K (D + 1)-square Gauss-Newton system, assembled
@@ -364,7 +378,7 @@ class TFA(BaseEstimator):
         Seeds the K-means initializations and the subsampling.
     verbose : bool, default=False
         Print the scaled change of every iteration (and, with subsampling, the
-        relative decrease of the full-data objective), flushed immediately.
+        relative decrease of the stopping objective), flushed immediately.
 
     Attributes
     ----------
@@ -381,10 +395,9 @@ class TFA(BaseEstimator):
         ``'max_iter'``).
     converged_reason_ : {'threshold', 'objective', 'plateau', 'max_iter'}
         Why the winning start stopped: the scaled change fell to ``threshold``,
-        the full-data objective stopped falling under subsampling (below a
+        the stopping objective stopped falling under subsampling (below a
         relative 1e-4 per iteration over 3 iterations), the change plateaued
-        under subsampling, or
-        ``max_iter`` was reached.
+        under subsampling, or ``max_iter`` was reached.
     cost_ : float
         Final objective of the winning start: ``0.5 * sum(rho(r**2))`` over the
         full-data residual ``r`` (with the prior penalties when a prior is given).
@@ -512,6 +525,11 @@ class TFA(BaseEstimator):
         W = ridge_weights(X, F, self.weight_method)
         r = ResidualProblem(X, W, R, engine, prior).residual(x)
         return 0.5 * float(np.sum(loss_terms(self.nlss_loss, r * r)[0])), W
+
+    def _eval_sizes(self, V: int, T: int, sizes: tuple[int, int]) -> tuple[int, int]:
+        """Voxels and samples of the fixed subsample for the stopping objective."""
+        Ve = min(V, max(EVAL_VOXEL_FACTOR * sizes[0], EVAL_MIN_VOXELS))
+        return Ve, T if self.max_trs is None else min(T, self.max_trs)
 
     def _iterate(
         self,
@@ -675,6 +693,17 @@ class TFA(BaseEstimator):
             starts = {"prior": (prior.centers, prior.widths)}
         else:
             starts = _initial_starts(X, R, K, names, rng, lb[-1], ub[-1])
+        Ve, Te = self._eval_sizes(V, T, sizes)
+        eval_rng = np.random.default_rng([sample_seed, 1])
+        ve = np.sort(eval_rng.choice(V, Ve, replace=False)) if Ve < V else slice(None)
+        te = np.sort(eval_rng.choice(T, Te, replace=False)) if Te < T else slice(None)
+        X_eval = X if (Ve, Te) == (V, T) else X[ve][:, te]
+        R_eval = R[ve]
+        eval_prior = (
+            None
+            if prior is None
+            else dataclasses.replace(prior, scale=0.5 * (Ve * Te) / (V * T))
+        )
         runs: dict[str, tuple[Array, int, str | None]] = {}
         loops = {}
         histories: dict[str, list[float]] = {name: [] for name in starts}
@@ -691,7 +720,7 @@ class TFA(BaseEstimator):
                 (lb, ub),
                 sizes,
                 name,
-                lambda x: self._objective(X, R, x, engine, full_prior)[0],
+                lambda x: self._objective(X_eval, R_eval, x, engine, eval_prior)[0],
                 histories[name],
             )
 

@@ -579,8 +579,9 @@ def test_subsampled_fit_stops_on_full_data_objective():
 
 def test_subsampled_fit_returns_lowest_objective_iterate():
     """The returned iterate is the argmin of the recorded objectives, not the
-    last one (here the stopping objective is the full-data one: V is small)."""
-    model, _ = _subsampled_2d()
+    last one. V = 1600 and no max_trs: the stopping objective is the full-data
+    one (see EVAL_MIN_VOXELS), so cost_ is directly comparable."""
+    model, _ = _subsampled_2d(max_trs=None, tr_ratio=0.4)
     costs = model.objective_history_
     print(f"objectives {costs}; cost_ {model.cost_}; last {costs[-1]}")
     assert model.cost_ == min(costs)
@@ -679,3 +680,16 @@ def test_objective_rule_waits_for_minimum_iterations():
         )
         short = short.fit(X, R, start=(full.centers_, full.widths_))
     assert short.objective_history_ == [] and short.n_iter_ == OBJECTIVE_MIN_ITER - 1
+
+
+def test_stopping_objective_subsample_sizes():
+    from htfa.tfa import EVAL_MIN_VOXELS, EVAL_VOXEL_FACTOR
+
+    capped = TFA(max_voxels=3000, max_trs=300)
+    assert capped._eval_sizes(69597, 1137, (3000, 300)) == (EVAL_MIN_VOXELS, 300)
+    big = TFA(max_voxels=10000)
+    assert big._eval_sizes(69597, 1137, (10000, 1137)) == (
+        EVAL_VOXEL_FACTOR * 10000,
+        1137,
+    )
+    assert TFA(voxel_ratio=0.5)._eval_sizes(1600, 100, (800, 100)) == (1600, 100)

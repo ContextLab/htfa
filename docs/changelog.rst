@@ -17,10 +17,12 @@ Added:
   ``'dogbox'`` (``least_squares`` with an analytic, matrix-free Jacobian) remain
   available. NumPy and torch (CUDA, MPS, CPU) engines and a ``backend='auto'``
   choice.
-- A stopping rule for subsampled fits: the fit stops when the lowest full-data
-  objective so far has fallen by less than a relative 1e-4 per iteration over
-  the last three iterations (``converged_reason_ == 'objective'``), since the
-  scaled change has a noise floor under subsampling (see :doc:`performance`).
+- A stopping rule for subsampled fits: the fit stops when the lowest objective
+  so far (on a fixed evaluation subsample) has fallen by less than a relative
+  1e-4 per iteration over the last three iterations, after at least five
+  (``converged_reason_ == 'objective'``), and returns the lowest-objective
+  iterate, since the scaled change has a noise floor under subsampling (see
+  :doc:`performance`).
 - Inputs: NIfTI files and folders, nibabel and nilearn images, numpy arrays and 2D
   images.
 - Factor-level static, dynamic and inter-subject connectivity, and the
