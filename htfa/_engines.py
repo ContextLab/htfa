@@ -8,6 +8,11 @@ parameter vector are handled by :class:`htfa._kernels.ResidualProblem`.
 """
 
 import importlib.util
+import os
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Protocol
 
 import numpy as np
@@ -21,9 +26,35 @@ BACKENDS = ("auto", "numpy", "cpu", "torch", "cuda", "mps")
 # the engine products alone ran 1.3-1.5x faster on MPS, so 1e10 is provisional.
 GPU_MIN_WORK = int(1e10)
 # Elements per voxel chunk (chunk rows * max(T, K**2)) in the structured solver's
-# data-term passes: bounds the (chunk, T) and (K, K, chunk) temporaries to
-# 64 MB each in float64.
-CHUNK_ELEMENTS = 2**23
+# data-term passes: bounds the (chunk, T) and (K, K, chunk) temporaries to 16 MB
+# each in float64 per NumPy thread, and to 32 MB each in float32 on a GPU (fewer,
+# larger kernels).
+CHUNK_ELEMENTS = 2**21
+GPU_CHUNK_ELEMENTS = 2**23
+_THREADS: ContextVar[int | None] = ContextVar("htfa_engine_threads", default=None)
+
+
+@contextmanager
+def thread_limit(n: int) -> Iterator[None]:
+    """Limit the threads of NumPy engines created inside the block to ``n``.
+
+    `htfa.htfa.HTFA` uses this (with ``threadpoolctl.threadpool_limits``) so that
+    parallel subject fits do not oversubscribe the CPU.
+    """
+    token = _THREADS.set(max(1, int(n)))
+    try:
+        yield
+    finally:
+        _THREADS.reset(token)
+
+
+def default_threads() -> int:
+    """Threads for a new NumPy engine: the `thread_limit` in effect, else all
+    CPUs."""
+    limit = _THREADS.get()
+    return limit if limit is not None else (os.cpu_count() or 1)
+
+
 # scipy.optimize.least_squares losses rho(z) of the squared residual z (f_scale=1).
 LOSS_NAMES = ("linear", "soft_l1", "huber", "cauchy", "arctan")
 # scipy's floor for the Gauss-Newton loss weight rho' + 2 z rho''.
@@ -99,10 +130,13 @@ class Engine(Protocol):
 
 
 class _ChunkedDataTerm:
-    """Data-term cost, gradient and Gauss-Newton matrix, in voxel chunks.
+    """Data-term cost, ``(rho' r) W^T`` and Gauss-Newton matrix, in voxel chunks.
 
     Subclasses set ``_xp`` (array namespace), ``_X`` and ``_W`` (device arrays),
-    ``_W64`` (float64 NumPy copy of ``W``) and implement ``_put``/``_get``.
+    ``_W64`` (float64 NumPy copy of ``W``) and implement ``_put``, ``_get`` and
+    ``_permute``. Chunks run on `n_threads` threads (NumPy releases the GIL in
+    its array operations); each chunk's temporaries hold about
+    ``chunk_elements`` elements.
     """
 
     _xp: Any
@@ -110,12 +144,17 @@ class _ChunkedDataTerm:
     _W: Any
     _W64: NDArray[np.float64]
     chunk_elements: int = CHUNK_ELEMENTS
+    n_threads: int = 1
 
     def _put(self, a: NDArray[np.float64]) -> Any:
         raise NotImplementedError
 
     @staticmethod
     def _get(t: Any) -> NDArray[np.float64]:
+        raise NotImplementedError
+
+    @staticmethod
+    def _permute(t: Any, dims: tuple[int, ...]) -> Any:
         raise NotImplementedError
 
     def _reset_cache(self) -> None:
@@ -125,6 +164,12 @@ class _ChunkedDataTerm:
         V = self._X.shape[0]
         step = max(1, self.chunk_elements // max(1, width))
         return [slice(i, min(i + step, V)) for i in range(0, V, step)]
+
+    def _map(self, fn: Callable[[slice], Any], slices: list[slice]) -> list[Any]:
+        if self.n_threads <= 1 or len(slices) <= 1:
+            return [fn(sl) for sl in slices]
+        with ThreadPoolExecutor(min(self.n_threads, len(slices))) as pool:
+            return list(pool.map(fn, slices))
 
     def _weight_pairs(self) -> tuple[Any, Any]:
         """``(T, K(K+1)/2)`` products ``W_kt W_lt`` (k <= l) and the (K, K) map
@@ -148,11 +193,12 @@ class _ChunkedDataTerm:
     def data_cost(self, F: NDArray[np.float64], s: float, loss: str) -> float:
         """``0.5 * sum(rho(r**2))`` for the data residual ``r = s (X - F W)``."""
         Fd = self._put(F)
-        total = 0.0
-        for sl in self._chunks(self._X.shape[1]):
+
+        def chunk(sl: slice) -> float:
             _, (rho, _, _) = self._residual_chunk(Fd, sl, s, loss)
-            total += float(np.sum(self._get(rho.sum(1))))
-        return 0.5 * total
+            return float(np.sum(self._get(rho.sum(1))))
+
+        return 0.5 * sum(self._map(chunk, self._chunks(self._X.shape[1])))
 
     def gauss_newton(
         self, F: NDArray[np.float64], G: NDArray[np.float64], s: float, loss: str
@@ -180,33 +226,51 @@ class _ChunkedDataTerm:
         H : ndarray, shape (A, K, A, K)
             ``H[a, k, b, l] = s**2 sum_v G[k, v, a] G[l, v, b] Q_v[k, l]`` with
             ``Q_v = W diag(u_v) W^T`` and scipy's loss weights
-            ``u = max(rho' + 2 r**2 rho'', EPS)`` (``u = 1`` for the linear loss,
-            so ``Q_v = W W^T`` and the pass costs O(V K^2 A^2), independent of T).
+            ``u = max(rho' + 2 r**2 rho'', EPS)``. For the linear loss ``u = 1``,
+            so ``H = (G^T G) * (W W^T)``: one O(V K^2 A^2) product, independent of
+            T. Otherwise ``Q_v`` costs one O(V T K^2 / 2) product and the
+            contraction O(V K^2 A^2).
         """
         K, T = self._W64.shape
-        A = G.shape[2]
+        V, A = self._X.shape[0], G.shape[2]
         Fd, Gd = self._put(F), self._put(G)
         linear = loss == "linear"
-        if linear:
-            Q = self._put(self._W64 @ self._W64.T)[:, :, None]
-        else:
+        if not linear:
             pairs, index = self._weight_pairs()
-        cost = 0.0
-        M = np.empty((self._X.shape[0], K))
-        acc = np.zeros((A, K, K, A))  # [a, l, k, b]
-        for sl in self._chunks(max(T, K * K)):
+
+        def chunk(sl: slice) -> tuple[float, slice, Any, Any]:
             E, (rho, rho1, rho2) = self._residual_chunk(Fd, sl, s, loss)
-            cost += float(np.sum(self._get(rho.sum(1))))
+            cost = float(np.sum(self._get(rho.sum(1))))
+            M = self._get((rho1 * E) @ self._W.T)
             Gc = Gd[:, sl, :]  # (K, B, A) = [l, v, b]
-            M[sl] = self._get((rho1 * E) @ self._W.T)
-            if not linear:
-                u = (rho1 + 2 * (E * E) * rho2).clip(min=EPS)
-                Q = (u @ pairs).T[index]  # (K, K, B) = Q_v[l, k], symmetric
+            if linear:
+                Gs = self._permute(Gc, (1, 2, 0)).reshape(-1, A * K)  # [v, (a, k)]
+                return cost, sl, M, self._get(Gs.T @ Gs)
+            u = (rho1 + 2 * (E * E) * rho2).clip(min=EPS)
+            Q = (u @ pairs).T[index]  # (K, K, B) = Q_v[l, k], symmetric
+            # acc[a][l, k, b - a] = sum_v Q_v[l, k] G[k, v, a] G[l, v, b], b >= a.
+            acc = [self._get((Q * Gc[None, :, :, a]) @ Gc[:, :, a:]) for a in range(A)]
+            return cost, sl, M, acc
+
+        width = max(T, A * K) if linear else max(T, K * K)
+        cost = 0.0
+        M = np.empty((V, K))
+        H = np.zeros((A, K, A, K))
+        for c, sl, M_c, part in self._map(chunk, self._chunks(width)):
+            cost += c
+            M[sl] = M_c
+            if linear:
+                H += part.reshape(A, K, A, K)
+            else:
+                for a in range(A):
+                    H[a, :, a:, :] += np.transpose(part[a], (1, 2, 0))
+        if linear:
+            H *= (self._W64 @ self._W64.T)[None, :, None, :]
+        else:
             for a in range(A):
-                # [l, k, v] * G[k, v, a], then sum over v against G[l, v, b].
-                acc[a] += self._get((Q * Gc[None, :, :, a]) @ Gc)
-        H = s**2 * np.transpose(acc, (0, 2, 3, 1))
-        return 0.5 * cost, M, np.ascontiguousarray(H)
+                for b in range(a + 1, A):
+                    H[b, :, a, :] = H[a, :, b, :].T
+        return 0.5 * cost, M, s**2 * H
 
 
 class NumpyEngine(_ChunkedDataTerm):
@@ -215,7 +279,8 @@ class NumpyEngine(_ChunkedDataTerm):
     name = "numpy"
     _xp = np
 
-    def __init__(self) -> None:
+    def __init__(self, n_threads: int | None = None) -> None:
+        self.n_threads = default_threads() if n_threads is None else n_threads
         self._X: NDArray[np.float64] = np.empty((0, 0))
         self._W: NDArray[np.float64] = np.empty((0, 0))
         self._W64 = self._W
@@ -227,6 +292,10 @@ class NumpyEngine(_ChunkedDataTerm):
     @staticmethod
     def _get(t: NDArray[np.float64]) -> NDArray[np.float64]:
         return t
+
+    @staticmethod
+    def _permute(t: NDArray[np.float64], dims: tuple[int, ...]) -> Any:
+        return np.transpose(t, dims)
 
     def set(self, X: NDArray[np.float64], W: NDArray[np.float64]) -> None:
         """Store data ``X`` (V, T) and weights ``W`` (K, T) as float64."""
@@ -262,6 +331,7 @@ class TorchEngine(_ChunkedDataTerm):
 
         self._torch: Any = torch
         self._xp = torch
+        self.chunk_elements = GPU_CHUNK_ELEMENTS
         self.device = device
         self.name = f"torch-{device}"
         self._dtype = torch.float32 if device == "mps" else torch.float64
@@ -272,6 +342,10 @@ class TorchEngine(_ChunkedDataTerm):
 
     def _put_index(self, index: NDArray[np.int64]) -> Any:
         return self._torch.from_numpy(index).to(self.device)
+
+    @staticmethod
+    def _permute(t: Any, dims: tuple[int, ...]) -> Any:
+        return t.permute(dims)
 
     def _put(self, a: NDArray[np.float64]) -> Any:
         t = self._torch.from_numpy(np.ascontiguousarray(a, dtype=np.float64))

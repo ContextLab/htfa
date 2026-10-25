@@ -124,3 +124,40 @@ def test_torch_engine_gauss_newton_matches_numpy(device, loss):
     r = s * (X - F @ W)
     expected_cost = 0.5 * np.sum(loss_terms(loss, r * r)[0])
     assert eng.data_cost(F, s, loss) == pytest.approx(expected_cost, rel=rtol)
+
+
+@pytest.mark.parametrize("loss", ["linear", "soft_l1"])
+def test_numpy_engine_threads_give_identical_results(loss):
+    """Chunks on several threads are summed in chunk order: bit-identical."""
+    rng = np.random.default_rng(2)
+    V, T, K, A = 500, 40, 6, 4
+    X = rng.standard_normal((V, T))
+    W = rng.standard_normal((K, T))
+    F = rng.uniform(size=(V, K))
+    G = rng.standard_normal((K, V, A))
+    results = []
+    for n in (1, 4):
+        eng = NumpyEngine(n_threads=n)
+        eng.chunk_elements = 30 * K * K  # 17 chunks
+        eng.set(X, W)
+        results.append(
+            eng.gauss_newton(F, G, 0.7, loss) + (eng.data_cost(F, 0.7, loss),)
+        )
+    print(f"{loss}: chunks {len(eng._chunks(K * K))}")
+    for one, four in zip(*results, strict=True):
+        np.testing.assert_array_equal(one, four)
+
+
+def test_thread_limit_sets_numpy_engine_threads():
+    import os
+
+    from htfa._engines import default_threads, thread_limit
+
+    assert NumpyEngine().n_threads == (os.cpu_count() or 1) == default_threads()
+    with thread_limit(2):
+        assert NumpyEngine().n_threads == 2
+        with thread_limit(0):
+            assert default_threads() == 1
+        assert select_engine("numpy", 10, 5, 2).n_threads == 2
+    assert NumpyEngine().n_threads == (os.cpu_count() or 1)
+    assert NumpyEngine(n_threads=3).n_threads == 3

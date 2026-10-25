@@ -12,7 +12,7 @@ from sklearn.base import BaseEstimator
 from sklearn.exceptions import ConvergenceWarning
 from threadpoolctl import threadpool_limits
 
-from htfa._engines import select_engine
+from htfa._engines import select_engine, thread_limit
 from htfa._kernels import Prior, max_sigma
 from htfa._matching import match_factors
 from htfa.tfa import TFA
@@ -96,7 +96,11 @@ def _fit_subject(
     quiet: bool,
 ) -> TFA:
     # Filters are set here so that they also apply inside loky workers.
-    with threadpool_limits(n_threads), warnings.catch_warnings():
+    with (
+        threadpool_limits(n_threads),
+        thread_limit(n_threads),
+        warnings.catch_warnings(),
+    ):
         if quiet:
             warnings.simplefilter("ignore", ConvergenceWarning)
         return TFA(**params, random_state=seed).fit(X, R, prior=prior, start=start)
