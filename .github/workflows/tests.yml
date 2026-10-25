@@ -46,4 +46,4 @@ jobs:
       - run: uv venv --seed .venv
       - run: uv pip install --resolution lowest-direct -e . "pytest>=8" "pillow>=10" "tifffile>=2023.1" "nilearn>=0.10.1"
       - run: uv pip list
-      - run: .venv/bin/pytest -q tests/test_kernels.py tests/test_engines.py tests/test_synthetic.py tests/test_tfa.py tests/test_htfa.py tests/test_io.py tests/test_connectivity.py
+      - run: .venv/bin/pytest -q tests/test_kernels.py tests/test_engines.py tests/test_synthetic.py tests/test_tfa.py tests/test_htfa.py tests/test_io.py tests/test_connectivity.py tests/test_fit.py tests/test_lazy.py tests/test_package.py
