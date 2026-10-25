@@ -800,14 +800,25 @@ def effective_nodes(
 def _first_hit(grid: Any, start: Array, stop: Array) -> Array | None:
     """First point within half a voxel of the mask on the segment start-stop.
 
-    Both ends are in voxel units (coordinates / spacing); the walk takes
-    quarter-voxel steps.
+    Both ends are in voxel units (coordinates / spacing). The walk takes
+    quarter-voxel steps, in chunks so that it stops at the first hit, and
+    ends where the segment leaves the mask's bounding box.
     """
+    pts = grid.data
+    lo, hi = pts.min(axis=0) - 0.5, pts.max(axis=0) + 0.5
     d = stop - start
-    n = max(1, int(np.ceil(np.linalg.norm(d) / 0.25)))
-    seg = start + np.linspace(0.0, 1.0, n + 1)[:, None] * d
-    hit = np.flatnonzero(grid.query(seg, p=np.inf)[0] <= 0.5 * (1 + 1e-9))
-    return np.asarray(seg[hit[0]]) if len(hit) else None
+    t_end = 1.0
+    for a in np.flatnonzero(d):
+        t_a = ((hi[a] if d[a] > 0 else lo[a]) - start[a]) / d[a]
+        t_end = min(t_end, max(t_a, 0.0))
+    n = max(1, int(np.ceil(t_end * np.linalg.norm(d) / 0.25)))
+    t = np.linspace(0.0, t_end, n + 1)
+    for chunk in np.array_split(t, max(1, len(t) // 256)):
+        seg = start + chunk[:, None] * d
+        hit = np.flatnonzero(grid.query(seg, p=np.inf)[0] <= 0.5 * (1 + 1e-9))
+        if len(hit):
+            return np.asarray(seg[hit[0]])
+    return None
 
 
 def _default_mask(nodes: Any, subject: Any) -> Any:

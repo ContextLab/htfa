@@ -948,6 +948,20 @@ def test_effective_nodes_gap_node_snaps_deterministically():
     np.testing.assert_array_equal(bn.effective_nodes(centers, widths, mask)[0], c_eff)
 
 
+def test_effective_nodes_far_center_walk_is_bounded():
+    """A center 100 km away: the segment walk stops at the mask's extent."""
+    import time
+
+    mask = _hemispheres(2.0, gap=10.0)
+    t0 = time.perf_counter()
+    c_eff, _, info = bn.effective_nodes([[0.0, 0.0, 1e5]], [400.0], mask)
+    took = time.perf_counter() - t0
+    print("far node", c_eff, info, f"{took:.3f} s")
+    assert info["snapped"][0] and info["ambiguous"][0]  # gap centroid, symmetric
+    assert not _outside(c_eff, mask).any()
+    assert took < 1.0  # measured 11 s when the walk ran the full 1e5 mm
+
+
 def test_effective_nodes_snaps_along_segment_into_concave_mask():
     """A centroid in a ring's hole snaps along the line back to the node."""
     g = _grid(-40, 40, 2.0)
