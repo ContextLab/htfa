@@ -43,6 +43,6 @@ jobs:
           python-version: "3.10"
       - uses: astral-sh/setup-uv@v6
       - run: uv venv .venv
-      - run: uv pip install --resolution lowest-direct -e . "pytest>=8" "pillow>=10" "tifffile>=2023.1"
+      - run: uv pip install --resolution lowest-direct -e . "pytest>=8" "pillow>=10" "tifffile>=2023.1" "nilearn>=0.10.1"
       - run: uv pip list
       - run: .venv/bin/pytest -q tests/test_kernels.py tests/test_engines.py tests/test_synthetic.py tests/test_tfa.py tests/test_htfa.py tests/test_io.py tests/test_connectivity.py
