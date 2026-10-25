@@ -129,6 +129,41 @@ These functions work on any ``(K, T)`` weight matrices.
 
 .. minigallery:: htfa.static_connectivity htfa.dynamic_connectivity htfa.isfc
 
+Network plots and time courses
+------------------------------
+
+BrainNet Viewer-style renderings of factor networks (nodes at the factor centers, edges
+where ``|connectivity|`` exceeds a threshold) and slide-style time-course plots. They
+need the ``brain3d`` extra (pyvista, imageio, imageio-ffmpeg, pillow). The brain
+meshes come from BrainNet Viewer 1.43, which is not bundled: the first call downloads
+it from NITRC, checks its SHA-256 checksums and caches the meshes.
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+
+   htfa.plot_network
+   htfa.animate_network
+   htfa.plot_timecourse
+   htfa.brainnet.read_node
+   htfa.brainnet.write_node
+   htfa.brainnet.read_edge
+   htfa.brainnet.write_edge
+   htfa.brainnet.read_nv
+   htfa.brainnet.write_nv
+   htfa.brainnet.read_brainnet_config
+   htfa.brainnet.config_style
+   htfa.brainnet.fetch_mesh
+   htfa.brainnet.load_mesh
+   htfa.brainnet.node_radius
+   htfa.brainnet.write_animation
+   htfa.brainnet.image_diff
+   htfa.brainnet.annotate_pair
+   htfa.brainnet.montage
+   htfa.timecourse.global_connectivity
+   htfa.timecourse.edge_count
+   htfa.timecourse.moving_average
+
 Synthetic data
 --------------
 

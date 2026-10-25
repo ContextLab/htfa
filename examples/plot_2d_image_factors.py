@@ -8,6 +8,13 @@ scikit-learn (:func:`sklearn.datasets.load_sample_image`, no download). It is
 converted to grayscale (ITU-R 601 luma) and block-averaged by 12 to keep the fit
 fast. Six radial basis factors are fitted and the reconstruction is drawn next to
 the image with the factor centers. The printed numbers come from the code below.
+
+A single image is one sample, and ``standardize='auto'`` leaves single-sample data
+unchanged. The fit here passes ``standardize=True``, which z-scores the pixels across
+the image. Without it, the ridge penalty on the weights (``var(X)``, as in BrainIAK)
+is in raw intensity units and the model has no intercept: on this image every factor
+then moves to the same location at the upper width bound. The second fit below shows
+that for comparison.
 """
 
 import time
@@ -28,7 +35,7 @@ gray = small @ np.array([0.299, 0.587, 0.114])  # ITU-R 601 luma
 print(f"image: {photo.shape} -> {gray.shape} after {b} x {b} block averaging")
 
 start = time.perf_counter()
-res = htfa.fit(gray, K=6, random_state=0)
+res = htfa.fit(gray, K=6, standardize=True, random_state=0)
 elapsed = time.perf_counter() - start
 
 original = res.subjects[0].to_image(res.subjects[0].data[:, 0])
@@ -37,6 +44,12 @@ r = np.corrcoef(res.subjects[0].data[:, 0], res.reconstruct(0)[:, 0])[0, 1]
 print(f"fit time: {elapsed:.1f} s, stopped because: {res.model.converged_reason_}")
 print(f"correlation between image and reconstruction: {r:.3f}")
 print("factor widths w = 2*sigma^2 (pixels^2):", np.round(res.widths[0], 1))
+
+raw = htfa.fit(gray, K=6, standardize=False, random_state=0)
+r_raw = np.corrcoef(raw.subjects[0].data[:, 0], raw.reconstruct(0)[:, 0])[0, 1]
+print(f"standardize=False: correlation {r_raw:.3f}, widths", np.round(raw.widths[0], 1))
+upper = 2 * 1.8 * float(raw.subjects[0].coords.std(0).max()) ** 2
+print("upper width bound:", round(upper, 1))
 
 fig, axes = plt.subplots(1, 3, figsize=(12, 3.6))
 axes[0].imshow(original, cmap="gray")

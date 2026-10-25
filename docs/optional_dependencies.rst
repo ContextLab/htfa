@@ -18,6 +18,8 @@ These extras are declared in ``pyproject.toml``:
      - pillow, tifffile (2D image inputs)
    * - ``nilearn``
      - nilearn (``mask='epi'``, ``mask='background'``, and fitted ``NiftiMasker`` masks)
+   * - ``brain3d``
+     - pyvista, imageio, imageio-ffmpeg, pillow (``htfa.plot_network``, ``htfa.animate_network``; the BrainNet Viewer meshes are downloaded from NITRC on first use)
    * - ``gpu``
      - torch (``backend='torch'``, ``'cuda'`` or ``'mps'``)
    * - ``dev``
