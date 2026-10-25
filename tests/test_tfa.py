@@ -612,11 +612,12 @@ def test_subsampled_convergence_warning_points_to_caps():
 
 
 def test_verbose_output_is_flushed_to_a_pipe(tmp_path):
-    """verbose lines reach a piped stdout while the process is still running."""
-    import os
-    import select
+    """verbose lines reach a piped stdout while the process is still running
+    (it then blocks on stdin, so unflushed lines would stay in its buffer)."""
+    import queue
     import subprocess
     import sys
+    import threading
 
     script = tmp_path / "verbose_fit.py"
     script.write_text(
@@ -635,23 +636,29 @@ def test_verbose_output_is_flushed_to_a_pipe(tmp_path):
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
+        text=True,
     )
-    out, deadline = b"", time.monotonic() + 300
+    lines: queue.Queue = queue.Queue()
+    # A reader thread: select() on pipes does not work on Windows.
+    reader = threading.Thread(
+        target=lambda: [lines.put(line) for line in proc.stdout], daemon=True
+    )
+    reader.start()
+    out, deadline = [], time.monotonic() + 120
     try:
-        while b"HTFA global iteration" not in out and time.monotonic() < deadline:
-            ready, _, _ = select.select([proc.stdout], [], [], 5.0)
-            if ready:
-                chunk = os.read(proc.stdout.fileno(), 65536)
-                if not chunk:
-                    break
-                out += chunk
-        print(out.decode())
+        while not any("HTFA global iteration" in o for o in out):
+            try:
+                out.append(lines.get(timeout=max(0.1, deadline - time.monotonic())))
+            except queue.Empty:
+                break
+        print("".join(out))
         assert proc.poll() is None, "the script exited before its output was read"
-        assert b"TFA kmeans iteration 1: scaled change" in out
-        assert b"HTFA global iteration 1: scaled change" in out
+        assert any("TFA kmeans iteration 1: scaled change" in o for o in out)
+        assert any("HTFA global iteration 1: scaled change" in o for o in out)
     finally:
         proc.stdin.close()
         proc.wait(60)
+        reader.join(10)
         proc.stdout.close()
 
 
