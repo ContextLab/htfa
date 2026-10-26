@@ -346,11 +346,14 @@ class TFA(BaseEstimator):
 'linear+soft_l1'}, default='linear'
         Loss of the data residual, as in ``least_squares``. ``'linear'`` is
         least squares (with ``'bounded-lm'`` the data term is compressed
-        exactly). ``'linear+soft_l1'`` fits in two stages: the linear loss with
-        ``'varpro'`` until it stops, then ``'soft_l1'`` with ``nlss_method``
-        (``'bounded-lm'`` when it is ``'auto'`` or ``'varpro'``) from there;
-        ``max_iter`` and ``n_iter_`` count both stages, and ``cost_``,
-        ``converged_reason_`` and ``objective_history_`` are the second stage's.
+        exactly). ``'linear+soft_l1'`` fits in two stages: the linear loss until
+        it stops, then ``'soft_l1'`` from there. With ``nlss_method`` ``'auto'``,
+        ``'bounded-lm'`` or ``'varpro'`` the first stage uses ``'varpro'`` and
+        the second ``'bounded-lm'``; with ``'trf'`` or ``'dogbox'`` both stages
+        use that method. ``max_iter`` and ``n_iter_`` count both stages, and
+        ``cost_``, ``converged_reason_`` and ``objective_history_`` are the
+        second stage's; when the first stage ends at ``max_iter`` the second does
+        not run and the fit ends on ``'max_iter'``.
         The robust losses (``'soft_l1'``, BrainIAK's, or the two-stage fit at
         about half its cost) are for
         heavy-tailed noise: with Student-t(3) noise added to `make_tfa_data`
@@ -634,6 +637,11 @@ class TFA(BaseEstimator):
                     yield x, n_done, reason
                 if reason == "max_iter":
                     return
+            if not last and n_done >= self.max_iter:
+                # The stage stopped on its own rule at the last allowed iteration:
+                # the next stage has none left.
+                yield x, n_done, "max_iter"
+                return
 
     def _iterate_stage(
         self,

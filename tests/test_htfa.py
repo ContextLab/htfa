@@ -501,3 +501,26 @@ def test_htfa_rejects_unknown_template_update() -> None:
     )
     with pytest.raises(ValueError, match="template_update must be one of"):
         HTFA(K=3, template_update="em").fit(Xs, Rs)
+
+
+@pytest.mark.parametrize("n_iter", [1, 2, 3])
+def test_htfa_two_stage_loss_with_few_local_iterations(n_iter) -> None:
+    """template_max_iter and max_local_iter at or below the varpro stage's own
+    stop leave the soft_l1 stage no iterations; the fit must still finish."""
+    Xs, Rs, _ = make_htfa_data(
+        n_subjects=2, grid_shape=(12, 12), n_samples=30, K=3, random_state=0
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        model = HTFA(
+            K=3,
+            nlss_loss="linear+soft_l1",
+            template_max_iter=n_iter,
+            max_local_iter=n_iter,
+            max_global_iter=2,
+            init="ncorr",
+            standardize=False,
+            random_state=0,
+        ).fit(Xs, Rs)
+    print(f"n_iter={n_iter}: {model.n_iter_} global ({model.converged_reason_})")
+    assert model.n_iter_ >= 1 and len(model.centers_) == 2

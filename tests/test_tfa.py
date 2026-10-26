@@ -597,6 +597,27 @@ def test_two_stage_loss_continues_soft_l1_from_the_varpro_fit():
     assert c_err < T3_CENTER_TOL and r > MIN_WEIGHT_R
 
 
+@pytest.mark.parametrize("max_iter", [1, 2, 3, 4])
+def test_two_stage_loss_when_the_first_stage_uses_up_max_iter(max_iter):
+    """The varpro stage stops on threshold at iteration 2 on this data; with
+    max_iter at or around that the soft_l1 stage has no iterations left, and the
+    fit must end on 'max_iter' (with a ConvergenceWarning) instead of raising."""
+    X, R, _ = _data_2d()
+    kw = dict(K=6, init="ncorr", standardize=False, random_state=0)
+    first = TFA(nlss_loss="linear", **kw).fit(X, R)
+    print(f"varpro stage alone: {first.n_iter_} ({first.converged_reason_})")
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always", ConvergenceWarning)
+        model = TFA(nlss_loss="linear+soft_l1", max_iter=max_iter, **kw).fit(X, R)
+    print(f"max_iter={max_iter}: {model.n_iter_} ({model.converged_reason_})")
+    assert first.n_iter_ == 2 and first.converged_reason_ == "threshold"
+    assert model.n_iter_ <= max_iter
+    if max_iter <= first.n_iter_:
+        assert model.n_iter_ == max_iter and model.converged_reason_ == "max_iter"
+    warned = any(w.category is ConvergenceWarning for w in record)
+    assert warned == (model.converged_reason_ == "max_iter")
+
+
 def _photo_patch():
     """A real photograph (sklearn's china.jpg), block-averaged to 22 x 33 gray."""
     from sklearn.datasets import load_sample_image
