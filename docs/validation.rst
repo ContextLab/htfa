@@ -59,8 +59,8 @@ intensity is below 10% of the median and voxels that are nearly constant over an
 quarter of the run (23,726 to 27,986 voxels per subject). Each segment of data
 used is linearly detrended and the dataset's reduced confound set (6 motion
 parameters, framewise displacement, 6 aCompCor components, CSF and white-matter
-signals) is regressed out. ``scripts/validation_data.py`` does this
-preprocessing.
+signals) is regressed out. :mod:`htfa.datasets` (used by
+``scripts/validation_data.py``) does this preprocessing.
 
 Held-out reconstruction: does inference help?
 ---------------------------------------------

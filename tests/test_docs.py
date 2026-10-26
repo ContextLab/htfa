@@ -9,6 +9,8 @@ API_RST = Path(__file__).resolve().parents[1] / "docs" / "api.rst"
 EXTRA_NAMES = [
     "htfa.io.load",
     "htfa.io.Subject",
+    "htfa.datasets.fetch_development_fmri",
+    "htfa.datasets.regress_confounds",
     "htfa.synthetic.match_factors",
     "htfa.tfa.standardize_data",
 ]
