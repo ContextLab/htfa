@@ -58,8 +58,10 @@ def test_mps_fit_matches_cpu_accuracy() -> None:
     assert r > WEIGHT_MIN_R
 
 
-# K=100 (the real workload's K), small enough to run in minutes while still
-# splitting the voxels into chunks on both engines (GPU: 2**23 // K**2 = 838 rows,
+# K=100 (the real workload's K), with the robust loss (the default when these
+# numbers were measured, and the engine's heaviest pass), small enough to run in
+# minutes while still splitting the voxels into chunks on both engines (GPU:
+# 2**23 // K**2 = 838 rows,
 # 8 chunks; CPU: 209 rows, 29 chunks). Measured on an M2 Max (power start, 10
 # iterations, not converged): MPS 12.9 s vs CPU 26.0 s, matched center error 4.1293
 # on both, centers within 3.0e-5, weights r = 1.0000000000 (10 digits). The bounds
@@ -82,7 +84,7 @@ def test_gpu_fit_matches_cpu_at_k100() -> None:
         t0 = time.perf_counter()
         model = TFA(
             K=100, max_iter=10, standardize=False, init="power", backend=backend,
-            random_state=0,
+            nlss_loss="soft_l1", nlss_method="bounded-lm", random_state=0,
         )  # fmt: skip
         with pytest.warns(ConvergenceWarning):
             model.fit(X, R)

@@ -80,6 +80,12 @@ EVAL_MIN_VOXELS = 6000
 # Two-stage loss: the linear-loss variable-projection fit ('varpro') until it
 # stops, then the soft_l1 alternation from there.
 TWO_STAGE_LOSS = "linear+soft_l1"
+# Relative cost difference below which two candidate starts count as tied (they
+# reached the same optimum; see `TFA.fit`). Measured: make_htfa_data(3, (12,)*3,
+# 40, K=4, seed 1), template subject: 'ncorr' and 'kmeans' reached the same
+# centers in a different factor order, and which cost was lower depended on the
+# BLAS thread count (serial vs n_jobs=2).
+START_TIE_RTOL = 1e-9
 # Relative floor added to the K-means sample weights so that every voxel counts.
 TINY_WEIGHT = 1e-12
 
@@ -321,8 +327,10 @@ class TFA(BaseEstimator):
         after at least 5 iterations ("objective"), or when the change has not
         reached a new minimum for 5 consecutive iterations ("plateau"); it then
         returns the iterate with the lowest such objective.
-    nlss_method : {'bounded-lm', 'varpro', 'trf', 'dogbox'}, default='bounded-lm'
-        Center/width solver. ``'bounded-lm'`` is a bounded Levenberg-Marquardt
+    nlss_method : {'auto', 'bounded-lm', 'varpro', 'trf', 'dogbox'}, default='auto'
+        Center/width solver. ``'auto'`` is ``'varpro'`` for the linear loss (and
+        the first stage of ``'linear+soft_l1'``) and ``'bounded-lm'`` for the
+        other losses. ``'bounded-lm'`` is a bounded Levenberg-Marquardt
         method on the explicit K (D + 1)-square Gauss-Newton system, assembled
         from the factor structure of the Jacobian (`htfa._kernels.bounded_lm`).
         ``'trf'`` and ``'dogbox'`` run ``scipy.optimize.least_squares`` with a
@@ -332,15 +340,23 @@ class TFA(BaseEstimator):
         same solver on the variable-projection objective, with the ridge
         weights eliminated (`htfa._kernels.ProjectedProblem`): its stationary
         points are the fixed points of the alternation, which it reaches in a
-        few outer iterations instead of hundreds on real data.
-    nlss_loss : {'soft_l1', 'linear', 'huber', 'cauchy', 'arctan', \
-'linear+soft_l1'}, default='soft_l1'
-        Robust loss, as in ``least_squares``. ``'linear'`` enables an exact QR
-        compression of the data term. ``'linear+soft_l1'`` fits in two stages:
-        the linear loss with ``'varpro'`` until it stops, then ``'soft_l1'``
-        with ``nlss_method`` (``'bounded-lm'`` when it is ``'varpro'``) from
-        there; ``max_iter`` and ``n_iter_`` count both stages, and ``cost_``,
+        few outer iterations instead of hundreds on real data (BrainIAK uses
+        ``'trf'`` with ``'soft_l1'``).
+    nlss_loss : {'linear', 'soft_l1', 'huber', 'cauchy', 'arctan', \
+'linear+soft_l1'}, default='linear'
+        Loss of the data residual, as in ``least_squares``. ``'linear'`` is
+        least squares (with ``'bounded-lm'`` the data term is compressed
+        exactly). ``'linear+soft_l1'`` fits in two stages: the linear loss with
+        ``'varpro'`` until it stops, then ``'soft_l1'`` with ``nlss_method``
+        (``'bounded-lm'`` when it is ``'auto'`` or ``'varpro'``) from there;
+        ``max_iter`` and ``n_iter_`` count both stages, and ``cost_``,
         ``converged_reason_`` and ``objective_history_`` are the second stage's.
+        The robust losses (``'soft_l1'``, BrainIAK's, or the two-stage fit at
+        about half its cost) are for
+        heavy-tailed noise: with Student-t(3) noise added to `make_tfa_data`
+        they recovered centers about 10% more closely than the linear loss
+        (docs/validation.rst), while on real fMRI the linear loss held out as
+        well (held-out R^2 0.0424 vs 0.0423) at about a tenth of the time.
     x_scale : 'jac' or ndarray, default='jac'
         Variable scaling (``least_squares``' ``x_scale``; the damping scale of
         ``'bounded-lm'``); ``'jac'`` uses the inverse Jacobian column norms at the
@@ -459,8 +475,8 @@ class TFA(BaseEstimator):
         K: int = 50,
         max_iter: int = 100,
         threshold: float = 1e-3,
-        nlss_method: str = "bounded-lm",
-        nlss_loss: str = "soft_l1",
+        nlss_method: str = "auto",
+        nlss_loss: str = "linear",
         x_scale: Any = "jac",
         weight_method: str = "rr",
         upper_ratio: float = 1.8,
@@ -525,9 +541,10 @@ class TFA(BaseEstimator):
                 f"nlss_loss must be one of {(*LOSS_NAMES, TWO_STAGE_LOSS)}, "
                 f"got {self.nlss_loss!r}"
             )
-        if self.nlss_method not in NLSS_METHODS:
+        if self.nlss_method not in ("auto", *NLSS_METHODS):
             raise ValueError(
-                f"nlss_method must be one of {NLSS_METHODS}, got {self.nlss_method!r}"
+                f"nlss_method must be one of {('auto', *NLSS_METHODS)}, "
+                f"got {self.nlss_method!r}"
             )
         if self.nlss_method == "varpro" and self.nlss_loss not in (
             "linear",
@@ -540,15 +557,14 @@ class TFA(BaseEstimator):
 
     def _stages(self) -> list[tuple[str, str]]:
         """``(loss, method)`` of each stage of the fit."""
+        method = self.nlss_method
         if self.nlss_loss == TWO_STAGE_LOSS:
-            first = (
-                "varpro"
-                if self.nlss_method in ("bounded-lm", "varpro")
-                else (self.nlss_method)
-            )
-            second = "bounded-lm" if self.nlss_method == "varpro" else self.nlss_method
+            first = "varpro" if method in ("auto", "bounded-lm", "varpro") else method
+            second = "bounded-lm" if method in ("auto", "varpro") else method
             return [("linear", first), ("soft_l1", second)]
-        return [(self.nlss_loss, self.nlss_method)]
+        if method == "auto":
+            method = "varpro" if self.nlss_loss == "linear" else "bounded-lm"
+        return [(self.nlss_loss, method)]
 
     def _objective(
         self,
@@ -836,7 +852,13 @@ class TFA(BaseEstimator):
         for name in starts:
             advance(name, screen if screen > 0 else self.max_iter)
         scores = {name: objective(name) for name in starts}
-        self.init_ = min(scores, key=lambda n: scores[n][0])
+        # Starts that reach the same optimum differ in cost by rounding only, and
+        # rounding differs with the thread count: the first start (in `init`
+        # order) within START_TIE_RTOL of the lowest cost wins.
+        lowest = min(score[0] for score in scores.values())
+        self.init_ = next(
+            n for n in starts if scores[n][0] <= lowest + START_TIE_RTOL * abs(lowest)
+        )
         if screen > 0:
             advance(self.init_, self.max_iter)
             scores[self.init_] = objective(self.init_)

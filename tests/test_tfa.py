@@ -10,16 +10,17 @@ from sklearn.exceptions import ConvergenceWarning
 
 from htfa._kernels import Prior, bounds, factors, max_sigma
 from htfa.synthetic import make_tfa_data, match_factors
-from htfa.tfa import TFA, standardize_data
+from htfa.tfa import START_TIE_RTOL, TFA, standardize_data
 
 # Recovery tolerances: about 2-3x the error measured on seed 0 (standardize=False,
-# init='auto'; synthetic data stand for already z-scored patterns).
-CENTER_TOL_3D = 0.04  # measured: 0.0164 (seed 0)
-WIDTH_RTOL_3D = 0.008  # measured: 0.00312 (seed 0)
-CENTER_TOL_2D = 0.03  # measured: 0.0120 (seed 0)
-WIDTH_RTOL_2D = 0.025  # measured: 0.0101 (seed 0)
-CENTER_TOL_SUB = 0.25  # measured: 0.0273 (seed 0; objective rule, 10 iter)
-WIDTH_RTOL_SUB = 0.025  # measured: 0.0130 (seed 0)
+# init='auto'; synthetic data stand for already z-scored patterns), set with the
+# soft_l1 alternation (the earlier default) and met by the linear varpro default.
+CENTER_TOL_3D = 0.04  # measured: 0.0164 (seed 0, soft_l1); 0.0161 (linear varpro)
+WIDTH_RTOL_3D = 0.008  # measured: 0.00312 (seed 0, soft_l1); 0.00279 (varpro)
+CENTER_TOL_2D = 0.03  # measured: 0.0120 (seed 0, soft_l1); 0.0122 (varpro)
+WIDTH_RTOL_2D = 0.025  # measured: 0.0101 (seed 0, soft_l1); 0.0109 (varpro)
+CENTER_TOL_SUB = 0.25  # measured: 0.0273 (soft_l1, 10 iter); 0.0474 (varpro, 5)
+WIDTH_RTOL_SUB = 0.025  # measured: 0.0130 (seed 0, soft_l1); 0.00565 (varpro)
 MIN_WEIGHT_R = 0.95  # brief: every matched weight row correlates at r > 0.95
 EXACT_ATOL = 1e-6  # layout/dtype invariance (controller ruling)
 IMPROVEMENT = (
@@ -178,7 +179,14 @@ def test_init_auto_records_objectives():
     model = TFA(K=2, standardize=False, random_state=0).fit(X, R)
     print("objectives", model.init_objectives_, "winner", model.init_)
     assert list(model.init_objectives_) == ["ncorr", "power", "kmeans"]
-    assert model.init_ == min(model.init_objectives_, key=model.init_objectives_.get)
+    # The first start (in init order) within START_TIE_RTOL of the lowest cost wins.
+    lowest = min(model.init_objectives_.values())
+    tied = [
+        n
+        for n, c in model.init_objectives_.items()
+        if c <= lowest + START_TIE_RTOL * abs(lowest)
+    ]
+    assert model.init_ == tied[0]
     assert model.cost_ == model.init_objectives_[model.init_]
     sub = TFA(K=2, init=["kmeans", "ncorr"], random_state=0).fit(X, R)
     assert list(sub.init_objectives_) == ["kmeans", "ncorr"]
@@ -352,7 +360,8 @@ def test_screening_keeps_the_full_multistart_winner():
             warnings.simplefilter("ignore", ConvergenceWarning)
             short = TFA(init=name, max_iter=3, **kw).fit(X, R)
         assert objective == short.cost_
-        assert objective > screened.cost_
+        # Not lower than the winner's final cost, up to a tie (the same optimum).
+        assert objective >= screened.cost_ * (1 - START_TIE_RTOL)
     with pytest.raises(ValueError, match="n_screen_iter must be an integer >= 0"):
         TFA(K=2, n_screen_iter=-1).fit(X, R)
 
@@ -671,7 +680,9 @@ def test_subsampled_fit_survives_one_noisy_objective_increase():
     improving; the fit must go on."""
     X, R, _ = make_tfa_data((20, 20), 40, K=4, noise=0.1, random_state=0)
     kw = {"K": 4, "init": "ncorr", "standardize": False, "random_state": 0}
-    model = TFA(voxel_ratio=0.5, **kw).fit(X, R)
+    # The soft_l1 alternation (the default when this case was found) shows the
+    # noisy step; the linear varpro fit stops on the objective rule earlier.
+    model = TFA(voxel_ratio=0.5, nlss_loss="soft_l1", **kw).fit(X, R)
     costs = model.objective_history_
     print(f"objectives {costs}")
     print(f"n_iter {model.n_iter_}, reason {model.converged_reason_}")

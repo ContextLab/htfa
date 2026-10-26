@@ -7,6 +7,7 @@ pins ``numpy<2.4``.
 """
 
 import time
+import warnings
 
 import numpy as np
 import pytest
@@ -174,22 +175,28 @@ def test_factors_match_brainiak() -> None:
     np.testing.assert_allclose(ours, theirs, rtol=FACTORS_RTOL)
 
 
+# Ours with the default (linear loss, varpro) and with BrainIAK's soft_l1 loss.
+LOSSES = ("linear", "soft_l1")
+
+
+@pytest.mark.parametrize("loss", LOSSES)
 @pytest.mark.parametrize("seed", [0, 1, 2])
-def test_tfa_recovery_not_worse_than_brainiak(seed: int) -> None:
+def test_tfa_recovery_not_worse_than_brainiak(seed: int, loss: str) -> None:
     X, R, truth = make_tfa_data(GRID, T, K=K, noise=0.1, random_state=seed)
     t0 = time.perf_counter()
     # BrainIAK defaults (2-point Jacobian, K-means start), on all voxels and TRs.
     theirs = brainiak_tfa.TFA(K=K, max_num_voxel=X.shape[0], max_num_tr=T).fit(X, R)
     t_theirs = time.perf_counter() - t0
     t0 = time.perf_counter()
-    ours = TFA(K=K, standardize=False, random_state=0).fit(X, R)
+    ours = TFA(K=K, nlss_loss=loss, standardize=False, random_state=0).fit(X, R)
     t_ours = time.perf_counter() - t0
     err_theirs = _max_center_error(
         theirs.get_centers(theirs.local_posterior_), truth["centers"]
     )
     err_ours = _max_center_error(ours.centers_, truth["centers"])
     print(
-        f"seed {seed}: max center error ours {err_ours:.4f} ({t_ours:.1f} s, init "
+        f"seed {seed} {loss}: max center error ours {err_ours:.4f} ({t_ours:.1f} s, "
+        f"init "
         f"{ours.init_}), BrainIAK {err_theirs:.4f} ({t_theirs:.1f} s)"
     )
     assert err_ours <= NOT_WORSE * err_theirs
@@ -200,8 +207,9 @@ def test_tfa_recovery_not_worse_than_brainiak(seed: int) -> None:
 @pytest.mark.filterwarnings(
     "ignore:Conversion of an array with ndim > 0 to a scalar:DeprecationWarning"
 )
+@pytest.mark.parametrize("loss", LOSSES)
 @pytest.mark.parametrize("seed", [0, 1, 2])
-def test_htfa_global_recovery_not_worse_than_brainiak(seed: int) -> None:
+def test_htfa_global_recovery_not_worse_than_brainiak(seed: int, loss: str) -> None:
     brainiak_htfa = _brainiak_htfa()
     Xs, Rs, truth = make_htfa_data(3, GRID, T, K=K, noise=0.1, random_state=seed)
     target = np.mean(truth["centers"], axis=0)
@@ -214,16 +222,20 @@ def test_htfa_global_recovery_not_worse_than_brainiak(seed: int) -> None:
     ).fit(Xs, Rs)
     t_theirs = time.perf_counter() - t0
     t0 = time.perf_counter()
-    # Measured (seeds 0-2): our template is still moving after the default 10 global
-    # iterations, so exactly one ConvergenceWarning is expected; recovery is checked.
-    with pytest.warns(ConvergenceWarning, match="HTFA did not converge"):
-        ours = HTFA(K=K, standardize=False, random_state=0).fit(Xs, Rs)
+    # With soft_l1 (seeds 0-2) the template was still moving after the default 10
+    # global iterations; the fit may warn once (never per subject).
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always", ConvergenceWarning)
+        ours = HTFA(K=K, nlss_loss=loss, standardize=False, random_state=0).fit(Xs, Rs)
     t_ours = time.perf_counter() - t0
+    caught = [w for w in record if w.category is ConvergenceWarning]
+    assert len(caught) == (0 if ours.converged_ else 1)
     err_theirs = _max_center_error(theirs.get_centers(theirs.global_posterior_), target)
     err_ours = _max_center_error(ours.global_centers_, target)
     print(
-        f"seed {seed}: max global center error ours {err_ours:.4f} ({t_ours:.1f} s, "
-        f"{ours.n_iter_} global iter), BrainIAK {err_theirs:.4f} ({t_theirs:.1f} s)"
+        f"seed {seed} {loss}: max global center error ours {err_ours:.4f} "
+        f"({t_ours:.1f} s, {ours.n_iter_} global iter, {ours.converged_reason_}), "
+        f"BrainIAK {err_theirs:.4f} ({t_theirs:.1f} s)"
     )
     assert err_ours <= NOT_WORSE * err_theirs
     assert err_ours < MAX_CENTER_ERR

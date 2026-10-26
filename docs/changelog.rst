@@ -11,12 +11,32 @@ Added:
 
 - :class:`htfa.TFA` and :class:`htfa.HTFA` estimators, and :func:`htfa.fit`.
 - A bounded Levenberg-Marquardt solver for the centers and widths
-  (``nlss_method='bounded-lm'``, the default), built on the factor structure of
+  (``nlss_method='bounded-lm'``), built on the factor structure of
   the Jacobian: 6 to 220 times faster per iteration (NumPy) than scipy's
   ``least_squares`` on the benchmarks, at the same optimum. ``'trf'`` and
   ``'dogbox'`` (``least_squares`` with an analytic, matrix-free Jacobian) remain
   available. NumPy and torch (CUDA, MPS, CPU) engines and a ``backend='auto'``
   choice.
+- Variable projection (``nlss_method='varpro'``): the same solver on the
+  linear-loss objective with the ridge weights eliminated, whose stationary
+  points are the fixed points of the weights/centers alternation. On real fMRI
+  it converges in a few outer iterations where the alternation ran hundreds.
+- Defaults changed (user decision, 2026-10-26): ``nlss_loss='linear'`` (was
+  ``'soft_l1'``, BrainIAK's) and ``nlss_method='auto'``, which is ``'varpro'``
+  for the linear loss and ``'bounded-lm'`` for the robust losses. On the
+  held-out reconstruction of :doc:`validation` (12 adults, K = 50, all voxels)
+  the linear varpro fit scored a mean R² of 0.0424 against 0.0423 for
+  ``'soft_l1'``, in 38 s instead of 392 s per subject. ``'soft_l1'`` and the
+  two-stage ``nlss_loss='linear+soft_l1'`` (the linear fit, then ``soft_l1``
+  from it) remain for heavy-tailed noise, where they recover synthetic centers
+  about 10% more closely.
+- HTFA: a global stopping rule that also stops on a plateau of the template
+  change or on a stalled summed local objective (``converged_reason_``), and
+  ``template_update='fixed'`` and ``'empirical'`` next to BrainIAK's update
+  (the default) (see :doc:`validation`).
+- Of several candidate starts that reach the same optimum (costs within a
+  relative 1e-9), the first in ``init`` order wins, so that the choice does not
+  depend on the thread count.
 - A stopping rule for subsampled fits: the fit stops when the lowest objective
   so far (on a fixed evaluation subsample) has fallen by less than a relative
   1e-4 per iteration over the last three iterations, after at least five
