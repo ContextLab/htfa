@@ -91,6 +91,37 @@ def test_factors_match_bruteforce(D):
     assert err < FACTOR_ATOL
 
 
+@pytest.mark.parametrize("D", [2, 3])
+def test_factor_derivatives_bitwise_equal_to_their_formulas(D):
+    """E, F and G equal the formulas of their docstring evaluated directly (from
+    the strided view of R), bit for bit."""
+    from htfa._kernels import factor_derivatives
+
+    rng = np.random.default_rng(D)
+    R = rng.uniform(-50.0, 50.0, size=(500, D))
+    C = rng.uniform(-40.0, 40.0, size=(6, D))
+    w = rng.uniform(50.0, 500.0, size=6)
+    E, F, G = factor_derivatives(R, C, w)
+    # einsum's rounding depends on the strides of its operands: the reference
+    # runs on the same (K, D + 2, V) layout.
+    ref = np.empty_like(E)
+    delta = ref[:, :D]
+    np.subtract(R.T[None, :, :], C[:, :, None], out=delta)
+    d = np.einsum("kjv,kjv->kv", delta, delta, out=ref[:, D])
+    F_ref = np.exp(-d / w[:, None])
+    Fw = F_ref / w[:, None]
+    n_diff = [
+        int(np.sum(E[:, :D] != delta)),
+        int(np.sum(E[:, D] != d)),
+        int(np.sum(E[:, D + 1] != 1.0)),
+        int(np.sum(F != F_ref)),
+        int(np.sum(G[:, :D] != 2.0 * Fw[:, None, :] * delta)),
+        int(np.sum(G[:, D] != Fw * (d / w[:, None]))),
+    ]
+    print(f"D={D}: entries differing (delta, d, ones, F, G_c, G_w): {n_diff}")
+    assert n_diff == [0] * 6
+
+
 def test_sq_distances_no_cancellation():
     base = 1.0e6
     R = base + np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 3.0, 1.0]])

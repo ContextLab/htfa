@@ -407,7 +407,9 @@ def factor_derivatives(R: Array, C: Array, w: Array) -> tuple[Array, Array, Arra
     K, D = C.shape
     V = R.shape[0]
     E = np.empty((K, D + 2, V))
-    np.subtract(R.T[None, :, :], C[:, :, None], out=E[:, :D])
+    # From a contiguous copy of R.T: the subtraction from the strided view of R
+    # took 13 ms of the 18 ms (K=100, V=25k); the values are the same.
+    np.subtract(np.ascontiguousarray(R.T)[None], C[:, :, None], out=E[:, :D])
     np.einsum("kjv,kjv->kv", E[:, :D], E[:, :D], out=E[:, D])
     E[:, D + 1] = 1.0
     d = E[:, D]
