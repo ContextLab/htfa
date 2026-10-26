@@ -45,8 +45,9 @@ __all__ = [
 TUTORIAL_DATA_URL = (
     "https://github.com/ContextLab/htfa/releases/download/tutorial-data-v1/"
 )
-# Saved HTFA fits of the tutorials: name -> (file in the tutorial-data-v1
-# pre-release of the htfa repository, SHA-256).
+# Saved results of the tutorials (HTFA fits; tutorial 09's embeddings and
+# permutation nulls): name -> (file in the tutorial-data-v1 pre-release of the
+# htfa repository, SHA-256).
 TUTORIAL_FITS = {
     "mitchell2008_K100": (
         "htfa_mitchell2008_K100.npz",
@@ -59,6 +60,18 @@ TUTORIAL_FITS = {
     "development_fmri_6adults_K30": (
         "htfa_development_fmri_6adults_K30.npz",
         "48d0cdda811a515fad809b2b667f29d470cf5c2c19c53a9c7bc29495ee4ba829",
+    ),
+    "mitchell2008_embeddings": (
+        "htfa_mitchell2008_embeddings_Qwen3-Embedding-0.6B.npz",
+        "0f61b70541d0e5c3cb428fb9b81f1cb98df2a835bb76cbd7c76d9f13ce6b2e96",
+    ),
+    "mitchell2008_null_20": (
+        "htfa_mitchell2008_null_20.npz",
+        "69a937cefa24806ac16b842564285434e43869485ce5cf5d0f24e4d90f8e7b05",
+    ),
+    "mitchell2008_null_100": (
+        "htfa_mitchell2008_null_100.npz",
+        "c756356412a1f4b85eaa6d4c93b00901e41dc0b5b415f5fefd95c4d2c526f337",
     ),
 }
 
@@ -339,20 +352,22 @@ def fetch_development_fmri(
 def fetch_tutorial_fit(
     name: str, cache_dir: str | os.PathLike | None = None
 ) -> dict[str, Array]:
-    """A saved HTFA fit of one of the tutorials, downloaded on first use.
+    """A saved result of one of the tutorials, downloaded on first use.
 
-    The fits are files of the ``tutorial-data-v1`` pre-release of the htfa
+    The results (HTFA fits, and tutorial 09's word embeddings and permutation
+    nulls) are files of the ``tutorial-data-v1`` pre-release of the htfa
     repository (see ``htfa.datasets.TUTORIAL_FITS``). The file is downloaded
     once, its SHA-256 is checked before it is loaded, and it is loaded with
-    ``allow_pickle=False``.
-    Each file records how it was made: ``settings``, ``htfa_commit``,
-    ``htfa_version``, ``fit_seconds`` and the fitted data. A fit may be
-    regenerated when htfa's fitting code changes.
+    ``allow_pickle=False``. Each file records how it was made (for a fit:
+    ``settings``, ``htfa_commit``, ``htfa_version``, ``fit_seconds`` and the
+    fitted data). A fit may be regenerated when htfa's fitting code changes.
 
     Parameters
     ----------
     name : str
-        A key of ``TUTORIAL_FITS``: ``"mitchell2008_K100"`` (tutorial 09),
+        A key of ``TUTORIAL_FITS``: ``"mitchell2008_K100"``,
+        ``"mitchell2008_embeddings"``, ``"mitchell2008_null_20"`` and
+        ``"mitchell2008_null_100"`` (tutorial 09),
         ``"development_fmri_12adults_K50"`` (tutorial 10) or
         ``"development_fmri_6adults_K30"`` (tutorial 11).
     cache_dir : path, optional

@@ -1,5 +1,6 @@
 """Tests for htfa.datasets (nilearn's development_fmri, preprocessed for HTFA)."""
 
+import hashlib
 import re
 import time
 
@@ -229,3 +230,25 @@ def test_fetch_tutorial_fit_downloads_verifies_and_caches(tmp_path, monkeypatch)
     again = datasets.fetch_tutorial_fit(name)  # from the cache
     assert path.stat().st_mtime_ns == mtime
     np.testing.assert_array_equal(again["weights"], fit["weights"])
+
+
+@pytest.mark.network
+@pytest.mark.parametrize("name", sorted(datasets.TUTORIAL_FITS))
+def test_every_registered_tutorial_file_downloads_and_matches(name, tmp_path):
+    t0 = time.perf_counter()
+    data = datasets.fetch_tutorial_fit(name, cache_dir=tmp_path)
+    print(name, f"{time.perf_counter() - t0:.1f} s", sorted(data))
+    if name.startswith("mitchell2008_null_"):
+        n = int(name.rsplit("_", 1)[1])
+        assert data["null"].shape == (n, 7)
+        assert int(data["n_permutations"]) == n
+        np.testing.assert_array_equal(data["seeds"], 1000 + np.arange(n))
+        assert str(data["fit_sha256"]) == datasets.TUTORIAL_FITS["mitchell2008_K100"][1]
+        E = datasets.fetch_tutorial_fit("mitchell2008_embeddings", cache_dir=tmp_path)
+        digest = hashlib.sha256(E["E"].tobytes()).hexdigest()
+        assert str(data["embeddings_sha256_of_E"]) == digest
+    elif name == "mitchell2008_embeddings":
+        assert data["E"].shape == (60, 1024) and data["vocab"].shape == (60,)
+    else:
+        assert data["weights"].ndim == 3 and data["global_centers"].ndim == 2
+        assert len(str(data["htfa_commit"])) == 40
