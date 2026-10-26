@@ -40,6 +40,8 @@ dependencies = [
 plot = ["matplotlib>=3.7", "nilearn>=0.10.1"]
 images = ["pillow>=10", "tifffile>=2023.1"]
 nilearn = ["nilearn>=0.10.1"]
+# extra packages that the word-decoding tutorial (09) needs to re-execute
+tutorials = ["hypertools>=1.1", "sentence-transformers>=3"]
 gpu = ["torch>=2.2"]
 brain3d = ["pyvista>=0.43", "imageio>=2.31", "imageio-ffmpeg>=0.4.9", "pillow>=10.1"]
 dev = [
@@ -69,8 +71,6 @@ docs = [
   "nilearn>=0.10.1",
   "pillow>=10",
   "tifffile>=2023.1",
-  "hypertools>=1.1",
-  "sentence-transformers>=3",
 ]
 
 [project.urls]

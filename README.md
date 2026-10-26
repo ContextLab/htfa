@@ -83,6 +83,7 @@ make install
 | `nilearn` | nilearn |
 | `gpu` | torch |
 | `brain3d` | pyvista, imageio, imageio-ffmpeg, pillow (BrainNet Viewer-style network plots and animations, `htfa.brainnet`) |
+| `tutorials` | hypertools, sentence-transformers (only to re-execute the word-decoding tutorial) |
 | `dev` | pytest, pytest-cov, ruff, mypy, build, twine, plus the optional libraries above |
 | `docs` | sphinx, furo, numpydoc, sphinx-gallery, nbsphinx, and others |
 

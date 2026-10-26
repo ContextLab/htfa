@@ -20,6 +20,8 @@ These extras are declared in ``pyproject.toml``:
      - nilearn (``mask='epi'``, ``mask='background'``, and fitted ``NiftiMasker`` masks)
    * - ``brain3d``
      - pyvista, imageio, imageio-ffmpeg, pillow (``htfa.plot_network``, ``htfa.animate_network``; the BrainNet Viewer meshes are downloaded from NITRC on first use)
+   * - ``tutorials``
+     - hypertools, sentence-transformers (only to re-execute the word-decoding tutorial)
    * - ``gpu``
      - torch (``backend='torch'``, ``'cuda'`` or ``'mps'``)
    * - ``dev``
