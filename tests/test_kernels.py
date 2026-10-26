@@ -900,3 +900,57 @@ def test_projected_solve_is_a_fixed_point_of_the_alternation():
     assert step < 5e-5  # measured 1.1e-5 (ftol-limited; grid units, extent 30)
     assert cost <= alt_cost * (1 + 1e-10)
     assert np.abs(xa - x).max() < 1e-4  # measured 2.5e-5
+
+
+class _CountingEngine(NumpyEngine):
+    """A NumPy engine that counts how often the data are sent."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.n_set = 0
+
+    def set(self, X, W):
+        self.n_set += 1
+        super().set(X, W)
+
+
+def test_projected_cost_matches_cost_grad_hess_and_sends_data_once():
+    """cost and cost_grad_hess evaluate phi the same way (one engine residual),
+    also where the OLS gram matrix is nearly singular, and the data go to the
+    engine once per problem."""
+    for method, scale in (("rr", 1.1), ("ols", 1.1), ("ols", 1e-6)):
+        prob, x, *_ = _projected_problem(3, False, 600, method)
+        x = x.copy()
+        x[prob.K * prob.D] *= scale  # 1e-6: factor 0 nearly vanishes
+        engine = _CountingEngine()
+        prob = type(prob)(prob.X, prob.R, prob.K, engine, None, method)
+        c1, c2 = prob.cost(x), prob.cost_grad_hess(x)[0]
+        prob.column_norms(x)
+        print(f"{method} x{scale}: cost {c1:.15g} vs {c2:.15g}, sets {engine.n_set}")
+        assert c1 == pytest.approx(c2, rel=1e-13)
+        assert engine.n_set == 1
+
+
+def test_projected_ols_with_a_vanishing_factor_uses_the_pseudo_inverse():
+    """With 'ols' and a factor that is 0 at every voxel, F^T F is singular: the
+    objective is that of the minimum-norm least-squares weights, it is finite
+    with finite derivatives, and the solver runs through it."""
+    from htfa._kernels import bounded_lm
+
+    prob, x, X, R, _ = _projected_problem(2, False, 700, "ols")
+    K, D = prob.K, prob.D
+    x = x.copy()
+    x[:D] = R.max(axis=0) + 1e3  # factor 0 far outside the grid: F[:, 0] == 0
+    F = factors(R, x[: K * D].reshape(K, D), x[K * D :])
+    assert np.all(F[:, 0] == 0)
+    W = np.linalg.lstsq(F, X, rcond=None)[0]
+    expected = 0.5 * prob.s**2 * np.sum((X - F @ W) ** 2)
+    cost, g, gn, H = prob.cost_grad_hess(x)
+    print(f"cost {prob.cost(x):.12g} (cgh {cost:.12g}), lstsq {expected:.12g}")
+    assert prob.cost(x) == pytest.approx(expected, rel=1e-10)
+    assert all(np.all(np.isfinite(a)) for a in (g, gn, H))
+    lb = np.concatenate([np.full(K * D, -1e4), np.full(K, 0.1)])
+    ub = np.concatenate([np.full(K * D, 1e4), np.full(K, 1e3)])
+    x_new, c_new, status, _ = bounded_lm(prob, x, (lb, ub), "linear", np.ones(x.size))
+    print(f"solved: cost {c_new:.12g}, status {status}")
+    assert np.isfinite(c_new) and c_new <= expected

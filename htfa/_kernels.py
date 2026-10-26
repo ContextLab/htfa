@@ -139,6 +139,9 @@ class ResidualProblem:
     ``sqrt(scale * dc^T Sigma^-1 dc)`` and the K signed width residuals
     ``sqrt(scale / var) * (w - prior.widths)``.
 
+    ``data_on_engine=True`` sends only ``W`` to the engine, whose data must
+    already be ``X`` (`ProjectedProblem` sets it once per solve).
+
     With ``compress=True`` (exact only for a linear loss) ``(X, W)`` is replaced by
     ``(X Q, Rq^T)`` where ``W^T = Q Rq`` is the thin QR, and ``cost_offset`` holds
     ``0.5 s^2 ||X (I - Q Q^T)||_F^2`` so that costs match the uncompressed problem.
@@ -152,7 +155,10 @@ class ResidualProblem:
         engine: Engine,
         prior: Prior | None = None,
         compress: bool = False,
+        data_on_engine: bool = False,
     ) -> None:
+        if compress and data_on_engine:
+            raise ValueError("compress needs the data sent to the engine")
         X = np.asarray(X, dtype=np.float64)
         W = np.asarray(W, dtype=np.float64)
         self.R = np.ascontiguousarray(R, dtype=np.float64)
@@ -167,7 +173,10 @@ class ResidualProblem:
             self.cost_offset = 0.5 * self.s**2 * float(np.sum((X - XQ @ Q.T) ** 2))
             X, W = XQ, Rq.T
         self.engine = engine
-        self.engine.set(X, W)
+        if data_on_engine:
+            self.engine.set_weights(W)
+        else:
+            self.engine.set(X, W)
         self.n_data = X.size
         self._w_sq_norms = np.sum(W * W, axis=1)
         self.prior = prior
@@ -454,20 +463,34 @@ class ProjectedProblem:
         self.weight_method = weight_method
         std = float(np.std(self.X))
         self.s = 1.0 / (np.sqrt(2.0) * std) if std > 0 else 1.0
-        self.sq_norm = float(np.sum(self.X * self.X))
         self.cost_offset = 0.0
         self.n_params = K * (self.D + 1)
         self._prior_only: ResidualProblem | None = None
+        # The data go to the engine once; every evaluation sends new weights.
+        self.engine.set(self.X, np.zeros((K, self.X.shape[1])))
 
     def _unpack(self, x: ArrayLike) -> tuple[Array, Array]:
         x = np.asarray(x, dtype=np.float64).ravel()
         n = self.K * self.D
         return x[:n].reshape(self.K, self.D), x[n:]
 
+    def _weights(self, F: Array) -> tuple[Array, Array]:
+        """Weights (K, T) minimizing ``||X - F W||**2 + beta ||W||**2`` and the
+        inverse (K, K) of ``F^T F + beta I``; a singular matrix (``'ols'`` with a
+        vanishing or repeated factor) takes the pseudo-inverse, whose weights are
+        the minimum-norm minimizer."""
+        gram = F.T @ F + self.beta * np.eye(self.K)
+        try:
+            inv = scipy.linalg.cho_solve(scipy.linalg.cho_factor(gram), np.eye(self.K))
+        except np.linalg.LinAlgError:
+            inv = scipy.linalg.pinvh(gram)
+        inv = 0.5 * (inv + inv.T)
+        return inv @ (F.T @ self.X), inv
+
     def weights(self, x: ArrayLike) -> Array:
-        """Ridge weights (K, T) at ``x``."""
+        """Ridge weights (K, T) at ``x`` (see `_weights`)."""
         C, w = self._unpack(x)
-        return ridge_weights(self.X, factors(self.R, C, w), self.weight_method)
+        return self._weights(factors(self.R, C, w))[0]
 
     def _prior_cost(self, C: Array, w: Array) -> float:
         if self.prior is None:
@@ -484,22 +507,23 @@ class ProjectedProblem:
         return self._prior_only._prior_terms(C, w, "linear", derivatives=False)[0]
 
     def cost(self, x: ArrayLike, loss: str = "linear") -> float:
-        """``phi(x)``, using ``||X - F W||**2 + beta ||W||**2 = ||X||**2 -
-        <F^T X, W>`` at the ridge solution."""
+        """``phi(x)``, from the data residual ``X - F W`` on the engine (as in
+        `cost_grad_hess`, so that the solver compares like with like)."""
         C, w = self._unpack(x)
         F = factors(self.R, C, w)
-        FtX = F.T @ self.X
-        gram = F.T @ F + self.beta * np.eye(self.K)
-        W = scipy.linalg.solve(gram, FtX, assume_a="pos")
-        data = 0.5 * self.s**2 * (self.sq_norm - float(np.sum(FtX * W)))
-        return data + self._prior_cost(C, w)
+        W, _ = self._weights(F)
+        self.engine.set_weights(W)
+        data = self.engine.data_cost(F, self.s, "linear")
+        ridge = 0.5 * self.s**2 * self.beta * float(np.sum(W * W))
+        return data + ridge + self._prior_cost(C, w)
 
     def column_norms(self, x: ArrayLike) -> Array:
         """Fixed-weight Jacobian column norms at ``x`` (for ``x_scale='jac'``)."""
-        W = self.weights(x)
-        return ResidualProblem(self.X, W, self.R, self.engine, self.prior).column_norms(
-            x
-        )
+        inner = ResidualProblem(
+            self.X, self.weights(x), self.R, self.engine, self.prior,
+            data_on_engine=True,
+        )  # fmt: skip
+        return inner.column_norms(x)
 
     def cost_grad_hess(
         self, x: ArrayLike, loss: str = "linear"
@@ -512,21 +536,21 @@ class ProjectedProblem:
         A, P, s2 = D + 1, self.n_params, self.s**2
         derivatives = factor_derivatives(self.R, C, w)
         _, F, G = derivatives
-        W = ridge_weights(self.X, F.T, self.weight_method)
-        inner = ResidualProblem(self.X, W, self.R, self.engine, self.prior)
+        W, Mi = self._weights(F.T)
+        inner = ResidualProblem(
+            self.X, W, self.R, self.engine, self.prior, data_on_engine=True
+        )
         cost, grad, gn, hess = inner.cost_grad_hess(x, "linear", derivatives)
         cost += 0.5 * s2 * self.beta * float(np.sum(W * W))
         G2 = G.reshape(K * A, -1)  # [(k, a), v]
         P2 = F @ G2.T  # (K, KA): P2[l, (k, a)] = sum_v F[l, v] G[k, a, v]
         Bt = G2 @ self.X - P2.T @ W  # (KA, T): G_ka^T (X - F W)
-        gram = F @ F.T + self.beta * np.eye(K)
-        Y = scipy.linalg.solve(gram, P2, assume_a="pos")  # M^-1 P2
+        Y = Mi @ P2  # M^-1 P2
         WW = W @ W.T
         rows = np.repeat(np.arange(K), A)  # factor k of each (k, a)
         term1 = WW[np.ix_(rows, rows)] * (P2.T @ Y)
         Z = (W @ Bt.T)[rows]  # Z[(k, a), (k', b)] = W_k . Bt_k'b
         term2 = Z * Y[rows].T  # times (M^-1 P_ka)[k']
-        Mi = np.linalg.inv(gram)
         term4 = Mi[np.ix_(rows, rows)] * (Bt @ Bt.T)
         pos = param_positions(K, D)
         g1 = np.empty((P, P))

@@ -133,6 +133,8 @@ class Engine(Protocol):
 
     def set(self, X: NDArray[np.float64], W: NDArray[np.float64]) -> None: ...
 
+    def set_weights(self, W: NDArray[np.float64]) -> None: ...
+
     def residual(self, F: NDArray[np.float64]) -> NDArray[np.float64]: ...
 
     def times_w(self, A: NDArray[np.float64]) -> NDArray[np.float64]: ...
@@ -326,6 +328,10 @@ class NumpyEngine(_ChunkedDataTerm):
     def set(self, X: NDArray[np.float64], W: NDArray[np.float64]) -> None:
         """Store data ``X`` (V, T) and weights ``W`` (K, T) as float64."""
         self._X = np.ascontiguousarray(X, dtype=np.float64)
+        self.set_weights(W)
+
+    def set_weights(self, W: NDArray[np.float64]) -> None:
+        """Replace the weights ``W`` (K, T), keeping the data."""
         self._W = np.ascontiguousarray(W, dtype=np.float64)
         self._W64 = self._W
         self._reset_cache()
@@ -384,6 +390,10 @@ class TorchEngine(_ChunkedDataTerm):
     def set(self, X: NDArray[np.float64], W: NDArray[np.float64]) -> None:
         """Store data ``X`` (V, T) and weights ``W`` (K, T) on the device."""
         self._X = self._put(X)
+        self.set_weights(W)
+
+    def set_weights(self, W: NDArray[np.float64]) -> None:
+        """Replace the weights ``W`` (K, T) on the device, keeping the data."""
         self._W = self._put(W)
         self._W64 = np.array(W, dtype=np.float64)
         self._reset_cache()
