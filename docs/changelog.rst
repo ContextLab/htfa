@@ -30,6 +30,12 @@ Added:
   two-stage ``nlss_loss='linear+soft_l1'`` (the linear fit, then ``soft_l1``
   from it) remain for heavy-tailed noise, where they recover synthetic centers
   about 10% more closely.
+- Cheaper varpro evaluations that compute the same quantities: per-axis
+  factors on grid coordinates, the Hessian assembly reusing the cost
+  evaluation at the same point, and the projected objective from
+  ``||X||**2 - <F^T X, W>``. A cost evaluation is about 3 times and an
+  accepted solver step 1.4 times faster on development_fmri (K = 50 and 100);
+  whole fits 1.1 to 1.5 times (see :doc:`performance`).
 - HTFA: a global stopping rule that also stops on a plateau of the template
   change or on a stalled summed local objective (``converged_reason_``), and
   ``template_update='fixed'`` and ``'empirical'`` next to BrainIAK's update

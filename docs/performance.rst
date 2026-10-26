@@ -325,6 +325,103 @@ linear-loss alternation, full data, 30 global iterations, 6 workers of 2
 threads) took 2.78 h. With full data one varpro fit is about 8 minutes per
 subject, so a 10-minute fit at that size needs subsampling.
 
+Cost of one evaluation
+~~~~~~~~~~~~~~~~~~~~~~
+
+A varpro solve alternates trial-point cost evaluations with Hessian
+assemblies; an accepted step costs one of each, at the same point. Four
+changes (2026-10-26) make these cheaper without changing what is computed:
+
+- On grid coordinates (`htfa._kernels.axis_grid`: at most half as many
+  distinct coordinate values, summed over the axes, as voxels), each factor is
+  the product over the axes of ``exp(-(r_j - c_j)**2 / w)``, evaluated on the
+  distinct values and gathered. Arbitrary coordinates keep the direct form.
+- The Hessian assembly reuses the factors, ridge weights and gram inverse of
+  the cost evaluation at the same point.
+- The projected objective is evaluated as ``||X||**2 - <F^T X, W>``, exact at
+  the ridge solution, instead of from the ``V x T`` residual. A problem whose
+  objective at its first point is below ``IDENTITY_MIN_FRACTION`` (1e-3) of
+  ``||X||**2`` keeps the residual form, since the identity loses about
+  ``log10(||X||**2 / objective)`` digits.
+- ``factor_derivatives`` subtracts the centers from a contiguous copy of the
+  coordinates.
+
+Median of 15 evaluations at nearby points, development_fmri subject 0
+(V = 25079, T = 168), 12 threads, load average 1.2 to 2.8; before = commit
+``3298278``, after = ``8ba060a``:
+
+.. list-table:: Time per evaluation (ms), before / after
+   :header-rows: 1
+
+   * - evaluation
+     - K = 50
+     - K = 100
+   * - cost at a trial point
+     - 16.0 / 5.4
+     - 31.1 / 9.5
+   * - Hessian assembly at a new point
+     - 46.6 / 47.0
+     - 86.0 / 84.3
+   * - accepted step (cost, then Hessian at that point)
+     - 65.5 / 46.2
+     - 118.7 / 82.9
+
+Whole fits, ``init='ncorr'`` (deterministic; ``'auto'`` adds K-means starts),
+12 threads, load average 2.4 to 4.5:
+
+.. list-table:: TFA fit time (s), before / after
+   :header-rows: 1
+
+   * - subject
+     - K = 50
+     - K = 100
+   * - 0
+     - 18.95 / 13.69
+     - 32.84 / 23.82
+   * - 1
+     - 18.60 / 13.90
+     - 101.77 / 67.09 (38 / 23 outer iterations)
+   * - 2
+     - 7.21 / 5.65
+     - 80.08 / 72.66 (586 / 768 Hessian assemblies)
+
+HTFA with the defaults (K = 50, ``init='auto'``, BrainIAK's template update,
+which ran all 10 global iterations) on the first six adults, ``n_jobs=6,
+n_threads=2``: 495.4 s before, 368.8 s after (load average 2.0 and 6.4 when
+each run started; the runs themselves fill the 12 cores). The template centers
+agree to 4.2e-5 (relative to the largest), the local weights to 5.6e-4 and the
+summed objective to 2e-8; the same HTFA on data changed by a relative 1e-14
+moved by 3.7e-3, 0.62 and 2.2e-5.
+
+**Same answers.** The reuse and the contiguous copy give bit-identical
+results (fits of 12 synthetic and 6 real cases). The per-axis factors agree
+with the direct ones to 8.7e-14 (relative, per entry) and the identity with
+the residual form to 3e-15 on real data and 3.2e-13 on unstandardized
+synthetic data with noise 0.003. At fixed points (the fitted optima and two
+perturbations of them) cost, gradient, Gauss-Newton matrix and Hessian agree
+with the earlier code to 1.6e-11 or better (relative to the largest entry;
+gradients at an optimum, which are rounding noise, excepted). Whole fits are determined only to
+the precision of the stopping rules, and move under any rounding change: a
+relative 1e-14 change of the data moves the earlier code's results by up to
+1e-8 (K = 50) and 2.5e-3 (K = 100; one subject reached another optimum, its
+objective 8e-5 lower). The new code's results differ from the earlier code's
+by up to 1.1e-7 (K = 50) and 1.5e-3 (K = 100), with objectives within 1.1e-7
+(at K = 100 equal or lower), and on the synthetic fits by up to 1.8e-10, except
+one high-SNR fit where another start won with a 1.1e-7 lower objective (the
+same factors, 7e-8 apart).
+
+**Not adopted.** Three approximate Hessians, with the exact cost and gradient
+(so the same stationary points), were tried on single varpro solves from the
+``'ncorr'`` start of subjects 0 to 2: the Hessian from a random half or quarter
+of the voxels, from float32 products, and reused for up to 2 or 5 accepted
+steps while the gain ratio stays above 0.5. Only the float32 Hessian at
+K = 50 reached the same point (costs within 1.2e-11, centers within 4.3e-3
+mm), and it was no faster (0.95 to 1.03 times the time). All other runs ended at other
+points of the long flat valleys these solves end in: final costs differed from
+the exact solver's by -3.5e-4 to +2.3e-4 (relative), in both directions, and
+centers by up to tens of mm. Their times ranged from 0.3 to 2.0 times the
+exact solver's.
+
 Benchmarks
 ----------
 
