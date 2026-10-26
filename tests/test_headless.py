@@ -23,15 +23,25 @@ def no_display(monkeypatch):
     monkeypatch.setattr(brainnet, "_no_window", False)
 
 
+def _offscreen_windows() -> list[str]:
+    """The headless windows that render here with DISPLAY unset.
+
+    Probed without DISPLAY, as `_headless_window` does: a runner with Xvfb
+    (DISPLAY set) can render through it while EGL/OSMesa cannot.
+    """
+    saved = os.environ.pop("DISPLAY", None)
+    try:
+        return [w for w in brainnet.HEADLESS_WINDOWS if brainnet._gl_window_works(w)]
+    finally:
+        if saved is not None:
+            os.environ["DISPLAY"] = saved
+
+
 def _working_window() -> str | None:
     """A window class the probe should accept here, if any."""
     if not LINUX:
         return NATIVE[sys.platform]
-    if os.environ.get("DISPLAY"):
-        return None
-    return next(
-        (w for w in brainnet.HEADLESS_WINDOWS if brainnet._gl_window_works(w)), None
-    )
+    return next(iter(_offscreen_windows()), None)
 
 
 def test_gl_window_works_detects_native_window():
@@ -164,11 +174,7 @@ def test_plot_network_renders_without_display(tmp_path):
         timeout=600,
     )
     print(run.stdout, run.stderr)
-    if (
-        LINUX
-        and not os.environ.get("DISPLAY")
-        and not any(brainnet._gl_window_works(w) for w in brainnet.HEADLESS_WINDOWS)
-    ):
+    if LINUX and not _offscreen_windows():
         # No offscreen library here: the call must fail cleanly (no segfault)
         # with the error that names the packages to install.
         assert run.returncode == 1, run.stderr
