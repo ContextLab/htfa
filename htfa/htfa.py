@@ -23,7 +23,9 @@ Array = NDArray[np.float64]
 TEMPLATE_UPDATES = ("brainiak", "fixed", "empirical")
 # Global stopping: besides the scaled template change reaching ``threshold``,
 # stop when it has not fallen below PLATEAU_RATIO times its lowest value so far
-# for PLATEAU_PATIENCE global iterations ('plateau'), or when the summed final
+# in PLATEAU_PATIENCE consecutive global iterations ('plateau'; a plain "no new
+# minimum" rule never fires on a slow steady decrease such as the real-data one
+# below, which reached a new minimum almost every iteration), or when the summed final
 # local objectives changed by less than OBJECTIVE_RTOL (relative) in each of the
 # last OBJECTIVE_PATIENCE iterations ('objective'). Measured: on real data
 # (2014 DFFR, 23 subjects, K=100, 'brainiak') the change went 0.0039, 0.0036,
@@ -218,7 +220,9 @@ class HTFA(BaseEstimator):
         Convergence threshold on the scaled template change
         ``max(max|dC| / length, max|dw| / w)``, as in `TFA`. The global loop
         also stops when that change has not fallen below 0.9 times its lowest
-        value so far for 3 iterations ("plateau") or when the summed final
+        value so far in 3 consecutive iterations ("plateau": a rate of
+        decrease slower than 10% per iteration counts as a plateau, so a slow
+        drift of the template stops the loop), or when the summed final
         local objectives (``cost_`` of the subject fits) changed by less than a
         relative 1e-5 in each of the last 2 iterations ("objective").
     template_update : {'brainiak', 'fixed', 'empirical'}, default='brainiak'

@@ -245,10 +245,20 @@ at the value given (12 cores), so these are upper bounds.
      - K = 50
      - K = 100
      - load average
-   * - earlier defaults (``soft_l1``, ``init='auto'``), 12 threads
-     - 174 s (2 starts x 100 outer iterations, ``max_iter``)
+   * - earlier defaults (``soft_l1``, ``init='auto'``), 12 threads, one
+       ``TFA.fit`` of ``sub-pixar123``
+     - 174 s (2 starts x 100 outer iterations, ``max_iter``; 215 s per
+       subject in the 3-subject HTFA profile above, load 4 to 10)
      - not measured
-     - 2 to 8
+     - 2 to 9
+   * - ``init='ncorr'``, 12 threads (defaults otherwise)
+     - 19.2 s
+     - not measured
+     - 5
+   * - ``init='ncorr'``, 2 threads
+     - 21.8 s
+     - not measured
+     - 5
    * - defaults (linear, varpro, ``init='auto'``), 12 threads
      - 83 s (2 outer iterations)
      - 293 s (4)
@@ -266,9 +276,12 @@ at the value given (12 cores), so these are upper bounds.
      - 79 s
      - 95 to 115
 
-One fit gains nothing from 12 threads over 2 at this size, so ``n_jobs`` workers
-with 2 threads each (``n_jobs=6, n_threads=2`` on 12 cores) give about six times
-the throughput of the default one-subject-at-a-time HTFA.
+At a load average of 5, one fit took 19.2 s with 12 threads and 21.8 s with 2,
+so ``n_jobs`` workers of 2 threads use the cores better than one subject at a
+time (``n_jobs=None``, the default): six adults (``init='ncorr'``, K = 50) took
+190 s one after the other with 12 threads and 81 s as 6 workers of 2 threads,
+2.3 times the throughput (load 5 at the start, 35 at the end). The rows at a
+load average of 95 to 115 are not comparable with these.
 
 HTFA rounds (each round fits every subject once, in parallel):
 

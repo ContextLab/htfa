@@ -257,8 +257,10 @@ On synthetic data with heavy-tailed noise (`htfa.make_tfa_data` plus 0.3 times
 Student-t(3) noise, K = 6 in 2D and K = 8 in 3D, seeds 0 to 2) the robust loss
 recovers the centers somewhat more closely: mean largest center error 0.079 /
 0.080 / 0.091 (2D) and 0.070 / 0.070 / 0.074 (3D) for ``'soft_l1'``, the
-two-stage fit and the linear varpro fit; with Gaussian noise all three recover
-the truth to within 0.016.
+two-stage fit and the linear varpro fit. With Gaussian noise only (noise 0.1)
+the means were 0.0121 / 0.0121 / 0.0123 (2D) and 2.26 / 0.0153 / 0.0153 (3D):
+in 3D one of the three ``'soft_l1'`` fits (all from the 'ncorr' start) stayed
+in a worse solution, while the two-stage and varpro fits recovered every seed.
 
 HTFA template update (audit)
 ----------------------------
@@ -402,8 +404,9 @@ which minimizes the summed penalized local objectives over the template) or
 once from the across-subject dispersion of the matched unpenalized stage-0 fits,
 robust to factor mismatches; `htfa.htfa.empirical_dispersion`). All three use
 the global stopping rule of `htfa.HTFA`: the scaled template change reaches
-``threshold``, or it has not fallen below 0.9 times its lowest value for three
-iterations ("plateau"), or the summed final local objectives changed by less than
+``threshold``, or it has not fallen below 0.9 times its lowest value so far in
+three consecutive iterations ("plateau"; a decrease slower than 10% per iteration
+counts as a plateau), or the summed final local objectives changed by less than
 a relative 1e-5 in each of the last two iterations ("objective").
 
 Synthetic data with known truth (`htfa.make_htfa_data`, ``init='ncorr'``,

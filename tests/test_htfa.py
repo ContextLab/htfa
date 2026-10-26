@@ -406,10 +406,10 @@ def test_available_threads_ignores_serial_openmp_stub():
     assert available == 2
 
 
-# Template updates on make_htfa_data(4, (15, 15, 15), 80, K=6), seeds 0-2
-# (scratch comparison, init 'ncorr'): global iterations to stop 11.7 ('brainiak'),
-# 2.7 ('fixed'), 3.0 ('empirical'), with the same template and local errors.
-FAST_UPDATE_MAX_ITER = 5  # measured (seed 0, init 'auto'): see the printout
+# Measured with this test's data (make_htfa_data(4, (15, 15, 15), 80, K=6), seed
+# 0, defaults: linear varpro, init 'auto'): 2 global iterations for 'fixed' and
+# for 'empirical' (Mahalanobis-trimmed dispersion), 10 for 'brainiak'.
+FAST_UPDATE_MAX_ITER = 5
 
 
 @pytest.mark.parametrize("update", ["fixed", "empirical"])
