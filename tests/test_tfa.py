@@ -554,6 +554,40 @@ def test_varpro_recovers_truth_and_beats_the_alternation(data):
     assert costs["varpro"] <= costs["bounded-lm"] * (1 + 1e-9)
 
 
+# Two-stage loss on heavy-tailed noise (make_tfa_data (40, 40), K=6, T=100, noise
+# 0.1 plus 0.3 * Student-t(3), seeds 0-2, init 'ncorr'): mean max center error
+# soft_l1 0.0791, two-stage 0.0796, varpro (linear) 0.0906; seed 0 below.
+T3_CENTER_TOL = 0.15  # measured two-stage, seed 0: 0.0589 (soft_l1 0.0589)
+
+
+def test_two_stage_loss_continues_soft_l1_from_the_varpro_fit():
+    """nlss_loss='linear+soft_l1' runs the varpro (linear) fit until it stops,
+    then the soft_l1 alternation from its result: the iterations add up, the
+    cost is the soft_l1 objective, and on heavy-tailed noise it recovers the
+    centers as soft_l1 does."""
+    X, R, truth = _data_2d()
+    X = X + 0.3 * np.random.default_rng(100).standard_t(3, X.shape)
+    common = dict(K=6, init="ncorr", standardize=False, random_state=0)
+    first = TFA(nlss_loss="linear", nlss_method="varpro", **common).fit(X, R)
+    second = TFA(nlss_loss="soft_l1", **common).fit(
+        X, R, start=(first.centers_, first.widths_)
+    )
+    both = TFA(nlss_loss="linear+soft_l1", **common).fit(X, R)
+    soft = TFA(nlss_loss="soft_l1", **common).fit(X, R)
+    c_err, w_err, r = _recovery_errors(both, truth)
+    soft_err = _errors(soft.centers_, soft.widths_, truth)[0]
+    print(
+        f"stages {first.n_iter_} + {second.n_iter_} -> {both.n_iter_} "
+        f"({both.converged_reason_}); cost {both.cost_:.10g} vs two fits "
+        f"{second.cost_:.10g}; soft_l1 alone: center err {soft_err:.4g}, "
+        f"{soft.n_iter_} iterations"
+    )
+    assert both.n_iter_ == first.n_iter_ + second.n_iter_
+    np.testing.assert_allclose(both.centers_, second.centers_, atol=1e-6)
+    assert both.cost_ == pytest.approx(second.cost_, rel=1e-9)
+    assert c_err < T3_CENTER_TOL and r > MIN_WEIGHT_R
+
+
 def _photo_patch():
     """A real photograph (sklearn's china.jpg), block-averaged to 22 x 33 gray."""
     from sklearn.datasets import load_sample_image

@@ -77,6 +77,9 @@ OBJECTIVE_MIN_ITER = OBJECTIVE_WINDOW + 2
 # 2.20 mm; 0.02 s per evaluation against ~0.06 s per iteration.
 EVAL_VOXEL_FACTOR = 2
 EVAL_MIN_VOXELS = 6000
+# Two-stage loss: the linear-loss variable-projection fit ('varpro') until it
+# stops, then the soft_l1 alternation from there.
+TWO_STAGE_LOSS = "linear+soft_l1"
 # Relative floor added to the K-means sample weights so that every voxel counts.
 TINY_WEIGHT = 1e-12
 
@@ -318,16 +321,26 @@ class TFA(BaseEstimator):
         after at least 5 iterations ("objective"), or when the change has not
         reached a new minimum for 5 consecutive iterations ("plateau"); it then
         returns the iterate with the lowest such objective.
-    nlss_method : {'bounded-lm', 'trf', 'dogbox'}, default='bounded-lm'
+    nlss_method : {'bounded-lm', 'varpro', 'trf', 'dogbox'}, default='bounded-lm'
         Center/width solver. ``'bounded-lm'`` is a bounded Levenberg-Marquardt
         method on the explicit K (D + 1)-square Gauss-Newton system, assembled
         from the factor structure of the Jacobian (`htfa._kernels.bounded_lm`).
         ``'trf'`` and ``'dogbox'`` run ``scipy.optimize.least_squares`` with a
         matrix-free Jacobian (BrainIAK's solver; much slower). All minimize the
-        same objective with scipy's default tolerances.
-    nlss_loss : {'soft_l1', 'linear', 'huber', 'cauchy', 'arctan'}, default='soft_l1'
+        same objective with scipy's default tolerances, for weights held fixed
+        within an outer iteration. ``'varpro'`` (linear loss only) runs the
+        same solver on the variable-projection objective, with the ridge
+        weights eliminated (`htfa._kernels.ProjectedProblem`): its stationary
+        points are the fixed points of the alternation, which it reaches in a
+        few outer iterations instead of hundreds on real data.
+    nlss_loss : {'soft_l1', 'linear', 'huber', 'cauchy', 'arctan', \
+'linear+soft_l1'}, default='soft_l1'
         Robust loss, as in ``least_squares``. ``'linear'`` enables an exact QR
-        compression of the data term.
+        compression of the data term. ``'linear+soft_l1'`` fits in two stages:
+        the linear loss with ``'varpro'`` until it stops, then ``'soft_l1'``
+        with ``nlss_method`` (``'bounded-lm'`` when it is ``'varpro'``) from
+        there; ``max_iter`` and ``n_iter_`` count both stages, and ``cost_``,
+        ``converged_reason_`` and ``objective_history_`` are the second stage's.
     x_scale : 'jac' or ndarray, default='jac'
         Variable scaling (``least_squares``' ``x_scale``; the damping scale of
         ``'bounded-lm'``); ``'jac'`` uses the inverse Jacobian column norms at the
@@ -507,29 +520,53 @@ class TFA(BaseEstimator):
             raise ValueError(
                 f"weight method must be 'rr' or 'ols', got {self.weight_method!r}"
             )
-        if self.nlss_loss not in LOSS_NAMES:
+        if self.nlss_loss not in (*LOSS_NAMES, TWO_STAGE_LOSS):
             raise ValueError(
-                f"nlss_loss must be one of {LOSS_NAMES}, got {self.nlss_loss!r}"
+                f"nlss_loss must be one of {(*LOSS_NAMES, TWO_STAGE_LOSS)}, "
+                f"got {self.nlss_loss!r}"
             )
         if self.nlss_method not in NLSS_METHODS:
             raise ValueError(
                 f"nlss_method must be one of {NLSS_METHODS}, got {self.nlss_method!r}"
             )
-        if self.nlss_method == "varpro" and self.nlss_loss != "linear":
+        if self.nlss_method == "varpro" and self.nlss_loss not in (
+            "linear",
+            TWO_STAGE_LOSS,
+        ):
             raise ValueError(
                 f"nlss_method='varpro' needs nlss_loss='linear', got {self.nlss_loss!r}"
             )
         return X, R
 
+    def _stages(self) -> list[tuple[str, str]]:
+        """``(loss, method)`` of each stage of the fit."""
+        if self.nlss_loss == TWO_STAGE_LOSS:
+            first = (
+                "varpro"
+                if self.nlss_method in ("bounded-lm", "varpro")
+                else (self.nlss_method)
+            )
+            second = "bounded-lm" if self.nlss_method == "varpro" else self.nlss_method
+            return [("linear", first), ("soft_l1", second)]
+        return [(self.nlss_loss, self.nlss_method)]
+
     def _objective(
-        self, X: Array, R: Array, x: Array, engine: Any, prior: Prior | None
+        self,
+        X: Array,
+        R: Array,
+        x: Array,
+        engine: Any,
+        prior: Prior | None,
+        loss: str | None = None,
     ) -> tuple[float, Array]:
-        """Full-data objective at ``x`` and the full-data weights it uses."""
+        """Full-data objective at ``x`` (for ``loss``, by default the final
+        stage's) and the full-data weights it uses."""
         K, D = self.K, R.shape[1]
         F = factors(R, x[: K * D].reshape(K, D), x[K * D :])
         W = ridge_weights(X, F, self.weight_method)
         r = ResidualProblem(X, W, R, engine, prior).residual(x)
-        return 0.5 * float(np.sum(loss_terms(self.nlss_loss, r * r)[0])), W
+        loss = self._stages()[-1][0] if loss is None else loss
+        return 0.5 * float(np.sum(loss_terms(loss, r * r)[0])), W
 
     def _eval_sizes(self, V: int, T: int, sizes: tuple[int, int]) -> tuple[int, int]:
         """Voxels and samples of the fixed subsample for the stopping objective."""
@@ -547,10 +584,59 @@ class TFA(BaseEstimator):
         bnds: tuple[Array, Array],
         sizes: tuple[int, int],
         label: str,
-        objective: Callable[[Array], float],
+        objective: Callable[[str, Array], float],
         history: list[float],
     ) -> Iterator[tuple[Array, int, str | None]]:
-        """Outer loop from ``x``, one iteration per step.
+        """Outer loop from ``x`` over the stages of `_stages`.
+
+        A stage that stops for any reason but ``'max_iter'`` hands its result to
+        the next one; iterations are counted across stages, and ``history`` and
+        the yielded reasons are those of the last stage. See `_iterate_stage`.
+        """
+        stages = self._stages()
+        n_done = 0
+        for i, (loss, method) in enumerate(stages):
+            last = i == len(stages) - 1
+            stage = self._iterate_stage(
+                X,
+                R,
+                x,
+                rng,
+                engine,
+                prior,
+                bnds,
+                sizes,
+                label if last else f"{label} ({loss})",
+                partial(objective, loss),
+                history if last else [],
+                loss,
+                method,
+                n_done,
+            )
+            for x, n_done, reason in stage:
+                if reason is None or last or reason == "max_iter":
+                    yield x, n_done, reason
+                if reason == "max_iter":
+                    return
+
+    def _iterate_stage(
+        self,
+        X: Array,
+        R: Array,
+        x: Array,
+        rng: np.random.Generator,
+        engine: Any,
+        prior: Prior | None,
+        bnds: tuple[Array, Array],
+        sizes: tuple[int, int],
+        label: str,
+        objective: Callable[[Array], float],
+        history: list[float],
+        loss: str,
+        method: str,
+        n_done: int,
+    ) -> Iterator[tuple[Array, int, str | None]]:
+        """Outer loop of one stage from ``x``, after ``n_done`` iterations.
 
         Yields ``(x, n_iter, reason)`` after every iteration; ``reason`` is
         ``None`` until the last one, which carries the stop reason. With
@@ -565,30 +651,30 @@ class TFA(BaseEstimator):
         subsampled = Vs < V or Ts < T
         best, stale = np.inf, 0
         # Running minimum of the objective, from the start on, and its iterate.
-        if subsampled and self.max_iter >= OBJECTIVE_MIN_ITER:
+        if subsampled and self.max_iter - n_done >= OBJECTIVE_MIN_ITER:
             history.append(objective(x))
         lowest, x_best = list(history), x
-        for n_iter in range(1, self.max_iter + 1):
+        for n_iter in range(n_done + 1, self.max_iter + 1):
             vi = np.sort(rng.choice(V, Vs, replace=False)) if Vs < V else slice(None)
             ti = np.sort(rng.choice(T, Ts, replace=False)) if Ts < T else slice(None)
             X_sub, R_sub = X[vi][:, ti], R[vi]
             C, w = x[: K * D].reshape(K, D), x[K * D :]
             problem: ResidualProblem | ProjectedProblem
-            if self.nlss_method == "varpro":
+            if method == "varpro":
                 problem = ProjectedProblem(
                     X_sub, R_sub, K, engine, prior, self.weight_method
                 )
             else:
                 W = ridge_weights(X_sub, factors(R_sub, C, w), self.weight_method)
                 problem = ResidualProblem(
-                    X_sub, W, R_sub, engine, prior, compress=self.nlss_loss == "linear"
+                    X_sub, W, R_sub, engine, prior, compress=loss == "linear"
                 )
             x_new, _ = solve_centers_widths(
                 problem,
                 x,
                 bnds,
-                method=self.nlss_method,
-                loss=self.nlss_loss,
+                method=method,
+                loss=loss,
                 x_scale=self.x_scale,
             )
             C_new = x_new[: K * D].reshape(K, D)
@@ -615,7 +701,7 @@ class TFA(BaseEstimator):
             if change <= self.threshold:
                 yield x, n_iter, "threshold"
                 return
-            if lowest and n_iter >= OBJECTIVE_MIN_ITER:
+            if lowest and n_iter - n_done >= OBJECTIVE_MIN_ITER:
                 ref = lowest[-1 - OBJECTIVE_WINDOW]
                 window_decrease = (ref - lowest[-1]) / abs(ref)
             else:
@@ -731,7 +817,9 @@ class TFA(BaseEstimator):
                 (lb, ub),
                 sizes,
                 name,
-                lambda x: self._objective(X_eval, R_eval, x, engine, eval_prior)[0],
+                lambda loss, x: self._objective(
+                    X_eval, R_eval, x, engine, eval_prior, loss
+                )[0],
                 histories[name],
             )
 
