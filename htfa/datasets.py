@@ -14,7 +14,11 @@ nilearn (the ``nilearn`` extra) is installed on first use.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import tempfile
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,6 +38,14 @@ __all__ = [
 ]
 
 TR = 2.0
+# Preprocessing settings; they are part of the cache key, so changing any of them
+# (or bumping the version after a code change) recomputes the cached runs.
+_PREPROCESSING = {
+    "version": 1,
+    "mni_mask_resolution": 2,
+    "min_mean_fraction": 0.1,  # of the median voxel mean
+    "min_quarter_sd_fraction": 0.01,  # of the median voxel SD, per quarter
+}
 
 
 @dataclass
@@ -118,7 +130,9 @@ def load_development_fmri_subject(
     confounds : path
         Its ``*_desc-reducedConfounds_regressors.tsv`` file.
     cache_dir : path, optional
-        Where ``<subject_id>.npz`` is cached (default: ``htfa`` next to ``bold``).
+        Where ``<subject_id>-<key>.npz`` is cached (default: ``htfa`` next to
+        ``bold``). The key changes with the preprocessing settings and the input
+        files; an unreadable cache file is recomputed.
 
     Returns
     -------
@@ -129,13 +143,16 @@ def load_development_fmri_subject(
     confounds : array of shape (T, C)
         Confound regressors, NaN set to 0.
     """
-    bold = Path(bold)
+    bold, confounds = Path(bold), Path(confounds)
     cache = Path(cache_dir) if cache_dir is not None else bold.parent / "htfa"
     cache.mkdir(parents=True, exist_ok=True)
-    path = cache / f"{bold.name.split('_')[0]}.npz"
+    path = cache / _cache_name(bold, confounds)
     if path.exists():
-        with np.load(path) as z:
-            return z["X"], z["coords"], z["confounds"]
+        try:
+            with np.load(path) as z:
+                return z["X"], z["coords"], z["confounds"]
+        except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
+            pass  # unreadable (for example a truncated write): recompute
     import nibabel as nib
 
     datasets = _datasets()
@@ -143,7 +160,9 @@ def load_development_fmri_subject(
     pd = lazy_import("pandas", "nilearn", "the development_fmri dataset")
     img: Any = nib.load(bold)
     mask_img = image.resample_to_img(
-        datasets.load_mni152_brain_mask(resolution=2),
+        datasets.load_mni152_brain_mask(
+            resolution=_PREPROCESSING["mni_mask_resolution"]
+        ),
         img.slicer[..., 0],
         interpolation="nearest",
         force_resample=True,
@@ -154,17 +173,40 @@ def load_development_fmri_subject(
     # Voxels of the MNI mask outside the subject's own brain hold near-zero values
     # with near-zero variance; z-scoring would blow them up to unit-variance noise.
     mean = data.mean(axis=-1)
-    mask &= mean > 0.1 * np.median(mean[mask])
+    mask &= mean > _PREPROCESSING["min_mean_fraction"] * np.median(mean[mask])
     # Some edge voxels are constant over part of the run (any quarter).
     q = data.shape[-1] // 4
     for seg in (data[..., i * q : (i + 1) * q] for i in range(4)):
         sd = seg.std(axis=-1)
-        mask &= sd > 0.01 * np.median(sd[mask])
+        mask &= sd > _PREPROCESSING["min_quarter_sd_fraction"] * np.median(sd[mask])
     coords = nib.affines.apply_affine(img.affine, np.argwhere(mask))
     X = data[mask]
     conf = pd.read_csv(confounds, sep="\t").fillna(0.0).to_numpy(dtype=np.float64)
-    np.savez(path, X=X, coords=coords, confounds=conf)
+    _save_atomic(path, X=X, coords=coords, confounds=conf)
     return X, coords, conf
+
+
+def _cache_name(bold: Path, confounds: Path) -> str:
+    """``<subject>-<key>.npz``; the key covers the settings and the input files."""
+    key = json.dumps(
+        [_PREPROCESSING, [(f.name, f.stat().st_size) for f in (bold, confounds)]],
+        sort_keys=True,
+    )
+    return (
+        f"{bold.name.split('_')[0]}-{hashlib.sha256(key.encode()).hexdigest()[:12]}.npz"
+    )
+
+
+def _save_atomic(path: Path, X: Array, coords: Array, confounds: Array) -> None:
+    """``np.savez`` to a temporary file renamed onto ``path`` (no partial files)."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.stem, suffix=".part")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            np.savez(f, X=X, coords=coords, confounds=confounds)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def regress_confounds(X: Array, confounds: Array) -> Array:
@@ -250,8 +292,9 @@ def fetch_development_fmri(
     """
     files = development_fmri_files(n_subjects, adults_only, data_dir)
     pd = lazy_import("pandas", "nilearn", "the development_fmri dataset")
-    first = files[0][1].parent if files else Path()
-    pheno = pd.read_csv(first / "participants.tsv", sep="\t").set_index(
+    if not files:
+        raise RuntimeError("nilearn's fetch_development_fmri returned no runs")
+    pheno = pd.read_csv(files[0][1].parent / "participants.tsv", sep="\t").set_index(
         "participant_id", drop=False
     )
     ids, data, coords, confs = [], [], [], []
