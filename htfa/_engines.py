@@ -99,16 +99,22 @@ def loss_terms(loss: str, z: Any, xp: Any = np) -> tuple[Any, Any, Any]:
     """
     if loss == "linear":
         return z, xp.ones_like(z), xp.zeros_like(z)
+    # Square roots and divisions instead of fractional powers: NumPy's pow is
+    # about 25x slower than sqrt (76 ms vs 3 ms for the three soft_l1 terms of
+    # 4.2e6 residuals); the results agree to rounding.
     if loss == "soft_l1":
         t = 1 + z
-        return 2 * (t**0.5 - 1), t**-0.5, -0.5 * t**-1.5
+        root = xp.sqrt(t)
+        rho1 = 1 / root
+        return 2 * (root - 1), rho1, -0.5 * rho1 / t
     if loss == "huber":
         mask = z <= 1
-        zs = xp.where(mask, 1.0, z)  # keeps z**-0.5 finite where it is unused
+        zs = xp.where(mask, 1.0, z)  # keeps 1 / sqrt(z) finite where it is unused
+        root = xp.sqrt(zs)
         return (
-            xp.where(mask, z, 2 * zs**0.5 - 1),
-            xp.where(mask, 1.0, zs**-0.5),
-            xp.where(mask, 0.0, -0.5 * zs**-1.5),
+            xp.where(mask, z, 2 * root - 1),
+            xp.where(mask, 1.0, 1 / root),
+            xp.where(mask, 0.0, -0.5 / (root * zs)),
         )
     if loss == "cauchy":
         t = 1 + z
@@ -216,7 +222,11 @@ class _ChunkedDataTerm:
             _, (rho, _, _) = self._residual_chunk(Fd, sl, s, loss)
             return float(np.sum(self._get(rho.sum(1))))
 
-        return 0.5 * sum(self._imap(chunk, self._chunks(self._X.shape[1])))
+        # The chunks of `gauss_newton`'s robust-loss pass: about 10x more than a
+        # (chunk, T) element budget alone gives at fMRI sizes, so that the pass
+        # spreads over the engine's threads (T=168, K=50, V=25k: 30 chunks, not 2).
+        K, T = self._W64.shape
+        return 0.5 * sum(self._imap(chunk, self._chunks(max(T, K * K))))
 
     def gauss_newton(
         self, F: NDArray[np.float64], G: NDArray[np.float64], s: float, loss: str
