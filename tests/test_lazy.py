@@ -354,3 +354,24 @@ def test_require_installs_tutorials_extra(tmp_path):
     # the whole extra was installed, so this imports without installing
     err = _require_in(py, path, "sentence_transformers", None)
     assert "installing" not in err
+
+
+@pytest.mark.parametrize("name", [".x", "", "..htfa"])
+def test_require_rejects_relative_names(name):
+    with pytest.raises(ValueError, match="absolute module name"):
+        _lazy.require(name)
+
+
+def test_require_torch_goes_through_ensure_torch():
+    if _lazy._find_spec("torch"):
+        import torch
+
+        assert _lazy.require("torch") is torch
+        assert _lazy.require("torch.nn") is torch.nn
+        return
+    _lazy.set_autoinstall(False)
+    with pytest.raises(ImportError) as exc:
+        _lazy.require("torch", extra="tutorials")
+    print(exc.value)
+    # ensure_torch's message, not a bare `pip install "torch>=2.2"`
+    assert 'pip install "htfa[gpu]"' in str(exc.value)

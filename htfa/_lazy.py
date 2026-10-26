@@ -215,7 +215,8 @@ def require(module: str, extra: str | None = None) -> ModuleType:
         The htfa extra to install if ``module`` is missing, for example
         ``"tutorials"`` (hypertools, sentence-transformers). By default only the
         library itself is installed, with the constraints that htfa's extras
-        declare for it.
+        declare for it. torch is always installed as for ``backend='torch'``
+        (a build matching the CUDA driver).
 
     Returns
     -------
@@ -224,6 +225,8 @@ def require(module: str, extra: str | None = None) -> ModuleType:
 
     Raises
     ------
+    ValueError
+        If ``module`` is not an absolute module name.
     ImportError
         If the module is missing and cannot be installed: installation is off,
         htfa does not declare it, or the installer failed. The message names the
@@ -236,6 +239,11 @@ def require(module: str, extra: str | None = None) -> ModuleType:
     >>> np.__name__
     'numpy'
     """
+    if not module or module.startswith("."):
+        raise ValueError(f"require needs an absolute module name, got {module!r}")
+    if module.split(".")[0] == "torch":
+        ensure_torch()  # picks the wheel index that matches the CUDA driver
+        return importlib.import_module(module)
     if extra is not None:
         return lazy_import(module, extra)
     try:
