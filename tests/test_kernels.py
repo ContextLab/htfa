@@ -91,24 +91,87 @@ def test_factors_match_bruteforce(D):
     assert err < FACTOR_ATOL
 
 
+def _grid_coords(D, rng, shape=None):
+    """Masked grid coordinates (V, D): an irregular subset of a grid with spacing
+    3 and offset origin, shuffled, as voxel coordinates in mm."""
+    shape = shape or ((40, 45) if D == 2 else (16, 18, 14))
+    axes = [np.arange(n) * 3.0 - 1.5 * n + rng.uniform(-1, 1) for n in shape]
+    R = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, D)
+    keep = rng.uniform(size=len(R)) < 0.6
+    return R[keep][rng.permutation(int(keep.sum()))]
+
+
+def _factor_inputs(D, rng, K=7):
+    R = _grid_coords(D, rng)
+    C = R[rng.choice(len(R), K, replace=False)] + rng.normal(0.0, 1.0, (K, D))
+    w = 2.0 * rng.uniform(3.0, 12.0, K) ** 2
+    return R, C, w
+
+
 @pytest.mark.parametrize("D", [2, 3])
-def test_factor_derivatives_bitwise_equal_to_their_formulas(D):
-    """E, F and G equal the formulas of their docstring evaluated directly (from
-    the strided view of R), bit for bit."""
-    from htfa._kernels import factor_derivatives
+def test_axis_grid_on_grid_and_arbitrary_coordinates(D):
+    """Masked grids get an AxisGrid that reproduces R; arbitrary coordinates (a
+    distinct value per voxel and axis) get None."""
+    from htfa._kernels import axis_grid
+
+    rng = np.random.default_rng(10 + D)
+    R = _grid_coords(D, rng)
+    grid = axis_grid(R)
+    assert grid is not None
+    rebuilt = np.stack([v[i] for v, i in zip(grid.values, grid.index)], axis=1)
+    sizes = [v.size for v in grid.values]
+    print(f"D={D}: V={len(R)}, distinct values per axis {sizes}")
+    np.testing.assert_array_equal(rebuilt, R)
+    assert axis_grid(rng.uniform(-50.0, 50.0, size=(500, D))) is None
+
+
+@pytest.mark.parametrize("D", [2, 3])
+def test_grid_factors_equal_direct_to_rounding(D):
+    """Per-axis exponentials on the grid vs exp of the summed squared distance:
+    squared distances bit for bit, factors to rounding (measured max relative
+    difference 2.8e-14 to 4.3e-14 here; 8.7e-14 on development_fmri). Far factors
+    that underflow do so in both forms."""
+    from htfa._kernels import axis_grid
+
+    rng = np.random.default_rng(20 + D)
+    R, C, w = _factor_inputs(D, rng)
+    w[0] = 1e-3  # a factor that underflows to 0 at most voxels
+    grid = axis_grid(R)
+    d, d_grid = sq_distances(R, C), sq_distances(R, C, grid)
+    F, F_grid = factors(R, C, w), factors(R, C, w, grid)
+    normal = F > np.finfo(np.float64).tiny
+    rel = np.abs(F_grid - F)[normal] / F[normal]
+    print(
+        f"D={D}: d differs at {int(np.sum(d != d_grid))} entries; F max rel "
+        f"{rel.max():.3e} over {int(normal.sum())} normal entries; zeros "
+        f"{int(np.sum(F == 0))} direct, {int(np.sum(F_grid == 0))} per-axis"
+    )
+    np.testing.assert_array_equal(d_grid, d)
+    assert rel.max() < 1e-13
+    assert np.all(np.abs(F_grid - F)[~normal] <= np.finfo(np.float64).tiny)
+
+
+@pytest.mark.parametrize("on_grid", [False, True], ids=["arbitrary", "grid"])
+@pytest.mark.parametrize("D", [2, 3])
+def test_factor_derivatives_bitwise_equal_to_their_formulas(D, on_grid):
+    """E, F and G equal the formulas of their docstring bit for bit: delta from
+    the (strided) coordinates, d and F the transposes of sq_distances and
+    factors with the same grid (what the solver's cost evaluations use)."""
+    from htfa._kernels import axis_grid, factor_derivatives
 
     rng = np.random.default_rng(D)
-    R = rng.uniform(-50.0, 50.0, size=(500, D))
-    C = rng.uniform(-40.0, 40.0, size=(6, D))
-    w = rng.uniform(50.0, 500.0, size=6)
-    E, F, G = factor_derivatives(R, C, w)
-    # einsum's rounding depends on the strides of its operands: the reference
-    # runs on the same (K, D + 2, V) layout.
-    ref = np.empty_like(E)
-    delta = ref[:, :D]
-    np.subtract(R.T[None, :, :], C[:, :, None], out=delta)
-    d = np.einsum("kjv,kjv->kv", delta, delta, out=ref[:, D])
-    F_ref = np.exp(-d / w[:, None])
+    if on_grid:
+        R, C, w = _factor_inputs(D, rng)
+    else:
+        R = rng.uniform(-50.0, 50.0, size=(500, D))
+        C = rng.uniform(-40.0, 40.0, size=(6, D))
+        w = rng.uniform(50.0, 500.0, size=6)
+    grid = axis_grid(R)
+    assert (grid is not None) == on_grid
+    E, F, G = factor_derivatives(R, C, w, grid)
+    delta = R.T[None, :, :] - C[:, :, None]
+    d = sq_distances(R, C, grid).T
+    F_ref = factors(R, C, w, grid).T
     Fw = F_ref / w[:, None]
     n_diff = [
         int(np.sum(E[:, :D] != delta)),

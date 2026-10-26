@@ -7,6 +7,7 @@ All arrays are float64.
 """
 
 from dataclasses import dataclass
+from functools import cached_property
 
 import numpy as np
 import scipy.linalg
@@ -54,13 +55,50 @@ LM_TAU = 1e-3
 # matches 1e-10 to 4e-11 relative, at ~1.7x the time of 1e-6 (0.82 s vs 0.46 s).
 LSMR_TOL = 1e-8
 
+# `axis_grid` describes the coordinates by axis when the distinct values, summed
+# over the axes, number at most this fraction of the voxels. Each factor is then
+# evaluated per axis on the distinct values and gathered: development_fmri has
+# 37 + 45 + 32 distinct values for V = 25079 voxels, and factors() took 2.0 ms
+# instead of 16 ms (K=100). With arbitrary coordinates (about V distinct values
+# per axis) the per-axis tables would cost D times the direct evaluation.
+GRID_MAX_FRACTION = 0.5
 
-def sq_distances(R: Array, centers: Array) -> Array:
+
+@dataclass(frozen=True)
+class AxisGrid:
+    """Distinct coordinates ``values[j]`` along each axis ``j`` and the position
+    ``index[j]`` (V,) of every voxel's coordinate among them."""
+
+    values: tuple[Array, ...]
+    index: tuple[NDArray[np.intp], ...]
+
+
+def axis_grid(R: Array) -> AxisGrid | None:
+    """`AxisGrid` of the coordinates ``R`` (V, D), or None when they have more
+    than ``GRID_MAX_FRACTION * V`` distinct values summed over the axes."""
+    columns = [np.unique(R[:, j], return_inverse=True) for j in range(R.shape[1])]
+    if sum(values.size for values, _ in columns) > GRID_MAX_FRACTION * R.shape[0]:
+        return None
+    return AxisGrid(
+        tuple(values for values, _ in columns),
+        tuple(index.ravel() for _, index in columns),
+    )
+
+
+def sq_distances(R: Array, centers: Array, grid: AxisGrid | None = None) -> Array:
     """Squared distances (V, K) between voxels ``R`` (V, D) and ``centers`` (K, D).
 
     Summed per dimension rather than via ``|r|^2 - 2 r.c + |c|^2`` so that large
-    coordinates do not cancel catastrophically.
+    coordinates do not cancel catastrophically. With ``grid`` (`axis_grid` of
+    ``R``) the per-axis squares are computed on the distinct coordinates and
+    gathered; the sums are the same, bit for bit.
     """
+    if grid is not None:
+        d = np.zeros((R.shape[0], centers.shape[0]))
+        for j, (values, index) in enumerate(zip(grid.values, grid.index)):
+            diff = values[:, None] - centers[None, :, j]
+            d += (diff * diff)[index]
+        return d
     d = np.zeros((R.shape[0], centers.shape[0]))
     for j in range(R.shape[1]):
         diff = R[:, j, None] - centers[None, :, j]
@@ -68,9 +106,24 @@ def sq_distances(R: Array, centers: Array) -> Array:
     return d
 
 
-def factors(R: Array, centers: Array, widths: Array) -> Array:
-    """Radial basis factors ``F[v, k] = exp(-||r_v - c_k||^2 / w_k)``, shape (V, K)."""
-    return np.exp(-sq_distances(R, centers) / widths[None, :])
+def factors(
+    R: Array, centers: Array, widths: Array, grid: AxisGrid | None = None
+) -> Array:
+    """Radial basis factors ``F[v, k] = exp(-||r_v - c_k||^2 / w_k)``, shape (V, K).
+
+    With ``grid`` (`axis_grid` of ``R``) each factor is the product over the axes
+    of ``exp(-(r_vj - c_kj)**2 / w_k)``, evaluated on the distinct coordinates and
+    gathered. The two forms agree to rounding (measured on development_fmri:
+    8.7e-14 relative per entry at most). Where the product underflows, the
+    exponential of the sum is below the smallest normal number too.
+    """
+    if grid is None:
+        return np.exp(-sq_distances(R, centers) / widths[None, :])
+    F = np.ones((R.shape[0], centers.shape[0]))
+    for j, (values, index) in enumerate(zip(grid.values, grid.index)):
+        diff = values[:, None] - centers[None, :, j]
+        F *= np.exp(-(diff * diff) / widths[None, :])[index]
+    return F
 
 
 def ridge_weights(X: Array, F: Array, method: str = "rr") -> Array:
@@ -197,6 +250,12 @@ class ResidualProblem:
         n = self.K * self.D
         return x[:n].reshape(self.K, self.D), x[n:]
 
+    @cached_property
+    def _grid(self) -> AxisGrid | None:
+        """`axis_grid` of the coordinates, for :meth:`cost` and
+        :meth:`cost_grad_hess` (computed on first use)."""
+        return axis_grid(self.R)
+
     def _center_prior(self, C: Array) -> tuple[Array, Array]:
         """Center residuals r_c (K,) and their gradients dr_c/dC (K, D)."""
         assert self.prior is not None
@@ -305,7 +364,8 @@ class ResidualProblem:
         """Objective ``0.5 * sum(rho(r**2))`` over :meth:`residual` (without
         ``cost_offset``), evaluated without forming the residual vector."""
         C, w = self._unpack(x)
-        total = self.engine.data_cost(factors(self.R, C, w), self.s, loss)
+        F = factors(self.R, C, w, self._grid)
+        total = self.engine.data_cost(F, self.s, loss)
         if self.prior is not None:
             total += self._prior_terms(C, w, loss, derivatives=False)[0]
         return total
@@ -339,9 +399,9 @@ class ResidualProblem:
         C, w = self._unpack(x)
         K, D, P = self.K, self.D, self.n_params
         s = self.s
-        E, F, G = (
-            factor_derivatives(self.R, C, w) if derivatives is None else derivatives
-        )
+        if derivatives is None:
+            derivatives = factor_derivatives(self.R, C, w, self._grid)
+        E, F, G = derivatives
         cost, M, H_ka = self.engine.gauss_newton(np.ascontiguousarray(F.T), G, s, loss)
         MT = np.ascontiguousarray(M.T)  # (K, V)
         grad_ka = -s * (G @ MT[:, :, None])[:, :, 0]
@@ -395,7 +455,9 @@ class ResidualProblem:
         return np.sqrt(np.concatenate([sq_c.ravel(), sq_w]))
 
 
-def factor_derivatives(R: Array, C: Array, w: Array) -> tuple[Array, Array, Array]:
+def factor_derivatives(
+    R: Array, C: Array, w: Array, grid: AxisGrid | None = None
+) -> tuple[Array, Array, Array]:
     """Factors and their derivatives in a factor-major, voxel-last layout.
 
     Returns ``E`` (K, D + 2, V) = ``[delta_1 .. delta_D, d, 1]`` with ``delta =
@@ -403,6 +465,9 @@ def factor_derivatives(R: Array, C: Array, w: Array) -> tuple[Array, Array, Arra
     (K, D + 1, V) with ``G[k, a, v] = dF[k, v] / dtheta[k, a]`` for ``theta_k =
     (c_k1, ..., c_kD, w_k)``. The (K, ., V) layout gives contiguous elementwise
     passes and per-factor sums over voxels as batched matrix products.
+
+    ``d`` and ``F`` are, bit for bit, the transposes of `sq_distances` and
+    `factors` with the same ``grid``.
     """
     K, D = C.shape
     V = R.shape[0]
@@ -410,10 +475,17 @@ def factor_derivatives(R: Array, C: Array, w: Array) -> tuple[Array, Array, Arra
     # From a contiguous copy of R.T: the subtraction from the strided view of R
     # took 13 ms of the 18 ms (K=100, V=25k); the values are the same.
     np.subtract(np.ascontiguousarray(R.T)[None], C[:, :, None], out=E[:, :D])
-    np.einsum("kjv,kjv->kv", E[:, :D], E[:, :D], out=E[:, D])
-    E[:, D + 1] = 1.0
     d = E[:, D]
-    F = np.exp(-d / w[:, None])
+    if grid is None:
+        # The sums of `sq_distances`, in its order.
+        np.multiply(E[:, 0], E[:, 0], out=d)
+        for j in range(1, D):
+            d += E[:, j] * E[:, j]
+        F = np.exp(-d / w[:, None])
+    else:
+        d[:] = sq_distances(R, C, grid).T
+        F = np.ascontiguousarray(factors(R, C, w, grid).T)
+    E[:, D + 1] = 1.0
     Fw = F / w[:, None]
     G = np.empty((K, D + 1, V))
     np.multiply((2.0 * Fw)[:, None, :], E[:, :D], out=G[:, :D])
@@ -472,6 +544,7 @@ class ProjectedProblem:
         self.cost_offset = 0.0
         self.n_params = K * (self.D + 1)
         self._prior_only: ResidualProblem | None = None
+        self._grid = axis_grid(self.R)
         # The data go to the engine once; every evaluation sends new weights.
         self.engine.set(self.X, np.zeros((K, self.X.shape[1])))
 
@@ -500,7 +573,7 @@ class ProjectedProblem:
     def weights(self, x: ArrayLike) -> Array:
         """Ridge weights (K, T) at ``x`` (see `_weights`)."""
         C, w = self._unpack(x)
-        return self._weights(factors(self.R, C, w))[0]
+        return self._weights(factors(self.R, C, w, self._grid))[0]
 
     def _prior_cost(self, C: Array, w: Array) -> float:
         if self.prior is None:
@@ -520,7 +593,7 @@ class ProjectedProblem:
         """``phi(x)``, from the data residual ``X - F W`` on the engine (as in
         `cost_grad_hess`, so that the solver compares like with like)."""
         C, w = self._unpack(x)
-        F = factors(self.R, C, w)
+        F = factors(self.R, C, w, self._grid)
         W, _ = self._weights(F)
         self.engine.set_weights(W)
         data = self.engine.data_cost(F, self.s, "linear")
@@ -544,7 +617,7 @@ class ProjectedProblem:
         C, w = self._unpack(x)
         K, D = self.K, self.D
         A, P, s2 = D + 1, self.n_params, self.s**2
-        derivatives = factor_derivatives(self.R, C, w)
+        derivatives = factor_derivatives(self.R, C, w, self._grid)
         _, F, G = derivatives
         W, Mi = self._weights(F.T)
         inner = ResidualProblem(
