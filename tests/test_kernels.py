@@ -954,3 +954,22 @@ def test_projected_ols_with_a_vanishing_factor_uses_the_pseudo_inverse():
     x_new, c_new, status, _ = bounded_lm(prob, x, (lb, ub), "linear", np.ones(x.size))
     print(f"solved: cost {c_new:.12g}, status {status}")
     assert np.isfinite(c_new) and c_new <= expected
+
+
+@pytest.mark.parametrize("gap", [1e-3, 1e-6, 1e-9])
+def test_projected_ols_with_near_duplicate_factors_stays_consistent(gap):
+    """Two factors whose centers are ``gap`` apart make the OLS gram matrix
+    nearly singular (Cholesky still succeeds); the weights must stay bounded so
+    that cost and cost_grad_hess agree to the solver's ftol and better."""
+    prob, x, *_ = _projected_problem(3, False, 800, "ols")
+    K, D = prob.K, prob.D
+    x = x.copy()
+    x[D : 2 * D] = x[:D] + gap
+    x[K * D + 1] = x[K * D]
+    c1, c2 = prob.cost(x), prob.cost_grad_hess(x)[0]
+    W = prob.weights(x)
+    print(
+        f"gap {gap}: cost {c1:.15g} vs {c2:.15g}, rel {abs(c1 - c2) / c1:.2e}, "
+        f"max|W| {np.abs(W).max():.3g}"
+    )
+    assert abs(c1 - c2) <= 1e-12 * c1

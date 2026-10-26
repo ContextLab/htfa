@@ -39,6 +39,10 @@ def ftol_for(eps: float) -> float:
     return max(FTOL, eps)
 
 
+# Relative eigenvalue cutoff of the weights' gram matrix in `ProjectedProblem`
+# (the square root of float64 epsilon: a condition number above 6.7e7).
+GRAM_RCOND = float(np.sqrt(np.finfo(np.float64).eps))
+
 # Initial damping relative to the largest diagonal entry of the scaled Hessian
 # (Madsen, Nielsen & Tingleff 2004, sec. 3.2).
 LM_TAU = 1e-3
@@ -476,15 +480,19 @@ class ProjectedProblem:
 
     def _weights(self, F: Array) -> tuple[Array, Array]:
         """Weights (K, T) minimizing ``||X - F W||**2 + beta ||W||**2`` and the
-        inverse (K, K) of ``F^T F + beta I``; a singular matrix (``'ols'`` with a
-        vanishing or repeated factor) takes the pseudo-inverse, whose weights are
-        the minimum-norm minimizer."""
-        gram = F.T @ F + self.beta * np.eye(self.K)
-        try:
-            inv = scipy.linalg.cho_solve(scipy.linalg.cho_factor(gram), np.eye(self.K))
-        except np.linalg.LinAlgError:
-            inv = scipy.linalg.pinvh(gram)
-        inv = 0.5 * (inv + inv.T)
+        (pseudo-)inverse (K, K) of ``F^T F + beta I``, from its eigendecomposition.
+
+        Eigenvalues below `GRAM_RCOND` times the largest are dropped (only
+        possible with ``'ols'``: a vanishing or a near-duplicate factor). Their
+        directions would otherwise give weights of order ``1 / gap`` that cancel
+        in ``F W``, and the residual sums would then differ by more than the
+        solver's tolerance between evaluation orders (measured: 1.9e-7
+        relative for two factors 1e-6 apart). The weights are then the
+        minimum-norm minimizer on the kept eigenvectors.
+        """
+        vals, vecs = np.linalg.eigh(F.T @ F + self.beta * np.eye(self.K))
+        keep = vals > GRAM_RCOND * vals[-1]
+        inv = (vecs[:, keep] / vals[keep]) @ vecs[:, keep].T
         return inv @ (F.T @ self.X), inv
 
     def weights(self, x: ArrayLike) -> Array:

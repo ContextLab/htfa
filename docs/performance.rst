@@ -252,13 +252,13 @@ at the value given (12 cores), so these are upper bounds.
      - not measured
      - 2 to 9
    * - ``init='ncorr'``, 12 threads (defaults otherwise)
+     - 18.7 s
+     - not measured
+     - 3 to 7
+   * - ``init='ncorr'``, 2 threads
      - 19.2 s
      - not measured
-     - 5
-   * - ``init='ncorr'``, 2 threads
-     - 21.8 s
-     - not measured
-     - 5
+     - 3 to 7
    * - defaults (linear, varpro, ``init='auto'``), 12 threads
      - 83 s (2 outer iterations)
      - 293 s (4)
@@ -276,12 +276,12 @@ at the value given (12 cores), so these are upper bounds.
      - 79 s
      - 95 to 115
 
-At a load average of 5, one fit took 19.2 s with 12 threads and 21.8 s with 2,
-so ``n_jobs`` workers of 2 threads use the cores better than one subject at a
-time (``n_jobs=None``, the default): six adults (``init='ncorr'``, K = 50) took
-190 s one after the other with 12 threads and 81 s as 6 workers of 2 threads,
-2.3 times the throughput (load 5 at the start, 35 at the end). The rows at a
-load average of 95 to 115 are not comparable with these.
+At a load average of 3 to 7, one fit took 18.7 s with 12 threads and 19.2 s
+with 2, so ``n_jobs`` workers of 2 threads use the cores better than one subject
+at a time (``n_jobs=None``, the default): six adults (``init='ncorr'``, K = 50)
+took 104.8 s one after the other with 12 threads and 49.0 s as 6 workers of 2
+threads, 2.1 times the throughput. The rows at a load average of 95 to 115 are
+not comparable with these.
 
 HTFA rounds (each round fits every subject once, in parallel):
 
