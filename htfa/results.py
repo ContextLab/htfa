@@ -280,8 +280,11 @@ class HTFAResults:
         >>> import htfa
         >>> rng = np.random.default_rng(0)
         >>> imgs = [rng.random((6, 6, 6, 8)) + 1 for _ in range(2)]
-        >>> res = htfa.fit(imgs, K=2, standardize=False, init="power",
-        ...                max_global_iter=2, max_local_iter=2, random_state=0)
+        >>> import warnings
+        >>> with warnings.catch_warnings():
+        ...     warnings.simplefilter("ignore")  # 2 global iterations of noise
+        ...     res = htfa.fit(imgs, K=2, standardize=False, init="power",
+        ...                    max_global_iter=2, max_local_iter=2, random_state=0)
         >>> res.isfc().shape
         (2, 2)
         """

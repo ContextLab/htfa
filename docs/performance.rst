@@ -5,8 +5,9 @@ Backends
 --------
 
 The centers and widths are found by a bounded Levenberg-Marquardt solve
-(``nlss_method='bounded-lm'``, the default) on the explicit ``K (D + 1)``-square
-Gauss-Newton system. Assembling that system is dominated by products between the
+(``nlss_method='bounded-lm'``) on the explicit ``K (D + 1)``-square
+Gauss-Newton system; with the default linear loss the same solver runs on the
+variable-projection objective (``'varpro'``, see `Solver and outer loop`_). Assembling that system is dominated by products between the
 ``(V, T)`` data, the ``(V, K)`` factor images and the ``(K, T)`` weights; with the
 ``'linear'`` loss the data term is compressed exactly and its products do not
 depend on ``T``. An engine computes these products. The ``backend`` argument of
@@ -167,9 +168,149 @@ Other settings that change the cost of a fit
   HTFA takes the lowest limit already in effect (``OMP_NUM_THREADS``,
   ``OPENBLAS_NUM_THREADS``, an enclosing ``threadpoolctl.threadpool_limits``),
   or all CPUs, divided among the ``n_jobs`` workers.
-- ``nlss_loss='soft_l1'`` (the default) costs ``O(V T K^2)`` per Gauss-Newton
-  assembly; ``'linear'`` is independent of ``T`` after an exact compression.
+- ``nlss_loss='soft_l1'`` costs ``O(V T K^2)`` per Gauss-Newton assembly and
+  needs the slow alternation (below); the default ``'linear'`` with
+  ``'varpro'`` costs ``O(V T K (D + 1))`` per assembly.
 - ``K``, the number of factors, enters every product at least linearly.
+
+Solver and outer loop
+---------------------
+
+**Where the time went.** Profile of the earlier default HTFA (``soft_l1``, all
+data, ``init='auto'``, BrainIAK's template update) on three adults of
+``development_fmri`` (V = 23726 to 26739, T = 168, K = 50), 12 threads, one
+subject at a time (``n_jobs=None``), load average 2 to 10, 851 s in all:
+
+.. list-table:: Profile, earlier defaults
+   :header-rows: 1
+
+   * - part
+     - time
+     - notes
+   * - stage 0 (unpenalized fits)
+     - 644 s (76%)
+     - 215 s per subject: 2 starts x 100 outer iterations, all at ``max_iter``
+   * - global iteration 1 (from the template and from each own start)
+     - 46 s
+     - 10 outer iterations per fit
+   * - global iterations 2 to 10
+     - 13 to 24 s each
+     - template change 0.027 after 10 iterations: no stop
+   * - inside the fits: center/width solves
+     - 824 s (97%)
+     - 920 solves, 10.5 cost evaluations each
+   * - Hessian assemblies
+     - 499 s
+     - 3873, 129 ms each
+   * - cost evaluations
+     - 306 s
+     - 5785, 53 ms each (fractional powers; 19 ms after commit ``02b5700``)
+   * - ridge weights, factors, starts, objectives
+     - 23 s
+     -
+
+The full-data fits do not converge because alternating the ridge weights with
+the center/width solve is coordinate descent on strongly coupled variables: on a
+real subject (K = 50) the ``soft_l1`` objective still fell from 810222 to 810009
+between outer iterations 100 and 300, and the linear-loss alternation stopped on
+``threshold`` after 190 iterations (50 s) at a cost of 1003458.7.
+``nlss_method='varpro'`` minimizes the linear-loss objective with the weights
+eliminated (`htfa._kernels.ProjectedProblem`): the same stationary points, and
+on that subject a cost of 1002690.4 after 2 outer iterations (23.6 s; K = 100:
+65 s). Anderson acceleration of the alternation did not help on real data
+(810010 after 300 iterations against 810009 without it). The default is
+therefore the linear loss with ``'varpro'`` (``nlss_method='auto'``); held-out
+reconstruction and synthetic recovery are compared in :doc:`validation`.
+
+A varpro solve is a bounded Levenberg-Marquardt run of 50 to 380 Hessian
+assemblies on real data, most of them in long, nearly flat valleys where the
+exact Hessian is slightly indefinite and the Gauss-Newton model is used (on
+one subject the cost fell by 95% of its total decrease in the first 8
+assemblies and by the remaining 5% over the next 120). Updating the variable
+scaling at every iteration as scipy's ``x_scale='jac'`` does halved the
+assemblies (62 instead of 129, 140 instead of 379 at K = 100) at costs within
+1.5e-4 (relative) of the current solver, sometimes lower and sometimes higher;
+it is not adopted.
+
+Fitting a real dataset: where the time goes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Measured 2026-10-26 on the M2 Max below while other jobs kept the load average
+at the value given (12 cores), so these are upper bounds.
+
+.. list-table:: One subject's stage-0 fit, development_fmri (V = 25079, T = 168)
+   :header-rows: 1
+
+   * - settings
+     - K = 50
+     - K = 100
+     - load average
+   * - earlier defaults (``soft_l1``, ``init='auto'``), 12 threads
+     - 174 s (2 starts x 100 outer iterations, ``max_iter``)
+     - not measured
+     - 2 to 8
+   * - defaults (linear, varpro, ``init='auto'``), 12 threads
+     - 83 s (2 outer iterations)
+     - 293 s (4)
+     - 95 to 115
+   * - same, 2 threads
+     - 83 s
+     - 271 s
+     - 95 to 115
+   * - ``init='ncorr'`` (one start), 12 threads
+     - 47 s
+     - 79 s
+     - 95 to 115
+   * - ``init='ncorr'``, 2 threads
+     - 47 s
+     - 79 s
+     - 95 to 115
+
+One fit gains nothing from 12 threads over 2 at this size, so ``n_jobs`` workers
+with 2 threads each (``n_jobs=6, n_threads=2`` on 12 cores) give about six times
+the throughput of the default one-subject-at-a-time HTFA.
+
+HTFA rounds (each round fits every subject once, in parallel):
+
+.. list-table:: HTFA wall time per round, development_fmri adults, K = 50
+   :header-rows: 1
+
+   * - settings
+     - stage 0
+     - global iteration 1 (from the template / from own starts)
+     - later global iterations
+     - total
+   * - earlier defaults, 3 adults, sequential, 12 threads (load 2 to 10)
+     - 644 s
+     - 33 s / 13 s
+     - 15 to 24 s each, 9 of them (no stop)
+     - 851 s
+   * - defaults, 33 adults, ``n_jobs=6, n_threads=2`` (load 90 to 160)
+     - 1328 s
+     - 1013 s / stopped
+     - stopped
+     - more than 40 min
+   * - linear varpro, ``init='ncorr'``, ``template_update='fixed'``, 12 adults,
+       ``n_jobs=6, n_threads=2`` (load 9 to 12)
+     - 71 s
+     - 117 s / 110 s
+     - 2 to 29 s each, 9 of them (``max_global_iter``)
+     - 383 s
+
+So with the defaults the stage-0 fits and the first global iteration's two
+fits per subject dominate. A real dataset of 33 subjects at K = 50 does not fit
+in 10 minutes with the defaults on this machine; with ``init='ncorr'``, one of
+the faster template updates and ``n_jobs`` workers the 12-subject run took 6.4
+minutes.
+
+At the 2014 DFFR shape (synthetic, ``scripts/workload_projection.py``: V = 69597,
+T = 1137, K = 100, 'ncorr', 12 threads, load 100 to 150), one full-data varpro
+fit took 27 s for its start and 2 outer iterations of 243 s; with
+``max_voxels=3000, max_trs=300`` it took 22.5 s for its start and 6 iterations
+of 6.1 s. The pilot run on the real data of that shape (23 subjects, the
+linear-loss alternation, full data, 30 global iterations, 6 workers of 2
+threads) took 2.78 h. With full data one varpro fit is about 8 minutes per
+subject, so a 10-minute fit at that size needs subsampling.
 
 Benchmarks
 ----------

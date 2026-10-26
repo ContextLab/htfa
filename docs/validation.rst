@@ -216,6 +216,50 @@ each subject:
 .. image:: _static/validation/heldout.png
    :alt: Held-out R² per condition; one gray line per subject and the mean in blue.
 
+Loss and solver
+~~~~~~~~~~~~~~~
+
+The same protocol with all voxels and samples of the training segment
+(``max_iter=100``, the 'ncorr' start, K = 50; load average 15 to 80, so the
+times are inflated) compares the losses and solvers behind the defaults:
+
+.. list-table:: Held-out R² by loss and solver (12 adults, mean)
+   :header-rows: 1
+
+   * - loss, solver
+     - held-out R² (ridge / OLS test weights)
+     - training R²
+     - seconds per subject (mean)
+     - outer iterations
+   * - linear, ``'varpro'`` (the default)
+     - 0.04241 / 0.04209
+     - 0.0502
+     - 38
+     - 2 to 27 (threshold)
+   * - linear, ``'bounded-lm'`` alternation
+     - 0.04239 / 0.04207
+     - 0.0496
+     - 54
+     - 100 (max_iter)
+   * - soft_l1, ``'bounded-lm'`` alternation (the earlier default)
+     - 0.04231 / 0.04202
+     - 0.0494
+     - 392
+     - 100 (max_iter)
+   * - ``'linear+soft_l1'`` (varpro, then soft_l1)
+     - 0.04224 / 0.04194
+     - 0.0499
+     - 466
+     - 2 to 27, then 100 (max_iter)
+
+The linear-loss fit holds out as well as the robust one at a tenth of the time.
+On synthetic data with heavy-tailed noise (`htfa.make_tfa_data` plus 0.3 times
+Student-t(3) noise, K = 6 in 2D and K = 8 in 3D, seeds 0 to 2) the robust loss
+recovers the centers somewhat more closely: mean largest center error 0.079 /
+0.080 / 0.091 (2D) and 0.070 / 0.070 / 0.074 (3D) for ``'soft_l1'``, the
+two-stage fit and the linear varpro fit; with Gaussian noise all three recover
+the truth to within 0.016.
+
 HTFA template update (audit)
 ----------------------------
 
@@ -339,12 +383,124 @@ held at its one-pass value, the template movement stays between 0.88 and 1.40 mm
 per iteration from iteration 6 on, and the spread stays between 14.2 and 14.5 mm. The
 continued decrease of the template movement, which the HTFA stopping rule
 measures, and the continued pull of the subjects toward each other therefore come
-in part from the shrinking prior covariance rather than from the data. Whether to
-keep BrainIAK's update is an open decision; the package currently keeps it.
+in part from the shrinking prior covariance rather than from the data. BrainIAK's
+update stays the default (``template_update='brainiak'``); the alternatives are
+compared below.
 
 .. image:: _static/validation/template_audit.png
    :alt: Template center posterior SD, template movement, and local-center
          distances over 15 global iterations.
+
+Template update options
+~~~~~~~~~~~~~~~~~~~~~~~
+
+`htfa.HTFA` takes ``template_update='brainiak'`` (the update above, the
+default), ``'fixed'`` (the subject-level prior covariance stays at its initial
+value ``Sigma``, and the template is the mean of the matched local estimates,
+which minimizes the summed penalized local objectives over the template) or
+``'empirical'`` (as ``'fixed'``, with ``Sigma`` and the width variance estimated
+once from the across-subject dispersion of the matched unpenalized stage-0 fits,
+robust to factor mismatches; `htfa.htfa.empirical_dispersion`). All three use
+the global stopping rule of `htfa.HTFA`: the scaled template change reaches
+``threshold``, or it has not fallen below 0.9 times its lowest value for three
+iterations ("plateau"), or the summed final local objectives changed by less than
+a relative 1e-5 in each of the last two iterations ("objective").
+
+Synthetic data with known truth (`htfa.make_htfa_data`, ``init='ncorr'``,
+soft_l1 loss, ``max_global_iter=30``, seeds 0 to 2, means over seeds; errors in
+grid units; "free" is the independent TFA fits of stage 0, with the template as
+the mean of their matched centers; load average 40 to 80):
+
+.. list-table:: Template updates on synthetic data
+   :header-rows: 1
+
+   * - case
+     - update
+     - global iterations
+     - seconds
+     - max global center error
+     - mean local center error
+   * - 4 subjects, 15³, T = 80, K = 6, noise 0.1
+     - brainiak / fixed / empirical / free
+     - 11.7 / 2.7 / 3.0 / -
+     - 13.1 / 10.7 / 11.2 / -
+     - 1.98 / 1.97 / 1.97 / 2.34
+     - 0.230 / 0.230 / 0.230 / 0.326
+   * - 8 subjects, 20³, T = 60, K = 10, noise 0.1
+     - brainiak / fixed / empirical / free
+     - 18.0 / 5.0 / 5.0 / -
+     - 87.2 / 72.7 / 79.1 / -
+     - 1.65 / 1.31 / 1.64 / 2.23
+     - 0.224 / 0.193 / 0.245 / 0.674
+   * - 4 subjects, 15³, T = 30, K = 6, noise 2.0
+     - brainiak / fixed / empirical / free
+     - 11.0 / 4.0 / 5.0 / -
+     - 21.7 / 12.9 / 14.6 / -
+     - 8.22 / 7.73 / 7.88 / 7.04
+     - 2.92 / 2.97 / 3.12 / 3.03
+   * - 8 subjects, 20³, T = 30, K = 10, noise 2.0
+     - brainiak / fixed / empirical / free
+     - 25.3 / 4.7 / 4.7 / -
+     - 200.8 / 111.7 / 115.7 / -
+     - 5.44 / 5.76 / 6.27 / 5.96
+     - 1.87 / 2.10 / 2.06 / 2.79
+
+(The 'empirical' rows predate its Mahalanobis trimming.) Without the shrinking
+covariance the global loop stops in 3 to 5 iterations instead of 12 to 25, with
+the same or smaller errors on the clean data; at noise 2.0 (where no method
+recovers the truth) BrainIAK's shrinkage gives the lowest mean local error in the
+larger case, and two of its three fits ran into ``max_global_iter``.
+
+Real data (the twelve adults; ``nlss_loss='linear'``, ``nlss_method='varpro'``,
+``init='ncorr'``, K = 50, ``n_jobs=6``, ``n_threads=2``, load average 13 to 40;
+held-out R² as in the held-out section, from HTFA fitted to the training segments;
+decoding as in the next section, from HTFA fitted to the full runs):
+
+.. list-table:: Template updates on real data
+   :header-rows: 1
+
+   * - update
+     - global iterations (training / full runs)
+     - seconds (training / full runs)
+     - held-out R², local factors
+     - held-out R², template factors
+     - decoding, local weights (1 / 6 samples)
+     - decoding, template factors (1 / 6 samples)
+   * - brainiak
+     - 10 / 10 (max_global_iter)
+     - 394 / 474
+     - 0.0413
+     - 0.0395
+     - 0.061 / 0.316
+     - 0.138 / 0.558
+   * - fixed
+     - 7 / 7
+     - 487 / 470
+     - 0.0426
+     - 0.0388
+     - 0.042 / 0.231
+     - 0.141 / 0.571
+   * - empirical
+     - 4 / 4
+     - 217 / 172
+     - 0.0428
+     - 0.0383
+     - 0.046 / 0.247
+     - 0.124 / 0.510
+   * - free (stage-0 TFA)
+     - -
+     - -
+     - 0.0426
+     - -
+     - 0.029 to 0.031 / 0.15 to 0.21
+     - -
+
+The shrinking covariance pulls each subject's factors toward the template: its
+local factors decode better across groups (0.316 against 0.231 and 0.247 with
+6-sample windows) and reconstruct the subject's own held-out data worse (0.0413
+against 0.0426 and 0.0428, the level of independent fits). The template factors
+score about the same with all three updates. The default stays
+``'brainiak'`` (user decision, 2026-10-26).
 
 Timepoint decoding
 ------------------

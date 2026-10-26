@@ -17,9 +17,21 @@ objective, the peak resident memory, and the projection
 
 ``--threads`` caps BLAS (threadpoolctl) and htfa's engine threads, as `HTFA` does
 per parallel subject worker.
+
+``--htfa N`` instead fits a whole `HTFA` to ``N`` synthetic subjects of that
+shape (`htfa.make_htfa_data`, noise ``--noise``) with ``--n-jobs`` workers of
+``--threads`` threads, prints the wall time of every round of subject fits
+(stage 0, then each global iteration) and projects the wall time to
+``--n-subjects`` subjects: each round scales with the number of worker batches,
+``ceil(n_subjects / n_jobs) / ceil(N / n_jobs)``::
+
+    # the 2014 DFFR shape, 6 subjects fitted, projected to 23
+    .venv/bin/python scripts/workload_projection.py --htfa 6 --n-jobs 6 \\
+        --threads 2 --loss linear --method varpro --init ncorr
 """
 
 import argparse
+import math
 import resource
 import subprocess
 import sys
@@ -32,7 +44,8 @@ from threadpoolctl import threadpool_limits
 
 import htfa.tfa as tfa_module
 from htfa._engines import thread_limit
-from htfa.synthetic import make_tfa_data
+from htfa.htfa import HTFA
+from htfa.synthetic import make_htfa_data, make_tfa_data
 from htfa.tfa import TFA
 
 # One-start fits of synthetic data took 13-28 outer iterations
@@ -52,16 +65,26 @@ def main() -> None:
     parser.add_argument("--max-iter", type=int, default=2)
     parser.add_argument("--max-voxels", type=int, default=None)
     parser.add_argument("--max-trs", type=int, default=None)
-    parser.add_argument("--loss", default="soft_l1")
-    parser.add_argument("--method", default="bounded-lm")
+    parser.add_argument("--loss", default="linear")
+    parser.add_argument("--method", default="auto")
     parser.add_argument("--backend", default="numpy")
     parser.add_argument("--init", default="ncorr")
     parser.add_argument("--threads", type=int, default=None)
     parser.add_argument("--n-subjects", type=int, default=23)
     parser.add_argument("--assume-iter", type=int, default=ASSUME_ITER)
+    parser.add_argument("--htfa", type=int, default=0, help="subjects to fit")
+    parser.add_argument("--n-jobs", type=int, default=1)
+    parser.add_argument("--noise", type=float, default=0.1)
+    parser.add_argument("--template-update", default="brainiak")
+    parser.add_argument("--max-global-iter", type=int, default=10)
+    parser.add_argument("--max-local-iter", type=int, default=10)
     args = parser.parse_args()
     grid = tuple(int(g) for g in args.grid.split(","))
     print(f"# before: {_uptime()}", flush=True)
+    if args.htfa:
+        project_htfa(args, grid)
+        print(f"# after: {_uptime()}")
+        return
     X, R, _ = make_tfa_data(grid, args.T, K=args.K, min_separation=0.75, random_state=0)
     print(
         f"# V={X.shape[0]} T={X.shape[1]} K={args.K} loss={args.loss} "
@@ -130,6 +153,73 @@ def main() -> None:
         f"one start, sequential: {projected / 3600:.2f} h"
     )
     print(f"# after: {_uptime()}")
+
+
+def project_htfa(args: argparse.Namespace, grid: tuple[int, ...]) -> None:
+    """Fit an HTFA to ``args.htfa`` subjects and project its wall time."""
+    Xs, Rs, _ = make_htfa_data(
+        args.htfa,
+        grid,
+        args.T,
+        K=args.K,
+        noise=args.noise,
+        min_separation=0.75,
+        random_state=0,
+    )
+    print(
+        f"# {args.htfa} subjects, V={Xs[0].shape[0]} T={args.T} K={args.K} "
+        f"noise={args.noise} loss={args.loss} method={args.method} "
+        f"init={args.init} template_update={args.template_update} "
+        f"max_voxels={args.max_voxels} max_trs={args.max_trs} "
+        f"n_jobs={args.n_jobs} threads={args.threads}",
+        flush=True,
+    )
+    rounds: list[tuple[float, int, bool]] = []
+    fit_subjects = HTFA._fit_subjects
+
+    def timed(self, Xs_, *a, **kw):
+        t = time.perf_counter()
+        out = fit_subjects(self, Xs_, *a, **kw)
+        rounds.append((time.perf_counter() - t, len(Xs_), a[2] is not None))
+        return out
+
+    HTFA._fit_subjects = timed  # type: ignore[method-assign]
+    model = HTFA(
+        K=args.K,
+        max_global_iter=args.max_global_iter,
+        max_local_iter=args.max_local_iter,
+        template_update=args.template_update,
+        nlss_method=args.method,
+        nlss_loss=args.loss,
+        max_voxels=args.max_voxels,
+        max_trs=args.max_trs,
+        backend=args.backend,
+        init=args.init,
+        n_jobs=args.n_jobs,
+        n_threads=args.threads,
+        random_state=0,
+    )
+    t0 = time.perf_counter()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        model.fit(Xs, Rs)
+    total = time.perf_counter() - t0
+    scale = math.ceil(args.n_subjects / args.n_jobs) / math.ceil(
+        args.htfa / args.n_jobs
+    )
+    for i, (sec, n, penalized) in enumerate(rounds):
+        kind = "local" if penalized else "stage 0"
+        print(f"round {i}: {kind}, {n} fits, {sec:.1f} s")
+    other = total - sum(r[0] for r in rounds)
+    print(
+        f"total {total:.1f} s ({other:.1f} s outside the subject fits); "
+        f"{model.n_iter_} global iterations ({model.converged_reason_}); engine "
+        f"{model.engine_}"
+    )
+    print(
+        f"projection: {args.n_subjects} subjects, {args.n_jobs} workers: "
+        f"{(total - other) * scale + other:.0f} s"
+    )
 
 
 if __name__ == "__main__":
