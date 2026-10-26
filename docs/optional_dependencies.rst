@@ -49,7 +49,14 @@ htfa installs with ``python -m pip`` when pip works. In an environment without
 pip (for example a bare ``uv venv``), it uses ``uv pip install --python
 <interpreter>`` when ``uv`` is on ``PATH``, and otherwise bootstraps pip with
 ``python -m ensurepip``. If none of these works, the error names the command to
-run. Installers are never looked up in the current directory.
+run. Installers are never looked up in the current directory, and they run in a
+fresh private directory that is removed afterwards. pip keeps reading your user
+and global configuration (for example a corporate index in ``pip.conf``). uv runs
+with ``--no-config``, because it would otherwise read ``uv.toml`` and
+``pyproject.toml`` from its working directory and every parent (a file planted in
+a shared temporary directory could redirect the package index). This also skips
+your own ``uv.toml``; set the index with environment variables such as
+``UV_INDEX_URL`` instead, which uv still reads.
 
 Other libraries
 ---------------

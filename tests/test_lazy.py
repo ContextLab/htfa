@@ -225,9 +225,10 @@ def test_extra_requirements_tutorials():
     assert names == ["hypertools", "sentence-transformers"]
 
 
-def test_installer_uses_pip_when_available():
+def test_installer_uses_pip_when_available(tmp_path):
     # this test environment has pip
-    assert _lazy._installer() == [sys.executable, "-I", "-m", "pip", "install", "-q"]
+    expected = [sys.executable, "-I", "-m", "pip", "install", "-q"]
+    assert _lazy._installer(str(tmp_path)) == expected
 
 
 def _uv_venv(tmp_path: Path) -> Path:
@@ -249,7 +250,14 @@ def _uv_venv(tmp_path: Path) -> Path:
     return py
 
 
-def _require_in(py: Path, path: str, module: str, extra: str | None) -> str:
+def _require_in(
+    py: Path,
+    path: str,
+    module: str,
+    extra: str | None,
+    cwd: Path | None = None,
+    tmpdir: Path | None = None,
+) -> str:
     code = (
         "import sys; from htfa import require; "
         f"m = require({module!r}, extra={extra!r}); "
@@ -257,8 +265,15 @@ def _require_in(py: Path, path: str, module: str, extra: str | None) -> str:
     )
     env = dict(os.environ, PATH=path)
     env.pop("HTFA_AUTO_INSTALL", None)
+    if tmpdir is not None:
+        env["TMPDIR"] = str(tmpdir)
     out = subprocess.run(
-        [str(py), "-c", code], capture_output=True, text=True, timeout=1800, env=env
+        [str(py), "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=1800,
+        env=env,
+        cwd=cwd,
     )
     print(out.stdout, out.stderr)
     assert out.returncode == 0, out.stderr
@@ -276,6 +291,45 @@ def test_require_installs_with_uv_when_pip_is_missing(tmp_path):
     # uv installed into the venv without adding pip
     nopip = subprocess.run([str(py), "-m", "pip", "--version"], capture_output=True)
     assert nopip.returncode != 0
+
+
+@pytest.mark.network
+def test_uv_install_ignores_planted_config(tmp_path):
+    # A uv.toml in the (shared) temp dir and the caller's cwd points every index
+    # at a dead URL; uv reads such files from its cwd and all parents.
+    py = _uv_venv(tmp_path)
+    planted = tmp_path / "shared_tmp"
+    planted.mkdir()
+    (planted / "uv.toml").write_text(
+        '[[index]]\nurl = "http://127.0.0.1:9/simple"\ndefault = true\n'
+    )
+    (planted / "pyproject.toml").write_text(
+        '[project]\nname = "x"\nversion = "0"\n'
+        '[tool.uv]\nindex-url = "http://127.0.0.1:9/simple"\n'
+    )
+    # the planted config is live: uv honours it when run there without --no-config
+    uv = shutil.which("uv")
+    probe = subprocess.run(
+        [uv, "pip", "install", "--dry-run", "--python", str(py), "tifffile"],
+        cwd=planted,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    print(probe.stderr)
+    assert probe.returncode != 0 and "127.0.0.1" in probe.stderr
+    uv_dir = os.path.dirname(uv)
+    err = _require_in(
+        py,
+        os.pathsep.join([uv_dir, "/usr/bin", "/bin"]),
+        "tifffile",
+        "images",
+        cwd=planted,
+        tmpdir=planted,
+    )
+    assert "installing" in err and "127.0.0.1" not in err
+    # the private working directory was removed
+    assert sorted(p.name for p in planted.iterdir()) == ["pyproject.toml", "uv.toml"]
 
 
 @pytest.mark.network

@@ -10,6 +10,7 @@ import importlib.util
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -117,35 +118,38 @@ def declared_requirement(module: str) -> str:
     return f"{found}{spec}"
 
 
-def _succeeds(cmd: list[str]) -> bool:
+def _succeeds(cmd: list[str], cwd: str) -> bool:
     try:
-        run = subprocess.run(
-            cmd, capture_output=True, check=False, cwd=tempfile.gettempdir()
-        )
+        run = subprocess.run(cmd, capture_output=True, check=False, cwd=cwd)
     except OSError:
         return False
     return run.returncode == 0
 
 
-def _installer() -> list[str]:
+def _installer(cwd: str) -> list[str]:
     """Command prefix that installs packages into this interpreter's environment.
 
     pip if it works; else uv (a bare ``uv venv`` has no pip); else pip
-    bootstrapped with ensurepip.
+    bootstrapped with ensurepip. ``cwd`` is the private directory they run in.
     """
-    # -I and a neutral cwd keep a planted pip.py in the caller's cwd off sys.path
+    # -I keeps a planted pip.py off sys.path; pip still reads the user's and
+    # the global pip.conf (a corporate index keeps working), never the cwd.
     pip = [sys.executable, "-I", "-m", "pip"]
-    if _succeeds([*pip, "--version"]):
+    if _succeeds([*pip, "--version"], cwd):
         return [*pip, "install", "-q"]
     uv = _find_executable("uv")
     if uv is not None:
         print(f"htfa: pip is not available; installing with {uv}", file=sys.stderr)
-        return [uv, "pip", "install", "-q", "--python", sys.executable]
+        # uv reads uv.toml / pyproject.toml [tool.uv] from the cwd and every
+        # parent, which could redirect the index; --no-config ignores them. It
+        # also ignores the user's own uv.toml (UV_* environment variables, such
+        # as UV_INDEX_URL, still apply).
+        return [uv, "--no-config", "pip", "install", "-q", "--python", sys.executable]
     print(
         "htfa: pip is not available; bootstrapping it with ensurepip", file=sys.stderr
     )
-    if _succeeds([sys.executable, "-I", "-m", "ensurepip"]) and _succeeds(
-        [*pip, "--version"]
+    if _succeeds([sys.executable, "-I", "-m", "ensurepip"], cwd) and _succeeds(
+        [*pip, "--version"], cwd
     ):
         return [*pip, "install", "-q"]
     raise ImportError(
@@ -156,7 +160,12 @@ def _installer() -> list[str]:
 
 
 def _pip_install(args: list[str]) -> None:
-    subprocess.run([*_installer(), *args], check=True, cwd=tempfile.gettempdir())
+    # A fresh private directory as cwd: nothing in the shared temp dir is read.
+    work = tempfile.mkdtemp(prefix="htfa-install-")
+    try:
+        subprocess.run([*_installer(work), *args], check=True, cwd=work)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
     importlib.invalidate_caches()
 
 
