@@ -116,7 +116,11 @@ of VTK's display-free OpenGL windows before the first render, by setting
 
 Each is first tried in a short subprocess (VTK crashes the process when a
 backend's library is missing), and the first that works is used. A value of
-``VTK_DEFAULT_OPENGL_WINDOW`` that you set yourself is kept. If neither works,
+``VTK_DEFAULT_OPENGL_WINDOW`` that you set yourself is kept. The choice is
+checked again on each plot: if ``DISPLAY`` is set later (for example after
+starting Xvfb), the window htfa selected is dropped and VTK uses the display.
+When no backend works, that result is remembered for the rest of the process,
+so restart Python after installing the libraries. If neither works,
 the call raises ``RuntimeError`` naming the packages to install; on
 Debian/Ubuntu:
 
