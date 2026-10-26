@@ -25,6 +25,7 @@ cached (see `mesh_cache_dir`).
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import shutil
 import subprocess
@@ -1198,12 +1199,23 @@ class _Scene:
 
     def orbit(self, R: Array, center: Array, scale: float) -> None:
         """Place the camera so the brain looks rotated by ``R`` about ``center``."""
+        # Camera outside the sphere (radius r about center) that holds the
+        # mesh and the nodes; the clipping range spans that sphere.
+        r = 1.05 * self._reach(center) + 1.0
         cam = self.pl.camera
         cam.focal_point = center
-        cam.position = center + 500.0 * (R.T @ self.view_dir)
+        cam.position = center + 2.0 * r * (R.T @ self.view_dir)
         cam.up = R.T @ self.view_up
         cam.parallel_scale = scale
-        cam.clipping_range = (1, 1000)
+        cam.clipping_range = (r, 3.0 * r)
+
+    def _reach(self, center: Array) -> float:
+        """Largest distance (mm) from ``center`` to the mesh or a node surface."""
+        d = np.linalg.norm(self.centers - center, axis=1) + self.radii
+        reach = float(d.max()) if d.size else 0.0
+        if self.verts is not None:
+            reach = max(reach, float(np.linalg.norm(self.verts - center, axis=1).max()))
+        return reach
 
     def image(self) -> Any:
         Image = _pil()
@@ -1396,13 +1408,24 @@ def plot_network(
     return img
 
 
+def _check_fps(fps: float) -> None:
+    if not (math.isfinite(float(fps)) and float(fps) > 0):
+        raise ValueError(f"fps must be a positive, finite number, got {fps!r}")
+
+
 def _movie_length(
     duration: float | None, n_frames: int | None, fps: float
 ) -> int | None:
     """Number of movie frames set by ``duration`` or ``n_frames`` (else None)."""
+    _check_fps(fps)
     if duration is not None and n_frames is not None:
         raise ValueError("give duration or n_frames, not both")
     if duration is not None:
+        if not (math.isfinite(float(duration)) and float(duration) > 0):
+            raise ValueError(
+                f"duration must be a positive, finite number of seconds, "
+                f"got {duration!r}"
+            )
         n = round(float(duration) * fps)
         if n < 1:
             raise ValueError(f"duration {duration} s at {fps} fps gives no frames")
@@ -1637,6 +1660,7 @@ def write_animation(
     identical consecutive GIF frames once, with their durations added, so
     such a GIF has fewer frames but the same running time.
     """
+    _check_fps(fps)
     out = Path(out)
     suffix = out.suffix.lower()
     if suffix not in (".mp4", ".gif"):

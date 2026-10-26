@@ -1621,3 +1621,49 @@ def test_results_plot_network_draws_display_nodes(res_htfa):
     print("red/blue px at +edge", _red(pos).sum(), _blue(pos).sum())
     assert _red(pos).sum() >= 10 and _blue(pos).sum() == 0
     assert _blue(neg).sum() >= 10 and _red(neg).sum() == 0
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"duration": float("nan")}, "duration must be a positive, finite"),
+        ({"duration": float("inf")}, "duration must be a positive, finite"),
+        ({"duration": -1.0}, "duration must be a positive, finite"),
+        ({"fps": 0}, "fps must be a positive, finite"),
+        ({"fps": -5, "n_frames": 3}, "fps must be a positive, finite"),
+        ({"fps": float("nan"), "duration": 1}, "fps must be a positive, finite"),
+    ],
+)
+def test_animate_network_rejects_bad_duration_and_fps(tmp_path, kwargs, match):
+    c = np.array([[-40.0, -20, 10], [-40, 20, 10]])
+    E = np.array([[0, 1.0], [1.0, 0]])
+    with pytest.raises(ValueError, match=match):
+        bn.animate_network(c, E, tmp_path / "x.gif", mesh=None, snap=False, **kwargs)
+    with pytest.raises(ValueError, match="fps must be a positive, finite"):
+        bn.write_animation([], tmp_path / "y.gif", fps=0)
+
+
+def test_spin_camera_fits_a_large_scene(tmp_path):
+    # Nodes 900 mm from the center, two of them on the view axis: a camera at a
+    # fixed 500 mm with clipping range (1, 1000) loses both; the camera must be
+    # placed from the scene's size.
+    c = np.array([[900.0, 0, 0], [-900, 0, 0], [0, 900, 0], [0, -900, 0]])
+    bn.animate_network(
+        c,
+        np.zeros((4, 4)),
+        tmp_path / "spin.gif",
+        mesh=None,
+        snap=False,
+        n_frames=4,
+        spin=(0, 0, 0.5),
+        size=(200, 200),
+        radius_kb=(0.0, 80.0),
+        frames_dir=tmp_path / "frames",
+    )
+    first = sorted((tmp_path / "frames").iterdir())[0]
+    a = np.asarray(Image.open(first).convert("RGB")).astype(float)
+    h, w = a.shape[:2]
+    middle = a[h // 2 - 3 : h // 2 + 3, w // 2 - 3 : w // 2 + 3]
+    print(first.name, "center mean:", middle.mean(), "image min:", a.min())
+    # the nodes on the view axis cover the image center
+    assert middle.mean() < 200
