@@ -1038,8 +1038,9 @@ def test_results_plot_network_renders(res_htfa, tmp_path):
     with Image.open(out) as saved:
         assert saved.size == (1600, 1000) and saved.mode == "RGB"
     a = _rgb(img)
-    pos = _midpoint_window(a, r.global_centers, 0, 1)
-    neg = _midpoint_window(a, r.global_centers, 2, 3)
+    drawn = r.display_nodes()[0]  # nodes are snapped by default
+    pos = _midpoint_window(a, drawn, 0, 1)
+    neg = _midpoint_window(a, drawn, 2, 3)
     print("red/blue px at +edge", _red(pos).sum(), _blue(pos).sum())
     print("red/blue px at -edge", _red(neg).sum(), _blue(neg).sum())
     assert _red(pos).sum() >= 10 and _blue(pos).sum() == 0
@@ -1060,8 +1061,9 @@ def test_results_animate_network_renders(res_htfa, tmp_path):
         with Image.open(tmp_path / "f" / f"{k}.png") as im:
             assert im.size == (1600, 1000) and im.mode == "RGB"
             frames.append(_rgb(im))
-    first = _midpoint_window(frames[0], r.centers[1], 0, 1)
-    second = _midpoint_window(frames[1], r.centers[1], 0, 1)
+    drawn = r.display_nodes(1)[0]  # nodes are snapped by default
+    first = _midpoint_window(frames[0], drawn, 0, 1)
+    second = _midpoint_window(frames[1], drawn, 0, 1)
     print("edge 0-1 red/blue px, frame 1:", _red(first).sum(), _blue(first).sum(),
           "frame 2:", _red(second).sum(), _blue(second).sum())  # fmt: skip
     assert _red(first).sum() >= 10 and _blue(first).sum() == 0
@@ -1421,9 +1423,11 @@ def test_plot_network_projects_nodes_into_mask(tmp_path):
     a, b = _rgb(snapped), _rgb(raw)
     assert _gray(a, c_eff[0, 1], c_eff[0, 2]) and _window(a, 70, 0).min() == 255
     assert _gray(b, 70, 0) and _window(b, c_eff[0, 1], c_eff[0, 2]).min() == 255
-    # the same image as the effective nodes drawn unsnapped with their widths
-    same = bn.plot_network(c_eff, sizes=w_eff, mesh=None, snap=False)
-    assert bn.image_diff(snapped, same) == 0.0
+    # both nodes drawn at their effective centers, sized by lambda_eff
+    radii = bn.node_radius(w_eff)
+    got = [_gray_run(a, c_eff[k, 1], c_eff[k, 2]) for k in range(2)]
+    print("radii (mm)", radii, "diameters (px)", got)
+    np.testing.assert_allclose(got, 2 * radii * SCALE, atol=3)
 
 
 def test_plot_network_default_mni_mask_for_bare_centers():
@@ -1441,13 +1445,31 @@ def test_plot_network_default_mni_mask_for_bare_centers():
 
 
 def test_plot_network_mass_options(tmp_path):
-    """fade_by_mass lightens a node mostly outside the mask; errors without snap."""
+    """fade_by_mass lightens a node mostly outside the mask and scale_by_mass
+    shrinks it; errors without snap.
+
+    Separate renders are not bitwise reproducible on CI's software OpenGL, so
+    the renders are compared through measured properties: the darkness at a
+    node's center and the diameter of its sphere.
+    """
     mask = _sphere(40.0, 2.0)
     # three nodes so that node_radius's min-max mapping cannot hide the scaling
     centers = np.array([[0.0, 50.0, 0.0], [0.0, -10.0, 0.0], [0.0, 0.0, 40.0]])
     widths = np.array([100.0, 100.0, 100.0])
-    c_eff, _, info = bn.effective_nodes(centers, widths, mask)
-    print("mass fractions", info["mass_fraction"])
+    c_eff, w_eff, info = bn.effective_nodes(centers, widths, mask)
+    mass = info["mass_fraction"]
+    print("mass fractions", mass)
+    assert mass[0] < 0.2 and mass[1] > 0.99 and 0.3 < mass[2] < 0.7
+    # the drawn sizes and opacities follow the mass fractions
+    _, sizes, alpha = bn._display_nodes(
+        centers, None, widths, "global", True, mask, fade_by_mass=True
+    )
+    np.testing.assert_allclose(sizes, w_eff)
+    np.testing.assert_allclose(alpha, 0.15 + 0.85 * np.clip(mass, 0, 1))
+    _, scaled_sizes, _ = bn._display_nodes(
+        centers, None, widths, "global", True, mask, scale_by_mass=True
+    )
+    np.testing.assert_allclose(scaled_sizes, w_eff * mass)
     plain = _rgb(bn.plot_network(centers, widths=widths, mask=mask, mesh=None))
     faded = _rgb(
         bn.plot_network(
@@ -1460,12 +1482,28 @@ def test_plot_network_mass_options(tmp_path):
         "min gray plain/faded", _window(plain, y, z).min(), _window(faded, y, z).min()
     )
     assert _window(faded, y, z).min() > _window(plain, y, z).min() + 40
-    # the interior node keeps full opacity
-    assert np.array_equal(_window(faded, -10, 0), _window(plain, -10, 0))
-    scaled = bn.plot_network(
-        centers, widths=widths, mask=mask, mesh=None, scale_by_mass=True
-    )
-    assert bn.image_diff(scaled, Image.fromarray(plain.astype(np.uint8))) > 0
+    # the interior node keeps (nearly) full opacity: as dark as without fading
+    inner_plain, inner_faded = _window(plain, -10, 0), _window(faded, -10, 0)
+    print("interior node min gray plain/faded", inner_plain.min(), inner_faded.min())
+    assert inner_faded.max() < 200 and abs(inner_faded.min() - inner_plain.min()) <= 5
+    # scale_by_mass: each sphere's measured diameter matches its radius. A
+    # fixed radius = 0.08 * size (clipped to 1-10 mm) shows the scaling
+    # directly; the default min-max mapping would rescale it away.
+    radius = {"radius_kb": (0.08, 0.0), "radius_clip": (1.0, 10.0)}
+    diameters = []
+    for scale, s in ((False, w_eff), (True, w_eff * mass)):
+        img = _rgb(
+            bn.plot_network(centers, widths=widths, mask=mask, mesh=None,
+                            scale_by_mass=scale, **radius)
+        )  # fmt: skip
+        radii = np.clip(0.08 * s, 1.0, 10.0)
+        got = [_gray_run(img, c_eff[k, 1], c_eff[k, 2]) for k in range(3)]
+        print("scale_by_mass", scale, "radii (mm)", radii, "diameters (px)", got)
+        np.testing.assert_allclose(got, 2 * radii * SCALE, atol=3)
+        diameters.append(got)
+    # the boundary node (mass ~0.4) is drawn much smaller; the interior one not
+    assert diameters[1][2] < diameters[0][2] - 20
+    assert abs(diameters[1][1] - diameters[0][1]) <= 3
     with pytest.raises(ValueError, match="snap"):
         bn.plot_network(
             centers, widths=widths, mesh=None, snap=False, fade_by_mass=True
