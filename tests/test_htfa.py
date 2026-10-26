@@ -404,3 +404,100 @@ def test_available_threads_ignores_serial_openmp_stub():
     for pool in pools:
         print(pool)
     assert available == 2
+
+
+# Template updates on make_htfa_data(4, (15, 15, 15), 80, K=6), seeds 0-2
+# (scratch comparison, init 'ncorr'): global iterations to stop 11.7 ('brainiak'),
+# 2.7 ('fixed'), 3.0 ('empirical'), with the same template and local errors.
+FAST_UPDATE_MAX_ITER = 5  # measured (seed 0, init 'auto'): see the printout
+
+
+@pytest.mark.parametrize("update", ["fixed", "empirical"])
+def test_fixed_prior_updates_recover_truth_in_few_global_iterations(update) -> None:
+    Xs, Rs, truth = make_htfa_data(
+        n_subjects=4, grid_shape=(15, 15, 15), n_samples=80, K=6, random_state=0
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ConvergenceWarning)
+        t0 = time.perf_counter()
+        model = HTFA(
+            K=6, template_update=update, standardize=False, random_state=0
+        ).fit(Xs, Rs)
+        reference = HTFA(K=6, standardize=False, random_state=0).fit(Xs, Rs)
+    print(
+        f"{update}: {model.n_iter_} global iterations ({model.converged_reason_}); "
+        f"'brainiak' {reference.n_iter_}; {time.perf_counter() - t0:.1f} s; "
+        f"prior center sd {np.sqrt(np.diag(model.prior_centers_cov_))}"
+    )
+    _check_recovery(model, Rs, truth, Xs)
+    assert model.converged_reason_ in ("threshold", "plateau", "objective")
+    assert model.n_iter_ <= FAST_UPDATE_MAX_ITER < reference.n_iter_
+    assert len(model.objective_history_) == model.n_iter_
+    # The template is the mean of the local estimates (in template order), and
+    # the subject-level prior stays fixed.
+    np.testing.assert_allclose(
+        model.template_history_[-1][0], np.mean(model.centers_, axis=0), atol=1e-12
+    )
+    np.testing.assert_allclose(
+        model.global_centers_cov_[0], model.prior_centers_cov_ / 4, rtol=1e-12
+    )
+
+
+def test_empirical_dispersion_recovers_covariance_and_ignores_mismatches() -> None:
+    from htfa.htfa import empirical_dispersion
+
+    rng = np.random.default_rng(1)
+    true_cov = np.array([[4.0, 1.0, 0.0], [1.0, 2.0, 0.0], [0.0, 0.0, 1.0]])
+    n, K = 30, 40
+    mu = rng.uniform(0, 100, (K, 3))
+    centers = mu + rng.multivariate_normal(np.zeros(3), true_cov, (n, K))
+    widths = 50.0 + rng.normal(0.0, 3.0, (n, K))
+    clean_cov, clean_var = empirical_dispersion(centers, widths, 1e-3 * np.eye(3), 0.0)
+    # 3% of the (s, k) pairs are factor mismatches: centers 40 units away.
+    bad = rng.random((n, K)) < 0.03
+    shifted = centers + bad[:, :, None] * 40.0
+    cov, var = empirical_dispersion(shifted, widths, 1e-3 * np.eye(3), 0.0)
+    print(f"clean {np.round(clean_cov, 2).tolist()}, {clean_var:.3f}")
+    print(f"with mismatches {np.round(cov, 2).tolist()}")
+    np.testing.assert_allclose(clean_cov, true_cov, atol=0.25)
+    assert clean_var == pytest.approx(9.0, rel=0.1)
+    np.testing.assert_allclose(cov, true_cov, atol=0.5)
+    floored, floored_var = empirical_dispersion(centers, widths, 100.0 * np.eye(3), 1e3)
+    np.testing.assert_allclose(np.linalg.eigvalsh(floored), 100.0, rtol=0.05)
+    assert floored_var == 1e3
+    with pytest.raises(ValueError, match="at least 2 subjects"):
+        empirical_dispersion(centers[:1], widths[:1], np.eye(3), 0.0)
+
+
+def test_global_loop_stops_on_plateau_or_objective_without_warning() -> None:
+    """With threshold=0 the change rule can never fire; the plateau and
+    objective rules must still stop the loop well before max_global_iter, with
+    no ConvergenceWarning."""
+    Xs, Rs, _ = make_htfa_data(
+        n_subjects=3, grid_shape=(12, 12), n_samples=40, K=3, random_state=0
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ConvergenceWarning)
+        model = HTFA(
+            K=3,
+            threshold=0.0,
+            max_global_iter=40,
+            init="ncorr",
+            standardize=False,
+            random_state=0,
+        ).fit(Xs, Rs)
+    obj = np.array(model.objective_history_)
+    print(
+        f"{model.n_iter_} iterations ({model.converged_reason_}); relative "
+        f"objective changes {np.abs(np.diff(obj)) / obj[:-1]}"
+    )
+    assert model.converged_ and model.converged_reason_ in ("plateau", "objective")
+    assert model.n_iter_ < 40
+
+
+def test_htfa_rejects_unknown_template_update() -> None:
+    Xs, Rs, _ = make_htfa_data(
+        n_subjects=2, grid_shape=(10, 10), n_samples=20, K=3, random_state=0
+    )
+    with pytest.raises(ValueError, match="template_update must be one of"):
+        HTFA(K=3, template_update="em").fit(Xs, Rs)

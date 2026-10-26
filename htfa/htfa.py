@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 from joblib import Parallel, delayed, effective_n_jobs
 from numpy.typing import ArrayLike, NDArray
+from scipy.stats import chi2
 from sklearn.base import BaseEstimator
 from sklearn.exceptions import ConvergenceWarning
 from threadpoolctl import threadpool_info, threadpool_limits
@@ -18,6 +19,28 @@ from htfa._matching import match_factors
 from htfa.tfa import TFA
 
 Array = NDArray[np.float64]
+
+TEMPLATE_UPDATES = ("brainiak", "fixed", "empirical")
+# Global stopping: besides the scaled template change reaching ``threshold``,
+# stop when it has not fallen below PLATEAU_RATIO times its lowest value so far
+# for PLATEAU_PATIENCE global iterations ('plateau'), or when the summed final
+# local objectives changed by less than OBJECTIVE_RTOL (relative) in each of the
+# last OBJECTIVE_PATIENCE iterations ('objective'). Measured: on real data
+# (2014 DFFR, 23 subjects, K=100, 'brainiak') the change went 0.0039, 0.0036,
+# 0.0035, 0.0035, 0.0034 (each step < 10% lower: a plateau); on
+# make_htfa_data(3, (12, 12), 40, K=3) with 'brainiak' it fell by about 0.85x per
+# 3 iterations from iteration 13 on while the summed objective kept rising by
+# 5e-4 to 9e-4 per iteration (the prior tightens every iteration), and with
+# 'fixed' the summed objective changed by 7.7e-4, then < 1e-5.
+PLATEAU_RATIO = 0.9
+PLATEAU_PATIENCE = 3
+OBJECTIVE_RTOL = 1e-5
+OBJECTIVE_PATIENCE = 2
+# 'empirical': (s, k) deviations from the across-subject median whose squared
+# Mahalanobis length is above this quantile are treated as factor mismatches
+# and left out of the dispersion estimate (TRIM_STEPS reweighting passes).
+DISPERSION_QUANTILE = 0.9
+TRIM_STEPS = 3
 
 
 def map_update(
@@ -83,6 +106,56 @@ def assign_posterior(
     return centers[perm], widths[perm], centers_cov[perm], widths_var[perm]
 
 
+def empirical_dispersion(
+    centers: Array, widths: Array, floor_cov: Array, floor_var: float
+) -> tuple[Array, float]:
+    """Pooled across-subject covariance (D, D) of matched centers and variance of
+    matched widths, ``centers`` (n_subj, K, D) and ``widths`` (n_subj, K).
+
+    Deviations from the per-factor median over subjects are pooled over
+    factors (with the ``n / (n - 1)`` correction). `TRIM_STEPS` times, the
+    deviations whose squared Mahalanobis length under the current estimate is
+    above its `DISPERSION_QUANTILE` quantile are left out as likely factor
+    mismatches, and the trimmed estimate is divided by its expectation under
+    Gaussian deviations, ``F_{D+2}(q) / F_D(q)`` with ``F_m`` the chi-square
+    distribution function with m degrees of freedom and ``q`` its
+    `DISPERSION_QUANTILE` quantile (D = 1 for the widths). The covariance is
+    floored at ``floor_cov`` (its eigenvalues are raised to at least
+    ``floor_cov``'s smallest) and the variance at ``floor_var``.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> rng = np.random.default_rng(0)
+    >>> c = rng.normal(0.0, 2.0, (40, 30, 3))
+    >>> w = 10.0 + rng.normal(0.0, 0.5, (40, 30))
+    >>> cov, var = empirical_dispersion(c, w, 1e-3 * np.eye(3), 1e-6)
+    >>> np.round(np.diag(cov), 1), round(var, 2)
+    (array([3.9, 4. , 4.2]), 0.26)
+    """
+    n = centers.shape[0]
+    if n < 2:
+        raise ValueError("template_update='empirical' needs at least 2 subjects")
+
+    def trimmed(values: Array) -> Array:
+        dev = (values - np.median(values, axis=0)).reshape(-1, values.shape[-1])
+        m = dev.shape[1]
+        chi_q = chi2.ppf(DISPERSION_QUANTILE, m)
+        consistency = chi2.cdf(chi_q, m + 2) / chi2.cdf(chi_q, m)
+        cov = dev.T @ dev / len(dev)
+        for _ in range(TRIM_STEPS):
+            d2 = np.einsum("ij,ij->i", dev @ np.linalg.pinv(cov), dev)
+            keep = dev[d2 <= np.quantile(d2, DISPERSION_QUANTILE)]
+            cov = keep.T @ keep / len(keep) * n / (n - 1) / consistency
+        return cov
+
+    cov = trimmed(centers)
+    vals, vecs = np.linalg.eigh(cov)
+    vals = np.maximum(vals, float(np.min(np.linalg.eigvalsh(floor_cov))))
+    var = float(trimmed(widths[:, :, None])[0, 0])
+    return (vecs * vals) @ vecs.T, max(var, floor_var)
+
+
 def _available_threads() -> int:
     """Threads the caller allows: the lowest thread count of the loaded BLAS
     libraries (a limit from ``OPENBLAS_NUM_THREADS``, ``OMP_NUM_THREADS``, ... or
@@ -143,7 +216,24 @@ class HTFA(BaseEstimator):
         give the initial template and the subjects' own starts.
     threshold : float
         Convergence threshold on the scaled template change
-        ``max(max|dC| / length, max|dw| / w)``, as in `TFA`.
+        ``max(max|dC| / length, max|dw| / w)``, as in `TFA`. The global loop
+        also stops when that change has not fallen below 0.9 times its lowest
+        value so far for 3 iterations ("plateau") or when the summed final
+        local objectives (``cost_`` of the subject fits) changed by less than a
+        relative 1e-5 in each of the last 2 iterations ("objective").
+    template_update : {'brainiak', 'fixed', 'empirical'}, default='brainiak'
+        How the template and the subjects' prior are updated after each round
+        of local fits. ``'brainiak'``: BrainIAK's Gaussian MAP update; its
+        posterior (mean and covariance) is the next round's prior, so the
+        subject-level covariance shrinks as ``Sigma / (1 + i n)`` over
+        iterations. ``'fixed'``: the subject-level prior covariance stays at its
+        initial value ``Sigma = cov(R) K^(-2/3)`` (widths: ``max_sigma(R)``) and
+        the template is the mean of the matched local estimates (the minimizer
+        of the summed penalized objectives over the template).
+        ``'empirical'``: like ``'fixed'``, with ``Sigma`` and the width
+        variance estimated once from the across-subject dispersion of the
+        matched stage-0 fits (`empirical_dispersion`, floored at 1% of the
+        initial values).
     nlss_method, nlss_loss, x_scale, weight_method, upper_ratio, lower_ratio,
     voxel_ratio, tr_ratio, max_voxels, max_trs, standardize, backend, init,
     n_screen_iter
@@ -172,9 +262,16 @@ class HTFA(BaseEstimator):
     global_centers_ : ndarray, shape (K, D)
     global_widths_ : ndarray, shape (K,)
     global_centers_cov_ : ndarray, shape (K, D, D)
-        Posterior covariance of the global centers.
+        Posterior covariance of the global centers (``'fixed'`` and
+        ``'empirical'``: ``Sigma / n_subjects``, that of a mean of
+        ``n_subjects`` draws).
     global_widths_var_ : ndarray, shape (K,)
-        Posterior variance of the global widths.
+        Posterior variance of the global widths (likewise).
+    prior_centers_cov_ : ndarray, shape (D, D)
+        Subject-level center covariance of the last local fits' prior
+        (``'brainiak'``: that of factor 0).
+    prior_widths_var_ : float
+        Subject-level width variance of the last local fits' prior.
     centers_, widths_, weights_ : list of ndarray
         Per-subject (K, D), (K,) and (K, T_s) estimates, in template order.
     free_fits_ : list of (ndarray, ndarray)
@@ -188,6 +285,11 @@ class HTFA(BaseEstimator):
         each global iteration (``n_iter_ + 1`` entries).
     n_iter_ : int
     converged_ : bool
+        Whether the global loop stopped before ``max_global_iter``.
+    converged_reason_ : {'threshold', 'plateau', 'objective', 'max_iter'}
+        Why the global loop stopped (see ``threshold``).
+    objective_history_ : list of float
+        Summed final local objectives after each global iteration.
     engine_ : str
 
     Examples
@@ -213,6 +315,7 @@ class HTFA(BaseEstimator):
         max_local_iter: int = 10,
         template_max_iter: int = 100,
         threshold: float = 1e-3,
+        template_update: str = "brainiak",
         nlss_method: str = "bounded-lm",
         nlss_loss: str = "soft_l1",
         x_scale: Any = "jac",
@@ -237,6 +340,7 @@ class HTFA(BaseEstimator):
         self.max_local_iter = max_local_iter
         self.template_max_iter = template_max_iter
         self.threshold = threshold
+        self.template_update = template_update
         self.nlss_method = nlss_method
         self.nlss_loss = nlss_loss
         self.x_scale = x_scale
@@ -380,6 +484,11 @@ class HTFA(BaseEstimator):
         >>> len(model.weights_), model.weights_[0].shape
         (2, (2, 10))
         """
+        if self.template_update not in TEMPLATE_UPDATES:
+            raise ValueError(
+                f"template_update must be one of {TEMPLATE_UPDATES}, "
+                f"got {self.template_update!r}"
+            )
         if self.max_global_iter < 1:
             raise ValueError(
                 f"max_global_iter must be >= 1, got {self.max_global_iter}"
@@ -443,13 +552,23 @@ class HTFA(BaseEstimator):
         C, w = given[t] if template_start is None else template_start
         C, w = C.copy(), w.copy()
         self.template_history_ = [(C, w)]
+        brainiak = self.template_update == "brainiak"
+        if self.template_update == "empirical":
+            matched = [match_factors(C, g[0]) for g in given]
+            centers_cov, widths_var = empirical_dispersion(
+                np.stack([g[0][p] for g, p in zip(given, matched, strict=True)]),
+                np.stack([g[1][p] for g, p in zip(given, matched, strict=True)]),
+                0.01 * centers_cov,
+                0.01 * widths_var,
+            )
         C_cov = np.tile(centers_cov, (K, 1, 1))
         w_var = np.full(K, widths_var)
-        length = np.sqrt(widths_var / 2.0)
+        length = np.sqrt(max_sigma(R_t) / 2.0)
 
-        self.converged_ = False
+        reason = "max_iter"
         fits: list[TFA] = []
-        n_iter = 0
+        objectives: list[float] = []
+        best, stale, n_iter = np.inf, 0, 0
         while n_iter < self.max_global_iter:
             n_iter += 1
             prior = Prior(C, w, C_cov, w_var, 1.0)
@@ -491,32 +610,64 @@ class HTFA(BaseEstimator):
                 local_C[s], local_w[s] = f.centers_[perm], f.widths_[perm]
                 f.centers_, f.widths_ = local_C[s], local_w[s]
                 f.weights_ = f.weights_[perm]
-            new_C, new_C_cov = np.empty_like(C), np.empty_like(C_cov)
-            for k in range(K):
-                new_C[k], new_C_cov[k] = map_update(
-                    C[k], C_cov[k], g_cov_scaled, local_C[:, k]
+            if brainiak:
+                new_C, new_C_cov = np.empty_like(C), np.empty_like(C_cov)
+                for k in range(K):
+                    new_C[k], new_C_cov[k] = map_update(
+                        C[k], C_cov[k], g_cov_scaled, local_C[:, k]
+                    )
+                common = 1.0 / (w_var + g_var_scaled)
+                new_w = (
+                    w_var * common * local_w.mean(axis=0) + common * g_var_scaled * w
                 )
-            common = 1.0 / (w_var + g_var_scaled)
-            new_w = w_var * common * local_w.mean(axis=0) + common * g_var_scaled * w
-            new_w_var = w_var * common * g_var_scaled
-            new_C, new_w, new_C_cov, new_w_var = assign_posterior(
-                C, new_C, new_w, new_C_cov, new_w_var
-            )
+                new_w_var = w_var * common * g_var_scaled
+                new_C, new_w, new_C_cov, new_w_var = assign_posterior(
+                    C, new_C, new_w, new_C_cov, new_w_var
+                )
+            else:
+                # Fixed subject-level prior: the template minimizing the summed
+                # penalized objectives is the mean of the local estimates.
+                new_C, new_w = local_C.mean(axis=0), local_w.mean(axis=0)
+                new_C_cov, new_w_var = C_cov, w_var
             change = max(
                 float(np.max(np.abs(new_C - C))) / length,
                 float(np.max(np.abs(new_w - w) / w)),
             )
+            self.prior_centers_cov_, self.prior_widths_var_ = C_cov[0], float(w_var[0])
             C, w, C_cov, w_var = new_C, new_w, new_C_cov, new_w_var
             self.template_history_.append((C, w))
+            objectives.append(float(sum(f.cost_ for f in fits)))
+            rel = [
+                abs(b - a) / abs(a)
+                for a, b in zip(objectives[:-1], objectives[1:], strict=True)
+            ]
             if self.verbose:
                 print(
-                    f"HTFA global iteration {n_iter}: scaled change {change:.6g}",
+                    f"HTFA global iteration {n_iter}: scaled change {change:.6g}"
+                    + (f", objective change {rel[-1]:.3g}" if rel else ""),
                     flush=True,
                 )
+            if change < PLATEAU_RATIO * best:
+                best, stale = change, 0
+            else:
+                best, stale = min(best, change), stale + 1
             if change <= self.threshold:
-                self.converged_ = True
+                reason = "threshold"
+            elif stale >= PLATEAU_PATIENCE:
+                reason = "plateau"
+            elif (
+                len(rel) >= OBJECTIVE_PATIENCE
+                and max(rel[-OBJECTIVE_PATIENCE:]) < OBJECTIVE_RTOL
+            ):
+                reason = "objective"
+            if reason != "max_iter":
                 break
         self.n_iter_ = n_iter
+        self.converged_reason_ = reason
+        self.converged_ = reason != "max_iter"
+        self.objective_history_ = objectives
+        if not brainiak:
+            C_cov, w_var = C_cov / n_subj, w_var / n_subj
         if not self.converged_:
             warnings.warn(
                 f"HTFA did not converge in max_global_iter={self.max_global_iter} "
