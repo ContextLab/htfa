@@ -10,8 +10,10 @@ onto 2-7 mm, edge diameter ``|E|`` mm at opacity 0.7, and an orthographic left
 lateral view.
 
 Rendering uses pyvista off screen; the ``brain3d`` extra is installed on first
-use. The brain surfaces are BrainNet Viewer's own ``.nv`` meshes. BrainNet
-Viewer is distributed under the GNU GPL, so htfa does not ship them: they are
+use. On Linux without a display (Colab, containers), VTK's EGL offscreen
+window (or else OSMesa) is selected automatically. The brain surfaces are
+BrainNet Viewer's own ``.nv`` meshes. BrainNet Viewer is distributed under the
+GNU GPL, so htfa does not ship them: they are
 downloaded from NITRC on first use, checked against SHA-256 checksums, and
 cached (see `mesh_cache_dir`).
 """
@@ -25,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -927,6 +930,66 @@ def _tubes(
     return pv.PolyData(pts.reshape(-1, 3), quads.reshape(-1))
 
 
+# VTK's offscreen OpenGL windows for Linux without a display, in order of
+# preference: EGL (libEGL with Mesa's llvmpipe or a GPU driver; preinstalled on
+# Colab), then OSMesa.
+HEADLESS_WINDOWS = ("vtkEGLRenderWindow", "vtkOSOpenGLRenderWindow")
+_GL_PROBE = """
+import vtkmodules.vtkRenderingOpenGL2
+from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
+w = vtkRenderWindow()
+w.SetOffScreenRendering(1)
+w.SetSize(8, 8)
+w.AddRenderer(vtkRenderer())
+w.Render()
+print(w.GetClassName())
+"""
+
+
+def _gl_window_works(window: str) -> bool:
+    """Whether VTK renders with the OpenGL window class ``window``.
+
+    Probed in a subprocess, because VTK crashes the process when the library
+    behind a window class is missing.
+    """
+    env = dict(os.environ, VTK_DEFAULT_OPENGL_WINDOW=window)
+    try:
+        run = subprocess.run(
+            [sys.executable, "-I", "-c", _GL_PROBE],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=120,
+            cwd=tempfile.gettempdir(),
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return run.returncode == 0 and run.stdout.split()[-1:] == [window]
+
+
+def _headless_window() -> str | None:
+    """Select VTK's offscreen window on Linux without a display.
+
+    Returns the window class in use (setting ``VTK_DEFAULT_OPENGL_WINDOW`` if it
+    was unset), or ``None`` when a display (or another OS) needs no change.
+    """
+    if not sys.platform.startswith("linux") or os.environ.get("DISPLAY"):
+        return None
+    chosen = os.environ.get("VTK_DEFAULT_OPENGL_WINDOW")
+    if chosen:
+        return chosen
+    for window in HEADLESS_WINDOWS:
+        if _gl_window_works(window):
+            os.environ["VTK_DEFAULT_OPENGL_WINDOW"] = window
+            return window
+    raise RuntimeError(
+        "No display (DISPLAY is unset) and no offscreen OpenGL library: VTK needs "
+        "Mesa's EGL or OSMesa to render without one. Install EGL with "
+        "`apt-get install libegl1 libegl-mesa0` (Debian/Ubuntu; Colab has it), "
+        "or set DISPLAY to a running X server such as Xvfb."
+    )
+
+
 class _Scene:
     """Off-screen plotter holding mesh and nodes; edges change per frame."""
 
@@ -964,6 +1027,7 @@ class _Scene:
         self.view_dir, self.view_up = (np.asarray(v, float) for v in VIEWS[view])
         self.verts = None if mesh is None else np.asarray(mesh[0], float)
         s = _SUPERSAMPLE
+        _headless_window()
         pl = pv.Plotter(
             off_screen=True,
             window_size=[self.size[0] * s, self.size[1] * s],

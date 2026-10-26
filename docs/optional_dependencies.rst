@@ -24,6 +24,8 @@ These extras are declared in ``pyproject.toml``:
      - hypertools, sentence-transformers (only to re-execute the word-decoding tutorial)
    * - ``gpu``
      - torch (``backend='torch'``, ``'cuda'`` or ``'mps'``)
+   * - ``tutorials``
+     - hypertools, sentence-transformers (libraries some tutorials use besides htfa)
    * - ``dev``
      - pytest, pytest-cov, ruff, mypy, build, twine, plus the optional libraries above
    * - ``docs``
@@ -42,6 +44,30 @@ the first call to ``HTFAResults.plot_nodes`` installs matplotlib, and the first
 
 When installation is switched off, or fails, the call raises ``ImportError``
 with the ``pip install "htfa[extra]"`` command to run.
+
+htfa installs with ``python -m pip`` when pip works. In an environment without
+pip (for example a bare ``uv venv``), it uses ``uv pip install --python
+<interpreter>`` when ``uv`` is on ``PATH``, and otherwise bootstraps pip with
+``python -m ensurepip``. If none of these works, the error names the command to
+run. Installers are never looked up in the current directory.
+
+Other libraries
+---------------
+
+:func:`htfa.require` gives your own code (and the tutorials) the same behavior
+for the libraries htfa declares: it imports a module, installing it first if it
+is missing.
+
+.. code-block:: python
+
+   import htfa
+
+   hyp = htfa.require("hypertools", extra="tutorials")  # installs htfa[tutorials]
+   plt = htfa.require("matplotlib.pyplot")  # installs matplotlib>=3.7 alone
+
+Without ``extra``, only the library itself is installed, with the version
+constraints htfa's extras declare for it. A library htfa does not declare is
+never installed: :func:`htfa.require` raises ``ImportError`` instead.
 
 Turning it off
 --------------
@@ -67,3 +93,31 @@ or the CPU-only index when the driver is older than 12.6. Without an NVIDIA
 driver, and on macOS, it uses the default PyPI wheel.
 ``backend='auto'`` never installs torch: it uses torch only if it is already
 installed (see :doc:`performance`).
+
+Rendering without a display
+---------------------------
+
+The network plots (:func:`htfa.plot_network`, :func:`htfa.animate_network`)
+render with VTK off screen. On macOS and Windows, and on Linux with an X
+display, this needs nothing more. On Linux without a display (``DISPLAY``
+unset, as on Google Colab, in containers and on most servers), htfa selects one
+of VTK's display-free OpenGL windows before the first render, by setting
+``VTK_DEFAULT_OPENGL_WINDOW``:
+
+1. ``vtkEGLRenderWindow``, which needs ``libEGL`` and a driver for it: Mesa's
+   software renderer (llvmpipe) or a GPU driver. Colab includes these
+   (``libegl1``, ``libegl-mesa0``).
+2. ``vtkOSOpenGLRenderWindow``, which needs Mesa's ``libOSMesa``.
+
+Each is first tried in a short subprocess (VTK crashes the process when a
+backend's library is missing), and the first that works is used. A value of
+``VTK_DEFAULT_OPENGL_WINDOW`` that you set yourself is kept. If neither works,
+the call raises ``RuntimeError`` naming the packages to install; on
+Debian/Ubuntu:
+
+.. code-block:: bash
+
+   apt-get install libegl1 libegl-mesa0
+
+These are system libraries, so htfa does not install them itself. pip wheels
+of VTK do not include them.

@@ -187,6 +187,31 @@ existed:
    htfa.timecourse.edge_count
    htfa.timecourse.moving_average
 
+Example data
+------------
+
+:func:`htfa.datasets.fetch_development_fmri` downloads nilearn's
+``development_fmri`` dataset (children and adults watching a short film) on first
+use and returns its runs masked to in-brain voxels and cleaned of a linear trend
+and confounds, ready for :func:`htfa.fit`:
+
+.. code-block:: python
+
+   import htfa
+
+   ds = htfa.datasets.fetch_development_fmri(n_subjects=6)  # adults by default
+   res = htfa.fit(ds.data, coords=ds.coords, K=30)
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+
+   htfa.datasets.fetch_development_fmri
+   htfa.datasets.DevelopmentFMRI
+   htfa.datasets.development_fmri_files
+   htfa.datasets.load_development_fmri_subject
+   htfa.datasets.regress_confounds
+
 Synthetic data
 --------------
 
@@ -213,6 +238,7 @@ Utilities
    :nosignatures:
 
    htfa.set_autoinstall
+   htfa.require
    htfa.tfa.standardize_data
 
 .. rubric:: Examples
