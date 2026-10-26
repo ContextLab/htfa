@@ -4,6 +4,7 @@ import ctypes.util
 import os
 import subprocess
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -18,6 +19,19 @@ NATIVE = {"darwin": "vtkCocoaRenderWindow", "win32": "vtkWin32OpenGLRenderWindow
 def no_display(monkeypatch):
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("VTK_DEFAULT_OPENGL_WINDOW", raising=False)
+    monkeypatch.setattr(brainnet, "_auto_window", None)
+    monkeypatch.setattr(brainnet, "_no_window", False)
+
+
+def _working_window() -> str | None:
+    """A window class the probe should accept here, if any."""
+    if not LINUX:
+        return NATIVE[sys.platform]
+    if os.environ.get("DISPLAY"):
+        return None
+    return next(
+        (w for w in brainnet.HEADLESS_WINDOWS if brainnet._gl_window_works(w)), None
+    )
 
 
 def test_gl_window_works_detects_native_window():
@@ -27,8 +41,39 @@ def test_gl_window_works_detects_native_window():
 
 
 def test_gl_window_works_rejects_unknown_window():
-    # VTK falls back to another window class, which does not count
+    pytest.importorskip("vtkmodules", reason="needs VTK (the brain3d extra)")
+    good = _working_window()
+    if good is None:
+        pytest.skip("no window renders here, so a rejection would mean nothing")
+    # the probe accepts a working window ...
+    assert brainnet._gl_window_works(good) is True
+    # ... and rejects an unknown one: VTK falls back to another class
     assert brainnet._gl_window_works("vtkNoSuchRenderWindow") is False
+
+
+@pytest.mark.network
+def test_gl_window_works_sees_runtime_sys_path(tmp_path):
+    # VTK reachable only through an entry added to sys.path at runtime (like a
+    # --user or PYTHONPATH install): the probe must find it as the parent does.
+    vtkmodules = pytest.importorskip("vtkmodules")
+    good = _working_window()
+    if good is None:
+        pytest.skip("no window renders here")
+    from test_lazy import _uv_venv
+
+    py = _uv_venv(tmp_path)
+    site = os.path.dirname(os.path.dirname(vtkmodules.__file__))
+    code = (
+        "import importlib.util as u, sys\n"
+        "assert u.find_spec('vtkmodules') is None, 'venv must lack VTK'\n"
+        f"sys.path.append({site!r})\n"
+        "from htfa import brainnet\n"
+        f"print(brainnet._gl_window_works({good!r}))\n"
+    )
+    run = subprocess.run([str(py), "-c", code], capture_output=True, text=True)
+    print(run.stdout, run.stderr)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.split()[-1] == "True"
 
 
 @pytest.mark.skipif(not LINUX, reason="OSMesa probing is Linux-only")
@@ -62,6 +107,33 @@ def test_headless_window_picks_first_working_backend(no_display):
         return
     assert brainnet._headless_window() == works[0]
     assert os.environ["VTK_DEFAULT_OPENGL_WINDOW"] == works[0]
+
+
+@pytest.mark.skipif(not LINUX, reason="headless selection is Linux-only")
+def test_headless_window_failure_is_cached(no_display):
+    if _working_window() is not None:
+        pytest.skip("an offscreen window works here")
+    with pytest.raises(RuntimeError, match="apt-get install"):
+        brainnet._headless_window()
+    t0 = time.perf_counter()
+    with pytest.raises(RuntimeError, match="apt-get install"):
+        brainnet._headless_window()
+    assert time.perf_counter() - t0 < 0.5, "the failed probe was re-run"
+
+
+@pytest.mark.skipif(not LINUX, reason="headless selection is Linux-only")
+def test_headless_window_dropped_when_display_appears(no_display, monkeypatch):
+    window = brainnet._headless_window() if _working_window() else None
+    if window is None:
+        pytest.skip("no offscreen window works here")
+    assert os.environ["VTK_DEFAULT_OPENGL_WINDOW"] == window
+    monkeypatch.setenv("DISPLAY", ":99")  # e.g. Xvfb started later
+    assert brainnet._headless_window() is None
+    assert "VTK_DEFAULT_OPENGL_WINDOW" not in os.environ
+    # a window the user set themselves is never dropped
+    monkeypatch.setenv("VTK_DEFAULT_OPENGL_WINDOW", "vtkOSOpenGLRenderWindow")
+    assert brainnet._headless_window() is None
+    assert os.environ["VTK_DEFAULT_OPENGL_WINDOW"] == "vtkOSOpenGLRenderWindow"
 
 
 RENDER = """

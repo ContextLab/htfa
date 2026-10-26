@@ -935,6 +935,8 @@ def _tubes(
 # Colab), then OSMesa.
 HEADLESS_WINDOWS = ("vtkEGLRenderWindow", "vtkOSOpenGLRenderWindow")
 _GL_PROBE = """
+import sys
+sys.path[:] = sys.argv[1:]
 import vtkmodules.vtkRenderingOpenGL2
 from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
 w = vtkRenderWindow()
@@ -944,26 +946,34 @@ w.AddRenderer(vtkRenderer())
 w.Render()
 print(w.GetClassName())
 """
+_auto_window: str | None = None  # the window _headless_window selected
+_no_window = False  # no offscreen window worked (cleared when DISPLAY appears)
 
 
 def _gl_window_works(window: str) -> bool:
     """Whether VTK renders with the OpenGL window class ``window``.
 
     Probed in a subprocess, because VTK crashes the process when the library
-    behind a window class is missing.
+    behind a window class is missing. The subprocess gets this process's
+    ``sys.path`` (so it finds the same VTK) and runs in a fresh private
+    directory.
     """
     env = dict(os.environ, VTK_DEFAULT_OPENGL_WINDOW=window)
+    path = [os.path.abspath(p) if p else os.getcwd() for p in sys.path]
+    work = tempfile.mkdtemp(prefix="htfa-glprobe-")
     try:
         run = subprocess.run(
-            [sys.executable, "-I", "-c", _GL_PROBE],
+            [sys.executable, "-c", _GL_PROBE, *path],
             capture_output=True,
             text=True,
             env=env,
             timeout=120,
-            cwd=tempfile.gettempdir(),
+            cwd=work,
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
     return run.returncode == 0 and run.stdout.split()[-1:] == [window]
 
 
@@ -972,21 +982,32 @@ def _headless_window() -> str | None:
 
     Returns the window class in use (setting ``VTK_DEFAULT_OPENGL_WINDOW`` if it
     was unset), or ``None`` when a display (or another OS) needs no change.
+    The choice is re-checked on every call: once ``DISPLAY`` is set (for
+    example by starting Xvfb), a window selected here is dropped again.
     """
-    if not sys.platform.startswith("linux") or os.environ.get("DISPLAY"):
+    global _auto_window, _no_window
+    if not sys.platform.startswith("linux"):
+        return None
+    if os.environ.get("DISPLAY"):
+        if _auto_window and os.environ.get("VTK_DEFAULT_OPENGL_WINDOW") == _auto_window:
+            del os.environ["VTK_DEFAULT_OPENGL_WINDOW"]
+        _auto_window, _no_window = None, False
         return None
     chosen = os.environ.get("VTK_DEFAULT_OPENGL_WINDOW")
     if chosen:
         return chosen
-    for window in HEADLESS_WINDOWS:
-        if _gl_window_works(window):
-            os.environ["VTK_DEFAULT_OPENGL_WINDOW"] = window
-            return window
+    if not _no_window:
+        for window in HEADLESS_WINDOWS:
+            if _gl_window_works(window):
+                os.environ["VTK_DEFAULT_OPENGL_WINDOW"] = window
+                _auto_window = window
+                return window
+        _no_window = True
     raise RuntimeError(
         "No display (DISPLAY is unset) and no offscreen OpenGL library: VTK needs "
         "Mesa's EGL or OSMesa to render without one. Install EGL with "
-        "`apt-get install libegl1 libegl-mesa0` (Debian/Ubuntu; Colab has it), "
-        "or set DISPLAY to a running X server such as Xvfb."
+        "`apt-get install libegl1 libegl-mesa0` (Debian/Ubuntu; Colab has it) and "
+        "restart Python, or set DISPLAY to a running X server such as Xvfb."
     )
 
 
