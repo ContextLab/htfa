@@ -20,6 +20,7 @@ from htfa._engines import LOSS_NAMES, loss_terms, select_engine
 from htfa._kernels import (
     NLSS_METHODS,
     Prior,
+    ProjectedProblem,
     ResidualProblem,
     bounds,
     factors,
@@ -514,6 +515,10 @@ class TFA(BaseEstimator):
             raise ValueError(
                 f"nlss_method must be one of {NLSS_METHODS}, got {self.nlss_method!r}"
             )
+        if self.nlss_method == "varpro" and self.nlss_loss != "linear":
+            raise ValueError(
+                f"nlss_method='varpro' needs nlss_loss='linear', got {self.nlss_loss!r}"
+            )
         return X, R
 
     def _objective(
@@ -568,10 +573,16 @@ class TFA(BaseEstimator):
             ti = np.sort(rng.choice(T, Ts, replace=False)) if Ts < T else slice(None)
             X_sub, R_sub = X[vi][:, ti], R[vi]
             C, w = x[: K * D].reshape(K, D), x[K * D :]
-            W = ridge_weights(X_sub, factors(R_sub, C, w), self.weight_method)
-            problem = ResidualProblem(
-                X_sub, W, R_sub, engine, prior, compress=self.nlss_loss == "linear"
-            )
+            problem: ResidualProblem | ProjectedProblem
+            if self.nlss_method == "varpro":
+                problem = ProjectedProblem(
+                    X_sub, R_sub, K, engine, prior, self.weight_method
+                )
+            else:
+                W = ridge_weights(X_sub, factors(R_sub, C, w), self.weight_method)
+                problem = ResidualProblem(
+                    X_sub, W, R_sub, engine, prior, compress=self.nlss_loss == "linear"
+                )
             x_new, _ = solve_centers_widths(
                 problem,
                 x,

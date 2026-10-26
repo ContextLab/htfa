@@ -798,3 +798,105 @@ def test_bounded_lm_falls_back_to_gauss_newton_on_non_finite_hessian():
     print(f"cost {cost0:.6f} -> {cost:.6f}, status {status}, nfev {nfev}, x {x}")
     assert np.all(np.isfinite(x)) and cost < cost0
     assert status in (1, 2, 3, 4)
+
+
+def _projected_problem(D, use_prior, seed, method="rr", V=60, T=7, K=3):
+    from htfa._kernels import ProjectedProblem
+
+    rng = np.random.default_rng(seed)
+    R, centers, widths, _, X = _random_problem_inputs(rng, D, V=V, T=T, K=K)
+    prior = _random_prior(rng, centers, widths) if use_prior else None
+    prob = ProjectedProblem(X, R, K, NumpyEngine(), prior, method)
+    x = np.concatenate(
+        [(centers + rng.normal(0, 0.5, centers.shape)).ravel(), widths * 1.1]
+    )
+    return prob, x, X, R, prior
+
+
+@pytest.mark.parametrize("method", ["rr", "ols"])
+@pytest.mark.parametrize("D", [2, 3])
+@pytest.mark.parametrize("use_prior", [False, True], ids=["prior=None", "prior=Prior"])
+def test_projected_cost_is_ridge_objective(method, D, use_prior):
+    """phi(x) = 0.5 s^2 (||X - F W||^2 + beta ||W||^2) + prior, W = ridge(x), both
+    from cost and from cost_grad_hess."""
+    prob, x, X, R, prior = _projected_problem(D, use_prior, 400 + D, method)
+    K = prob.K
+    C, w = x[: K * D].reshape(K, D), x[K * D :]
+    W = ridge_weights(X, factors(R, C, w), method)
+    beta = np.var(X) if method == "rr" else 0.0
+    s2 = 1.0 / (2.0 * np.var(X))
+    fixed = ResidualProblem(X, W, R, NumpyEngine(), prior)
+    expected = 0.5 * s2 * beta * np.sum(W * W) + fixed.cost(x, "linear")
+    got, got_gn = prob.cost(x), prob.cost_grad_hess(x)[0]
+    print(f"{method} D={D} prior={use_prior}: {got:.14g} {got_gn:.14g} {expected:.14g}")
+    assert got == pytest.approx(expected, rel=1e-12)
+    assert got_gn == pytest.approx(expected, rel=1e-12)
+
+
+@pytest.mark.parametrize("method", ["rr", "ols"])
+@pytest.mark.parametrize("D", [2, 3])
+@pytest.mark.parametrize("use_prior", [False, True], ids=["prior=None", "prior=Prior"])
+def test_projected_gradient_and_hessian_match_finite_differences(method, D, use_prior):
+    """Envelope gradient and the exact projected Hessian H_xx - H_xW H_WW^-1 H_Wx
+    against central differences of phi and of the gradient; the Kaufman
+    Gauss-Newton matrix is symmetric positive semidefinite."""
+    prob, x, *_ = _projected_problem(D, use_prior, 500 + D, method)
+    _, g, gn, H = prob.cost_grad_hess(x)
+    g_fd, H_fd = np.empty_like(x), np.empty_like(H)
+    for j in range(x.size):
+        e = np.zeros_like(x)
+        e[j] = FD_STEP
+        g_fd[j] = (prob.cost(x + e) - prob.cost(x - e)) / (2 * FD_STEP)
+        H_fd[:, j] = (prob.cost_grad_hess(x + e)[1] - prob.cost_grad_hess(x - e)[1]) / (
+            2 * FD_STEP
+        )
+    g_rel = np.abs(g - g_fd).max() / np.abs(g_fd).max()
+    H_rel = np.abs(H - H_fd).max() / np.abs(H_fd).max()
+    eig = np.linalg.eigvalsh(gn)
+    print(
+        f"{method} D={D} prior={use_prior}: grad rel {g_rel:.3e}, hess rel "
+        f"{H_rel:.3e}, GN eig min {eig.min():.3g} max {eig.max():.3g}"
+    )
+    assert g_rel < GRAD_FD_RTOL
+    assert H_rel < GRAD_FD_RTOL
+    np.testing.assert_array_equal(H, H.T)
+    np.testing.assert_array_equal(gn, gn.T)
+    assert eig.min() > -1e-10 * eig.max()
+
+
+def test_projected_solve_is_a_fixed_point_of_the_alternation():
+    """bounded_lm on phi stops where one more linear-loss alternation step (ridge
+    weights, then the fixed-weight solve) does not move: the same stationary
+    points; and 300 alternations from the same start approach the same point
+    without getting lower."""
+    from htfa._kernels import ProjectedProblem, bounded_lm
+    from htfa.synthetic import make_tfa_data
+
+    X, R, truth = make_tfa_data((30, 30), 40, K=4, noise=0.3, random_state=1)
+    K, D = truth["centers"].shape
+    rng = np.random.default_rng(3)
+    x0 = np.concatenate(
+        [(truth["centers"] + rng.normal(0, 1.5, (K, D))).ravel(), truth["widths"] * 1.5]
+    )
+    bnds = bounds(R, K, 0.02, 1.8)
+    prob = ProjectedProblem(X, R, K, NumpyEngine())
+    x, cost, status, nfev = bounded_lm(
+        prob, x0, bnds, "linear", 1.0 / prob.column_norms(x0)
+    )
+    fixed = ResidualProblem(X, prob.weights(x), R, NumpyEngine())
+    x_alt, _ = solve_centers_widths(fixed, x, bnds, loss="linear")
+    step = np.abs(x_alt - x).max()
+    xa = x0
+    for _ in range(300):
+        problem = ResidualProblem(X, prob.weights(xa), R, NumpyEngine())
+        xa, _ = solve_centers_widths(problem, xa, bnds, loss="linear")
+    alt_cost = prob.cost(xa)
+    print(
+        f"projected: status {status}, nfev {nfev}, cost {cost:.12g}; one "
+        f"alternation step from it moves {step:.3e}; 300 alternations: cost "
+        f"{alt_cost:.12g}, max |x_alt - x| {np.abs(xa - x).max():.3e}"
+    )
+    assert status in (1, 2, 4)
+    assert step < 5e-5  # measured 1.1e-5 (ftol-limited; grid units, extent 30)
+    assert cost <= alt_cost * (1 + 1e-10)
+    assert np.abs(xa - x).max() < 1e-4  # measured 2.5e-5

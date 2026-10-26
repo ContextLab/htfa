@@ -15,13 +15,14 @@ from scipy.optimize import least_squares
 from scipy.sparse.linalg import LinearOperator
 from sklearn.cluster import KMeans
 
-from htfa._engines import EPS, Engine, loss_terms
+from htfa._engines import EPS, Engine, NumpyEngine, loss_terms
 
 Array = NDArray[np.float64]
 
-# nlss_method values: the structured bounded Levenberg-Marquardt solver (default)
-# and the scipy least_squares methods kept for cross-checking.
-NLSS_METHODS = ("bounded-lm", "trf", "dogbox")
+# nlss_method values: the structured bounded Levenberg-Marquardt solver (default),
+# the same solver on the variable-projection objective (linear loss only; see
+# `ProjectedProblem`) and the scipy least_squares methods kept for cross-checking.
+NLSS_METHODS = ("bounded-lm", "varpro", "trf", "dogbox")
 # scipy.optimize.least_squares' default tolerances, used by the structured solver
 # with the same meaning (see `bounded_lm`).
 FTOL = XTOL = GTOL = 1e-8
@@ -297,10 +298,15 @@ class ResidualProblem:
         return total
 
     def cost_grad_hess(
-        self, x: ArrayLike, loss: str
+        self,
+        x: ArrayLike,
+        loss: str,
+        derivatives: tuple[Array, Array, Array] | None = None,
     ) -> tuple[float, Array, Array, Array]:
         """Cost (as :meth:`cost`), gradient (P,), positive semidefinite
         Gauss-Newton matrix (P, P) and Hessian (P, P) of the objective.
+        ``derivatives`` passes `factor_derivatives` at ``x`` when the caller has
+        them already.
 
         The Gauss-Newton matrix is the Hessian without the data term's
         second-order part ``sum_i rho'_i r_i Hess(r_i)`` (the prior terms keep
@@ -319,19 +325,10 @@ class ResidualProblem:
         """
         C, w = self._unpack(x)
         K, D, P = self.K, self.D, self.n_params
-        V, s = self.R.shape[0], self.s
-        # Factor-major, voxel-last layout (K, ., V): contiguous elementwise passes
-        # and per-factor sums over voxels as batched matrix products.
-        E = np.empty((K, D + 2, V))  # [delta_1 .. delta_D, d, 1]
-        np.subtract(self.R.T[None, :, :], C[:, :, None], out=E[:, :D])
-        np.einsum("kjv,kjv->kv", E[:, :D], E[:, :D], out=E[:, D])
-        E[:, D + 1] = 1.0
-        d = E[:, D]
-        F = np.exp(-d / w[:, None])
-        Fw = F / w[:, None]
-        G = np.empty((K, D + 1, V))
-        np.multiply((2.0 * Fw)[:, None, :], E[:, :D], out=G[:, :D])
-        np.multiply(Fw, d / w[:, None], out=G[:, D])
+        s = self.s
+        E, F, G = (
+            factor_derivatives(self.R, C, w) if derivatives is None else derivatives
+        )
         cost, M, H_ka = self.engine.gauss_newton(np.ascontiguousarray(F.T), G, s, loss)
         MT = np.ascontiguousarray(M.T)  # (K, V)
         grad_ka = -s * (G @ MT[:, :, None])[:, :, 0]
@@ -346,11 +343,7 @@ class ResidualProblem:
         S[:, D, :D] = S[:, :D, D]
         S[:, D, D] = (m[:, D, D] / w - 2.0 * m[:, D, D + 1]) / w**3
         k = np.arange(K)
-        # (k, a) -> position in x = [centers.ravel(), widths].
-        pos = np.empty((K, D + 1), dtype=np.int64)
-        pos[:, :D] = k[:, None] * D + np.arange(D)[None, :]
-        pos[:, D] = K * D + k
-        pos = pos.ravel()
+        pos = param_positions(K, D)
         grad = np.empty(P)
         grad[pos] = grad_ka.ravel()
         gn = np.empty((P, P))
@@ -389,6 +382,162 @@ class ResidualProblem:
         return np.sqrt(np.concatenate([sq_c.ravel(), sq_w]))
 
 
+def factor_derivatives(R: Array, C: Array, w: Array) -> tuple[Array, Array, Array]:
+    """Factors and their derivatives in a factor-major, voxel-last layout.
+
+    Returns ``E`` (K, D + 2, V) = ``[delta_1 .. delta_D, d, 1]`` with ``delta =
+    r_v - c_k`` and ``d = ||delta||**2``, the factors ``F`` (K, V) and ``G``
+    (K, D + 1, V) with ``G[k, a, v] = dF[k, v] / dtheta[k, a]`` for ``theta_k =
+    (c_k1, ..., c_kD, w_k)``. The (K, ., V) layout gives contiguous elementwise
+    passes and per-factor sums over voxels as batched matrix products.
+    """
+    K, D = C.shape
+    V = R.shape[0]
+    E = np.empty((K, D + 2, V))
+    np.subtract(R.T[None, :, :], C[:, :, None], out=E[:, :D])
+    np.einsum("kjv,kjv->kv", E[:, :D], E[:, :D], out=E[:, D])
+    E[:, D + 1] = 1.0
+    d = E[:, D]
+    F = np.exp(-d / w[:, None])
+    Fw = F / w[:, None]
+    G = np.empty((K, D + 1, V))
+    np.multiply((2.0 * Fw)[:, None, :], E[:, :D], out=G[:, :D])
+    np.multiply(Fw, d / w[:, None], out=G[:, D])
+    return E, F, G
+
+
+def param_positions(K: int, D: int) -> NDArray[np.int64]:
+    """Position in ``x = [centers.ravel(), widths]`` of each ``(k, a)``, raveled."""
+    k = np.arange(K)
+    pos = np.empty((K, D + 1), dtype=np.int64)
+    pos[:, :D] = k[:, None] * D + np.arange(D)[None, :]
+    pos[:, D] = K * D + k
+    return pos.ravel()
+
+
+class ProjectedProblem:
+    """Variable-projection objective of the linear-loss TFA problem.
+
+    The weights are eliminated: ``phi(x) = 0.5 s**2 (||X - F W||_F**2 + beta
+    ||W||_F**2)`` with ``W = W(x)`` the ridge solution of `ridge_weights`
+    (``beta = var(X)`` for ``'rr'``, 0 for ``'ols'``), plus the prior terms of
+    `ResidualProblem`. Its stationary points are exactly the fixed points of
+    alternating `ridge_weights` with the linear-loss center/width solve, but a
+    Newton method on ``phi`` takes the coupling between the weights and the
+    centers/widths into account, which the alternation ignores (it then needs
+    hundreds of outer iterations on real data).
+
+    The gradient is the fixed-weight gradient (envelope theorem). The Hessian
+    is ``H_xx - H_xW H_WW^-1 H_Wx`` with the exact mixed second derivatives;
+    the Gauss-Newton matrix is ``J^T (I - P) J`` (Kaufman's), with ``P`` the
+    projection onto the span of the (ridge-augmented) weight columns.
+    """
+
+    def __init__(
+        self,
+        X: Array,
+        R: Array,
+        K: int,
+        engine: Engine,
+        prior: Prior | None = None,
+        weight_method: str = "rr",
+    ) -> None:
+        self.X = np.ascontiguousarray(X, dtype=np.float64)
+        self.R = np.ascontiguousarray(R, dtype=np.float64)
+        self.K, self.D = K, self.R.shape[1]
+        self.engine, self.prior = engine, prior
+        if weight_method not in ("rr", "ols"):
+            raise ValueError(
+                f"weight method must be 'rr' or 'ols', got {weight_method!r}"
+            )
+        self.beta = float(np.var(self.X)) if weight_method == "rr" else 0.0
+        self.weight_method = weight_method
+        std = float(np.std(self.X))
+        self.s = 1.0 / (np.sqrt(2.0) * std) if std > 0 else 1.0
+        self.sq_norm = float(np.sum(self.X * self.X))
+        self.cost_offset = 0.0
+        self.n_params = K * (self.D + 1)
+        self._prior_only: ResidualProblem | None = None
+
+    def _unpack(self, x: ArrayLike) -> tuple[Array, Array]:
+        x = np.asarray(x, dtype=np.float64).ravel()
+        n = self.K * self.D
+        return x[:n].reshape(self.K, self.D), x[n:]
+
+    def weights(self, x: ArrayLike) -> Array:
+        """Ridge weights (K, T) at ``x``."""
+        C, w = self._unpack(x)
+        return ridge_weights(self.X, factors(self.R, C, w), self.weight_method)
+
+    def _prior_cost(self, C: Array, w: Array) -> float:
+        if self.prior is None:
+            return 0.0
+        # A one-voxel problem on its own engine carries the prior terms.
+        if self._prior_only is None:
+            self._prior_only = ResidualProblem(
+                self.X[:1, :1],
+                np.zeros((self.K, 1)),
+                self.R[:1],
+                NumpyEngine(1),
+                self.prior,
+            )
+        return self._prior_only._prior_terms(C, w, "linear", derivatives=False)[0]
+
+    def cost(self, x: ArrayLike, loss: str = "linear") -> float:
+        """``phi(x)``, using ``||X - F W||**2 + beta ||W||**2 = ||X||**2 -
+        <F^T X, W>`` at the ridge solution."""
+        C, w = self._unpack(x)
+        F = factors(self.R, C, w)
+        FtX = F.T @ self.X
+        gram = F.T @ F + self.beta * np.eye(self.K)
+        W = scipy.linalg.solve(gram, FtX, assume_a="pos")
+        data = 0.5 * self.s**2 * (self.sq_norm - float(np.sum(FtX * W)))
+        return data + self._prior_cost(C, w)
+
+    def column_norms(self, x: ArrayLike) -> Array:
+        """Fixed-weight Jacobian column norms at ``x`` (for ``x_scale='jac'``)."""
+        W = self.weights(x)
+        return ResidualProblem(self.X, W, self.R, self.engine, self.prior).column_norms(
+            x
+        )
+
+    def cost_grad_hess(
+        self, x: ArrayLike, loss: str = "linear"
+    ) -> tuple[float, Array, Array, Array]:
+        """``phi``, its gradient, Gauss-Newton matrix and Hessian (P, P)."""
+        if loss != "linear":
+            raise ValueError(f"ProjectedProblem needs the linear loss, got {loss!r}")
+        C, w = self._unpack(x)
+        K, D = self.K, self.D
+        A, P, s2 = D + 1, self.n_params, self.s**2
+        derivatives = factor_derivatives(self.R, C, w)
+        _, F, G = derivatives
+        W = ridge_weights(self.X, F.T, self.weight_method)
+        inner = ResidualProblem(self.X, W, self.R, self.engine, self.prior)
+        cost, grad, gn, hess = inner.cost_grad_hess(x, "linear", derivatives)
+        cost += 0.5 * s2 * self.beta * float(np.sum(W * W))
+        G2 = G.reshape(K * A, -1)  # [(k, a), v]
+        P2 = F @ G2.T  # (K, KA): P2[l, (k, a)] = sum_v F[l, v] G[k, a, v]
+        Bt = G2 @ self.X - P2.T @ W  # (KA, T): G_ka^T (X - F W)
+        gram = F @ F.T + self.beta * np.eye(K)
+        Y = scipy.linalg.solve(gram, P2, assume_a="pos")  # M^-1 P2
+        WW = W @ W.T
+        rows = np.repeat(np.arange(K), A)  # factor k of each (k, a)
+        term1 = WW[np.ix_(rows, rows)] * (P2.T @ Y)
+        Z = (W @ Bt.T)[rows]  # Z[(k, a), (k', b)] = W_k . Bt_k'b
+        term2 = Z * Y[rows].T  # times (M^-1 P_ka)[k']
+        Mi = np.linalg.inv(gram)
+        term4 = Mi[np.ix_(rows, rows)] * (Bt @ Bt.T)
+        pos = param_positions(K, D)
+        g1 = np.empty((P, P))
+        g1[np.ix_(pos, pos)] = s2 * term1
+        corr = np.empty((P, P))
+        corr[np.ix_(pos, pos)] = s2 * (term1 - term2 - term2.T + term4)
+        gn = gn - g1
+        hess = hess - corr
+        return cost, grad, 0.5 * (gn + gn.T), 0.5 * (hess + hess.T)
+
+
 def _check_finite(cost: float, g: Array, gn: Array, x: Array) -> None:
     if not (np.isfinite(cost) and np.all(np.isfinite(g)) and np.all(np.isfinite(gn))):
         raise FloatingPointError(
@@ -399,7 +548,7 @@ def _check_finite(cost: float, g: Array, gn: Array, x: Array) -> None:
 
 
 def bounded_lm(
-    problem: ResidualProblem,
+    problem: "ResidualProblem | ProjectedProblem",
     x0: Array,
     bounds: tuple[Array, Array],
     loss: str,
@@ -509,12 +658,13 @@ def bounded_lm(
 
 
 def solve_centers_widths(
-    problem: ResidualProblem,
+    problem: "ResidualProblem | ProjectedProblem",
     x0: Array,
     bounds: tuple[Array, Array],
     method: str = "bounded-lm",
     loss: str = "soft_l1",
     x_scale: str | Array = "jac",
+    max_nfev: int | None = None,
 ) -> tuple[Array, float]:
     """Bounded nonlinear least squares for ``x = [centers.ravel(), widths]``.
 
@@ -527,16 +677,24 @@ def solve_centers_widths(
     """
     if method not in NLSS_METHODS:
         raise ValueError(f"method must be one of {NLSS_METHODS}, got {method!r}")
+    if (method == "varpro") != isinstance(problem, ProjectedProblem):
+        raise ValueError("method 'varpro' takes a ProjectedProblem and only it")
     if isinstance(x_scale, str):
         if x_scale != "jac":
             raise ValueError(f"x_scale must be 'jac' or an array, got {x_scale!r}")
         norms = problem.column_norms(x0)
         x_scale = np.divide(1.0, norms, out=np.ones_like(norms), where=norms > 0)
-    if method == "bounded-lm":
+    if method in ("bounded-lm", "varpro"):
         x, cost, _, _ = bounded_lm(
-            problem, x0, bounds, loss, np.asarray(x_scale, dtype=np.float64)
+            problem,
+            x0,
+            bounds,
+            loss,
+            np.asarray(x_scale, dtype=np.float64),
+            max_nfev,
         )
         return x, cost + problem.cost_offset
+    assert isinstance(problem, ResidualProblem)
     result = least_squares(
         problem.residual,
         x0,
@@ -547,6 +705,7 @@ def solve_centers_widths(
         x_scale=x_scale,
         tr_solver="lsmr",
         tr_options={"atol": LSMR_TOL, "btol": LSMR_TOL},
+        max_nfev=max_nfev,
     )
     return np.asarray(result.x, dtype=np.float64), float(
         result.cost

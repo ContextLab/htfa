@@ -509,6 +509,49 @@ def test_tfa_rejects_unknown_nlss_method():
     X, R, _ = _small_data()
     with pytest.raises(ValueError, match="nlss_method must be one of"):
         TFA(K=2, nlss_method="lm").fit(X, R)
+    with pytest.raises(ValueError, match="'varpro' needs nlss_loss='linear'"):
+        TFA(K=2, nlss_method="varpro", nlss_loss="soft_l1").fit(X, R)
+
+
+@pytest.mark.parametrize("data", ["3d", "2d"])
+def test_varpro_recovers_truth_and_beats_the_alternation(data):
+    """nlss_method='varpro' (linear loss, weights eliminated) converges in a
+    couple of outer iterations, recovers the synthetic truth as tightly as the
+    default fits, and its ridge objective is no higher than that of the
+    linear-loss alternation from the same start."""
+    from htfa._engines import NumpyEngine
+    from htfa._kernels import ProjectedProblem
+
+    if data == "3d":
+        X, R, truth = make_tfa_data((20, 20, 20), 100, K=8, noise=0.1, random_state=0)
+        c_tol, w_tol = CENTER_TOL_3D, WIDTH_RTOL_3D
+    else:
+        X, R, truth = _data_2d()
+        c_tol, w_tol = CENTER_TOL_2D, WIDTH_RTOL_2D
+    K = truth["centers"].shape[0]
+    fits = {}
+    for method in ("varpro", "bounded-lm"):
+        start = time.perf_counter()
+        fits[method] = TFA(
+            K=K,
+            nlss_method=method,
+            nlss_loss="linear",
+            init="ncorr",
+            standardize=False,
+            random_state=0,
+        ).fit(X, R)
+        print(f"{method}: {time.perf_counter() - start:.2f} s")
+    vp, alt = fits["varpro"], fits["bounded-lm"]
+    phi = ProjectedProblem(X, R, K, NumpyEngine())
+    costs = {
+        m: phi.cost(np.concatenate([f.centers_.ravel(), f.widths_]))
+        for m, f in fits.items()
+    }
+    c_err, w_err, r = _recovery_errors(vp, truth)
+    print(f"ridge objectives {costs}; iterations {vp.n_iter_} vs {alt.n_iter_}")
+    assert vp.converged_reason_ == "threshold" and vp.n_iter_ <= 3
+    assert c_err < c_tol and w_err < w_tol and r > MIN_WEIGHT_R
+    assert costs["varpro"] <= costs["bounded-lm"] * (1 + 1e-9)
 
 
 def _photo_patch():
