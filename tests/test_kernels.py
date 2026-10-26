@@ -1119,3 +1119,41 @@ def test_cost_grad_hess_reuses_the_last_cost_evaluation_exactly(kind, on_grid):
     print(f"{kind} grid={on_grid}: cost {c:.15g} / {fresh[0]:.15g}; bitwise {same}")
     assert same == [True, True, True]
     assert c == pytest.approx(fresh[0], rel=1e-13)
+
+
+def test_projected_objective_form_is_chosen_once_per_problem():
+    """phi from ||X||^2 - <F^T X, W> equals the residual form to rounding where
+    the objective is a fair fraction of ||X||^2; where it is below
+    IDENTITY_MIN_FRACTION at the first point (noiseless OLS fit) the problem
+    keeps the residual form for every later point, so the solver never compares
+    the two forms."""
+    from htfa._kernels import IDENTITY_MIN_FRACTION, ProjectedProblem
+    from htfa.synthetic import make_tfa_data
+
+    def direct(prob, x):
+        K, D = prob.K, prob.D
+        F = factors(prob.R, x[: K * D].reshape(K, D), x[K * D :])
+        W = prob.weights(x)
+        total = np.sum((prob.X - F @ W) ** 2) + prob.beta * np.sum(W * W)
+        return 0.5 * prob.s**2 * float(total), float(total / np.sum(prob.X**2))
+
+    rng = np.random.default_rng(5)
+    for noise, method, identity in ((0.3, "rr", True), (0.0, "ols", False)):
+        X, R, truth = make_tfa_data((12, 12, 12), 30, K=3, noise=noise, random_state=2)
+        K, D = truth["centers"].shape
+        x_true = np.concatenate([truth["centers"].ravel(), truth["widths"]])
+        x_far = np.concatenate([truth["centers"].ravel() + 3.0, truth["widths"] * 2])
+        prob = ProjectedProblem(X, R, K, NumpyEngine(), None, method)
+        rel = []
+        for x in (x_true, x_far, x_true + rng.normal(0, 0.01, x_true.size)):
+            got, (expected, fraction) = prob.cost(x), direct(prob, x)
+            if fraction > 1e-10:  # else both forms are rounding noise around 0
+                rel.append(abs(got - expected) / expected)
+            print(
+                f"noise {noise} {method}: fraction {fraction:.2e}, identity "
+                f"{prob._identity}, cost {got:.6g} vs direct {expected:.6g}"
+            )
+            assert prob._identity is identity
+            assert got == prob.cost_grad_hess(x)[0]
+        assert (direct(prob, x_true)[1] >= IDENTITY_MIN_FRACTION) is identity
+        assert max(rel) < 1e-12

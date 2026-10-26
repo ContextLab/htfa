@@ -8,6 +8,7 @@ All arrays are float64.
 
 from dataclasses import dataclass
 from functools import cached_property
+from typing import Any
 
 import numpy as np
 import scipy.linalg
@@ -43,6 +44,15 @@ def ftol_for(eps: float) -> float:
 # Relative eigenvalue cutoff of the weights' gram matrix in `ProjectedProblem`
 # (the square root of float64 epsilon: a condition number above 6.7e7).
 GRAM_RCOND = float(np.sqrt(np.finfo(np.float64).eps))
+
+# `ProjectedProblem` evaluates ||X - F W||**2 + beta ||W||**2 as ||X||**2 -
+# <F^T X, W> (exact at the ridge solution) when, at the first point it evaluates,
+# that objective is at least this fraction of ||X||**2. The identity loses
+# about log10(||X||**2 / objective) digits to cancellation; measured relative
+# difference from the residual form: <= 8e-16 on development_fmri (fraction
+# 0.95), 1.5e-13 on unstandardized synthetic data with noise 0.003 or none
+# (fraction 3e-5 to 5e-4). Below the cutoff the problem keeps the residual form.
+IDENTITY_MIN_FRACTION = 1e-3
 
 # Initial damping relative to the largest diagonal entry of the scaled Hessian
 # (Madsen, Nielsen & Tingleff 2004, sec. 3.2).
@@ -565,7 +575,9 @@ class ProjectedProblem:
         self.n_params = K * (self.D + 1)
         self._prior_only: ResidualProblem | None = None
         self._grid = axis_grid(self.R)
-        self._last: tuple[Array, tuple[Array, ...]] | None = None
+        self._last: tuple[Array, tuple[Any, ...]] | None = None
+        self._x_sq = float(np.sum(self.X * self.X))
+        self._identity: bool | None = None  # decided at the first point
         # The data go to the engine once; every evaluation sends new weights.
         self.engine.set(self.X, np.zeros((K, self.X.shape[1])))
 
@@ -574,9 +586,10 @@ class ProjectedProblem:
         n = self.K * self.D
         return x[:n].reshape(self.K, self.D), x[n:]
 
-    def _weights(self, F: Array) -> tuple[Array, Array]:
-        """Weights (K, T) minimizing ``||X - F W||**2 + beta ||W||**2`` and the
-        (pseudo-)inverse (K, K) of ``F^T F + beta I``, from its eigendecomposition.
+    def _weights(self, F: Array) -> tuple[Array, Array, Array]:
+        """Weights (K, T) minimizing ``||X - F W||**2 + beta ||W||**2``, the
+        (pseudo-)inverse (K, K) of ``F^T F + beta I``, from its eigendecomposition,
+        and ``F^T X`` (K, T).
 
         Eigenvalues below `GRAM_RCOND` times the largest are dropped (only
         possible with ``'ols'``: a vanishing or a near-duplicate factor). Their
@@ -589,24 +602,34 @@ class ProjectedProblem:
         vals, vecs = np.linalg.eigh(F.T @ F + self.beta * np.eye(self.K))
         keep = vals > GRAM_RCOND * vals[-1]
         inv = (vecs[:, keep] / vals[keep]) @ vecs[:, keep].T
-        return inv @ (F.T @ self.X), inv
+        B = F.T @ self.X
+        return inv @ B, inv, B
 
-    def _at(self, x: ArrayLike) -> tuple[Array, ...]:
+    def _at(self, x: ArrayLike) -> tuple[Any, ...]:
         """Centers, widths, `factors` (V, K), weights and gram inverse at ``x``
-        (`_weights`). The last point's are kept: `bounded_lm` assembles the
-        Hessian at the point it has just evaluated, and reuses them unchanged."""
+        (`_weights`), and the data and ridge terms of ``phi`` from the identity
+        ``||X - F W||**2 + beta ||W||**2 = ||X||**2 - <F^T X, W>`` (None where
+        the problem uses the residual form; see `IDENTITY_MIN_FRACTION`). The
+        last point's are kept: `bounded_lm` assembles the Hessian at the point
+        it has just evaluated, and reuses them unchanged."""
         x = np.array(x, dtype=np.float64).ravel()
         if self._last is not None and np.array_equal(self._last[0], x):
             return self._last[1]
         C, w = self._unpack(x)
         F = factors(self.R, C, w, self._grid)
-        out = (C, w, F, *self._weights(F))
+        W, inv, B = self._weights(F)
+        objective = self._x_sq - float(np.sum(B * W))
+        if self._identity is None:
+            self._identity = objective >= IDENTITY_MIN_FRACTION * self._x_sq > 0
+        data = 0.5 * self.s**2 * objective if self._identity else None
+        out = (C, w, F, W, inv, data)
         self._last = (x, out)
         return out
 
     def weights(self, x: ArrayLike) -> Array:
         """Ridge weights (K, T) at ``x`` (see `_weights`)."""
-        return self._at(x)[3]
+        W: Array = self._at(x)[3]
+        return W
 
     def _prior_cost(self, C: Array, w: Array) -> float:
         if self.prior is None:
@@ -623,13 +646,15 @@ class ProjectedProblem:
         return self._prior_only._prior_terms(C, w, "linear", derivatives=False)[0]
 
     def cost(self, x: ArrayLike, loss: str = "linear") -> float:
-        """``phi(x)``, from the data residual ``X - F W`` on the engine (as in
-        `cost_grad_hess`, so that the solver compares like with like)."""
-        C, w, F, W, _ = self._at(x)
-        self.engine.set_weights(W)
-        data = self.engine.data_cost(F, self.s, "linear")
-        ridge = 0.5 * self.s**2 * self.beta * float(np.sum(W * W))
-        return data + ridge + self._prior_cost(C, w)
+        """``phi(x)``, in the form `cost_grad_hess` uses (so that the solver
+        compares like with like): from ``||X||**2 - <F^T X, W>``, or from the
+        data residual ``X - F W`` on the engine (see `_at`)."""
+        C, w, F, W, _, data = self._at(x)
+        if data is None:
+            self.engine.set_weights(W)
+            data = self.engine.data_cost(F, self.s, "linear")
+            data += 0.5 * self.s**2 * self.beta * float(np.sum(W * W))
+        return float(data) + self._prior_cost(C, w)
 
     def column_norms(self, x: ArrayLike) -> Array:
         """Fixed-weight Jacobian column norms at ``x`` (for ``x_scale='jac'``)."""
@@ -645,7 +670,7 @@ class ProjectedProblem:
         """``phi``, its gradient, Gauss-Newton matrix and Hessian (P, P)."""
         if loss != "linear":
             raise ValueError(f"ProjectedProblem needs the linear loss, got {loss!r}")
-        C, w, F_vk, W, Mi = self._at(x)
+        C, w, F_vk, W, Mi, data = self._at(x)
         K, D = self.K, self.D
         A, P, s2 = D + 1, self.n_params, self.s**2
         derivatives = factor_derivatives(self.R, C, w, self._grid, F_vk)
@@ -654,7 +679,10 @@ class ProjectedProblem:
             self.X, W, self.R, self.engine, self.prior, data_on_engine=True
         )
         cost, grad, gn, hess = inner.cost_grad_hess(x, "linear", derivatives)
-        cost += 0.5 * s2 * self.beta * float(np.sum(W * W))
+        if data is None:
+            cost += 0.5 * s2 * self.beta * float(np.sum(W * W))
+        else:
+            cost = data + self._prior_cost(C, w)
         G2 = G.reshape(K * A, -1)  # [(k, a), v]
         P2 = F @ G2.T  # (K, KA): P2[l, (k, a)] = sum_v F[l, v] G[k, a, v]
         Bt = G2 @ self.X - P2.T @ W  # (KA, T): G_ka^T (X - F W)
