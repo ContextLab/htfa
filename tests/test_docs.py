@@ -10,6 +10,7 @@ EXTRA_NAMES = [
     "htfa.io.load",
     "htfa.io.Subject",
     "htfa.datasets.fetch_development_fmri",
+    "htfa.datasets.fetch_tutorial_fit",
     "htfa.datasets.regress_confounds",
     "htfa.synthetic.match_factors",
     "htfa.tfa.standardize_data",

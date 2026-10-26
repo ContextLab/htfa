@@ -24,7 +24,6 @@ cached (see `mesh_cache_dir`).
 
 from __future__ import annotations
 
-import hashlib
 import math
 import os
 import shutil
@@ -42,6 +41,9 @@ from typing import Any
 import numpy as np
 from scipy.spatial import cKDTree
 
+from ._download import DATA_DIR_ENV as DATA_DIR_ENV
+from ._download import data_dir
+from ._download import sha256 as _sha256
 from ._lazy import lazy_import
 
 Array = np.ndarray
@@ -91,7 +93,6 @@ MESHES = {
         "e2ee8c7e91f42b16e19b84228e8bb43c70389911c567fc4d5a9da03288b614ae",
     ),
 }
-DATA_DIR_ENV = "HTFA_DATA_DIR"
 
 SIZE = (1600, 1000)
 # Left lateral framing fitted to the 2014 frames (1600 x 1000): image column
@@ -286,21 +287,7 @@ def mesh_cache_dir() -> Path:
     ``%LOCALAPPDATA%\\htfa\\brainnet`` on Windows and
     ``${XDG_CACHE_HOME:-~/.cache}/htfa/brainnet`` elsewhere.
     """
-    root = os.environ.get(DATA_DIR_ENV)
-    if root:
-        return Path(root).expanduser() / "brainnet"
-    if sys.platform == "win32" and os.environ.get("LOCALAPPDATA"):
-        return Path(os.environ["LOCALAPPDATA"]) / "htfa" / "brainnet"
-    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(base).expanduser() / "htfa" / "brainnet"
-
-
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
+    return data_dir() / "brainnet"
 
 
 _ZIP_MAGIC = b"PK\x03\x04"

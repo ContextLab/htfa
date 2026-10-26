@@ -212,6 +212,17 @@ and confounds, ready for :func:`htfa.fit`:
    htfa.datasets.load_development_fmri_subject
    htfa.datasets.regress_confounds
 
+:func:`htfa.datasets.fetch_tutorial_fit` downloads the saved HTFA fit of a
+tutorial (09, 10 or 11) from the ``tutorial-data-v1`` pre-release of the htfa
+repository, checks its SHA-256 and returns its arrays; the tutorials use it unless
+``REFIT = True``.
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+
+   htfa.datasets.fetch_tutorial_fit
+
 Synthetic data
 --------------
 

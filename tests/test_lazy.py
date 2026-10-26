@@ -225,28 +225,49 @@ def test_extra_requirements_tutorials():
     assert names == ["hypertools", "sentence-transformers"]
 
 
+@pytest.mark.network
 def test_installer_uses_pip_when_available(tmp_path):
-    # this test environment has pip
-    expected = [sys.executable, "-I", "-m", "pip", "install", "-q"]
-    assert _lazy._installer(str(tmp_path)) == expected
+    # A venv seeded with pip (the dev environment from `make install` has none).
+    py = _uv_venv(tmp_path, seed=True)
+    work = tmp_path / "work"
+    work.mkdir()
+    code = f"from htfa import _lazy; print(_lazy._installer({str(work)!r}))"
+    out = subprocess.run(
+        [str(py), "-c", code], capture_output=True, text=True, timeout=300
+    )
+    print(out.stdout, out.stderr)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == str([str(py), "-I", "-m", "pip", "install", "-q"])
 
 
-def _uv_venv(tmp_path: Path) -> Path:
+def _uv_venv(tmp_path: Path, seed: bool = False) -> Path:
+    """A uv venv with htfa installed; with pip if ``seed``, else without."""
     uv = shutil.which("uv")
     if uv is None:
         pytest.skip("uv is not on PATH")
     env = tmp_path / "venv"
-    subprocess.run([uv, "venv", "-q", "-p", sys.executable, str(env)], check=True)
+    subprocess.run(
+        [
+            uv,
+            "venv",
+            "-q",
+            *(["--seed"] if seed else []),
+            "-p",
+            sys.executable,
+            str(env),
+        ],
+        check=True,
+    )
     py = env / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     subprocess.run(
         [uv, "pip", "install", "--python", str(py), "-q", "-e", str(REPO)],
         check=True,
         timeout=900,
     )
-    nopip = subprocess.run(
+    pip = subprocess.run(
         [str(py), "-m", "pip", "--version"], capture_output=True, text=True
     )
-    assert nopip.returncode != 0, "a bare uv venv is expected to have no pip"
+    assert (pip.returncode == 0) == seed, f"pip in the venv: {pip.returncode == 0}"
     return py
 
 

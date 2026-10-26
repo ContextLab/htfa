@@ -17,7 +17,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import tempfile
+import urllib.request
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,17 +27,40 @@ from typing import Any
 
 import numpy as np
 
+from ._download import data_dir, sha256
 from ._lazy import lazy_import
 
 Array = np.ndarray
 
 __all__ = [
     "DevelopmentFMRI",
+    "TUTORIAL_FITS",
     "development_fmri_files",
     "fetch_development_fmri",
+    "fetch_tutorial_fit",
     "load_development_fmri_subject",
     "regress_confounds",
 ]
+
+TUTORIAL_DATA_URL = (
+    "https://github.com/ContextLab/htfa/releases/download/tutorial-data-v1/"
+)
+# Saved HTFA fits of the tutorials: name -> (file in the tutorial-data-v1
+# pre-release of the htfa repository, SHA-256).
+TUTORIAL_FITS = {
+    "mitchell2008_K100": (
+        "htfa_mitchell2008_K100.npz",
+        "635d821194ee1d4a37932a1f4a1ed03592f18838a6453200b1bda0570fa895c4",
+    ),
+    "development_fmri_12adults_K50": (
+        "htfa_development_fmri_12adults_K50.npz",
+        "647dc7c2da0eec69b16df12f7c3fcc68a2f33637056dc21532b77da9b3c0cc13",
+    ),
+    "development_fmri_6adults_K30": (
+        "htfa_development_fmri_6adults_K30.npz",
+        "48d0cdda811a515fad809b2b667f29d470cf5c2c19c53a9c7bc29495ee4ba829",
+    ),
+}
 
 TR = 2.0
 # Preprocessing settings; they are part of the cache key, so changing any of them
@@ -309,3 +334,91 @@ def fetch_development_fmri(
     return DevelopmentFMRI(
         ids, data, coords, confs, pheno.loc[ids].reset_index(drop=True)
     )
+
+
+def fetch_tutorial_fit(
+    name: str, cache_dir: str | os.PathLike | None = None
+) -> dict[str, Array]:
+    """A saved HTFA fit of one of the tutorials, downloaded on first use.
+
+    The fits are files of the ``tutorial-data-v1`` pre-release of the htfa
+    repository (see ``htfa.datasets.TUTORIAL_FITS``). The file is downloaded
+    once, its SHA-256 is checked before it is loaded, and it is loaded with
+    ``allow_pickle=False``.
+    Each file records how it was made: ``settings``, ``htfa_commit``,
+    ``htfa_version``, ``fit_seconds`` and the fitted data. A fit may be
+    regenerated when htfa's fitting code changes.
+
+    Parameters
+    ----------
+    name : str
+        A key of ``TUTORIAL_FITS``: ``"mitchell2008_K100"`` (tutorial 09),
+        ``"development_fmri_12adults_K50"`` (tutorial 10) or
+        ``"development_fmri_6adults_K30"`` (tutorial 11).
+    cache_dir : path, optional
+        Where the file is kept (default: ``tutorial_fits`` in htfa's data
+        folder, ``$HTFA_DATA_DIR`` or ``~/.cache/htfa``).
+
+    Returns
+    -------
+    dict of str to ndarray
+        Every array in the file, for example ``weights`` (S, K, T), ``centers``
+        (S, K, D), ``widths`` (S, K), ``global_centers``, ``global_widths``,
+        ``n_iter``, ``converged`` and the provenance strings (0-d arrays).
+
+    Raises
+    ------
+    ValueError
+        If ``name`` is unknown, or the file does not match its SHA-256 (it is
+        deleted; a later call downloads it again).
+    ConnectionError
+        If the file is not cached and cannot be downloaded.
+
+    Examples
+    --------
+    >>> from htfa.datasets import fetch_tutorial_fit
+    >>> fit = fetch_tutorial_fit("development_fmri_6adults_K30")  # doctest: +SKIP
+    >>> fit["weights"].shape  # doctest: +SKIP
+    (6, 30, 168)
+    """
+    if name not in TUTORIAL_FITS:
+        raise ValueError(
+            f"unknown tutorial fit {name!r}; choose from {sorted(TUTORIAL_FITS)}"
+        )
+    filename, expected = TUTORIAL_FITS[name]
+    folder = Path(cache_dir) if cache_dir is not None else data_dir() / "tutorial_fits"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / filename
+    url = TUTORIAL_DATA_URL + filename
+    redo = "set REFIT = True in the tutorial to fit HTFA from scratch instead"
+    if not path.exists():
+        fd, tmp_name = tempfile.mkstemp(prefix=filename, suffix=".part", dir=folder)
+        tmp = Path(tmp_name)
+        try:
+            try:
+                with (
+                    os.fdopen(fd, "wb") as out,
+                    urllib.request.urlopen(url, timeout=60) as response,
+                ):
+                    shutil.copyfileobj(response, out)
+            except OSError as err:
+                raise ConnectionError(
+                    f"could not download {url} ({err}); {redo}"
+                ) from err
+            got = sha256(tmp)
+            if got != expected:
+                raise ValueError(
+                    f"{url} has SHA-256 {got}, expected {expected}; {redo}"
+                )
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+    got = sha256(path)
+    if got != expected:
+        path.unlink()
+        raise ValueError(
+            f"{path} has SHA-256 {got}, expected {expected}; it was deleted, so the "
+            f"next call downloads it again. Or {redo}"
+        )
+    with np.load(path, allow_pickle=False) as z:
+        return {key: z[key] for key in z.files}

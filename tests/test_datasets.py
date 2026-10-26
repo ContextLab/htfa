@@ -184,3 +184,48 @@ def test_matches_the_original_validation_preprocessing(tmp_path):
     np.testing.assert_array_equal(datasets.regress_confounds(raw.data[0], C), cleaned)
     ds = datasets.fetch_development_fmri(n_subjects=1, cache_dir=tmp_path)
     np.testing.assert_array_equal(ds.data[0], cleaned.astype(np.float32))
+
+
+def test_fetch_tutorial_fit_unknown_name(tmp_path):
+    with pytest.raises(ValueError, match="unknown tutorial fit 'nope'"):
+        datasets.fetch_tutorial_fit("nope", cache_dir=tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_fetch_tutorial_fit_rejects_a_cached_file_with_the_wrong_checksum(tmp_path):
+    name = "development_fmri_6adults_K30"
+    filename, expected = datasets.TUTORIAL_FITS[name]
+    bad = tmp_path / filename
+    np.savez(bad, weights=np.zeros((6, 30, 168)))  # a real .npz, but not the asset
+    print("local file:", bad, "size:", bad.stat().st_size)
+    with pytest.raises(ValueError, match="REFIT = True") as err:
+        datasets.fetch_tutorial_fit(name, cache_dir=tmp_path)
+    print("error:", err.value)
+    assert expected in str(err.value)
+    assert not bad.exists()  # deleted, so the next call downloads it again
+
+
+@pytest.mark.network
+def test_fetch_tutorial_fit_downloads_verifies_and_caches(tmp_path, monkeypatch):
+    from htfa._download import DATA_DIR_ENV, sha256
+
+    monkeypatch.setenv(DATA_DIR_ENV, str(tmp_path))
+    name = "development_fmri_6adults_K30"  # the smallest asset (0.2 MB)
+    filename, expected = datasets.TUTORIAL_FITS[name]
+    t0 = time.perf_counter()
+    fit = datasets.fetch_tutorial_fit(name)
+    print(f"download and load: {time.perf_counter() - t0:.1f} s")
+    path = tmp_path / "tutorial_fits" / filename
+    assert sha256(path) == expected
+    assert [p.name for p in path.parent.iterdir()] == [filename]  # no .part left
+    print({k: v.shape for k, v in fit.items()})
+    assert fit["weights"].shape == (6, 30, 168)
+    assert fit["centers"].shape == (6, 30, 3)
+    assert fit["global_centers"].shape == (30, 3)
+    assert int(fit["n_iter"]) == 6 and not bool(fit["converged"])
+    assert list(fit["subject_ids"]) == [f"sub-pixar{i}" for i in range(123, 129)]
+    assert len(str(fit["htfa_commit"])) == 40
+    mtime = path.stat().st_mtime_ns
+    again = datasets.fetch_tutorial_fit(name)  # from the cache
+    assert path.stat().st_mtime_ns == mtime
+    np.testing.assert_array_equal(again["weights"], fit["weights"])
