@@ -118,7 +118,9 @@ def test_axis_grid_on_grid_and_arbitrary_coordinates(D):
     R = _grid_coords(D, rng)
     grid = axis_grid(R)
     assert grid is not None
-    rebuilt = np.stack([v[i] for v, i in zip(grid.values, grid.index)], axis=1)
+    rebuilt = np.stack(
+        [v[i] for v, i in zip(grid.values, grid.index, strict=True)], axis=1
+    )
     sizes = [v.size for v in grid.values]
     print(f"D={D}: V={len(R)}, distinct values per axis {sizes}")
     np.testing.assert_array_equal(rebuilt, R)
@@ -1067,3 +1069,53 @@ def test_projected_ols_with_near_duplicate_factors_stays_consistent(gap):
         f"max|W| {np.abs(W).max():.3g}"
     )
     assert abs(c1 - c2) <= 1e-12 * c1
+
+
+@pytest.mark.parametrize("on_grid", [False, True], ids=["arbitrary", "grid"])
+@pytest.mark.parametrize("kind", ["projected", "residual"])
+def test_cost_grad_hess_reuses_the_last_cost_evaluation_exactly(kind, on_grid):
+    """cost_grad_hess at the point of the last cost evaluation reuses its
+    factors (and the projected problem's weights): the results are bit for bit
+    those of a fresh problem, also after the point is changed in place and after
+    an evaluation elsewhere."""
+    from htfa._kernels import ProjectedProblem, axis_grid
+
+    rng = np.random.default_rng(700 + on_grid)
+    K, D, T = 4, 3, 9
+    if on_grid:
+        R, C, w = _factor_inputs(D, rng, K)
+    else:
+        R = rng.uniform(-20.0, 20.0, size=(400, D))
+        C = rng.uniform(-15.0, 15.0, size=(K, D))
+        w = 2.0 * rng.uniform(3.0, 8.0, K) ** 2
+    assert (axis_grid(R) is not None) == on_grid
+    X = factors(R, C, w) @ rng.normal(size=(K, T)) + 0.1 * rng.normal(size=(len(R), T))
+    prior = _random_prior(rng, C, w)
+
+    def make():
+        if kind == "projected":
+            return ProjectedProblem(X, R, K, NumpyEngine(), prior)
+        W = ridge_weights(X, factors(R, C, w))
+        return ResidualProblem(X, W, R, NumpyEngine(), prior)
+
+    x = np.concatenate([(C + rng.normal(0, 1.0, C.shape)).ravel(), w * 1.2])
+    x2 = x + rng.normal(0, 0.1, x.size)
+    loss = "linear" if kind == "projected" else "soft_l1"
+    fresh = make().cost_grad_hess(x, loss)
+    fresh2 = make().cost_grad_hess(x2, loss)
+    prob = make()
+    c = prob.cost(x, loss)
+    reused = prob.cost_grad_hess(x, loss)
+    prob.cost(x2 + 1.0, loss)
+    after_other = prob.cost_grad_hess(x, loss)
+    moved = x.copy()
+    prob.cost(moved, loss)
+    moved[:] = x2  # changed in place after the evaluation
+    after_move = prob.cost_grad_hess(moved, loss)
+    same = [
+        all(np.array_equal(a, b) for a, b in zip(fresh, got, strict=True))
+        for got in (reused, after_other)
+    ] + [all(np.array_equal(a, b) for a, b in zip(fresh2, after_move, strict=True))]
+    print(f"{kind} grid={on_grid}: cost {c:.15g} / {fresh[0]:.15g}; bitwise {same}")
+    assert same == [True, True, True]
+    assert c == pytest.approx(fresh[0], rel=1e-13)

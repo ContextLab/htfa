@@ -95,7 +95,7 @@ def sq_distances(R: Array, centers: Array, grid: AxisGrid | None = None) -> Arra
     """
     if grid is not None:
         d = np.zeros((R.shape[0], centers.shape[0]))
-        for j, (values, index) in enumerate(zip(grid.values, grid.index)):
+        for j, (values, index) in enumerate(zip(grid.values, grid.index, strict=True)):
             diff = values[:, None] - centers[None, :, j]
             d += (diff * diff)[index]
         return d
@@ -120,7 +120,7 @@ def factors(
     if grid is None:
         return np.exp(-sq_distances(R, centers) / widths[None, :])
     F = np.ones((R.shape[0], centers.shape[0]))
-    for j, (values, index) in enumerate(zip(grid.values, grid.index)):
+    for j, (values, index) in enumerate(zip(grid.values, grid.index, strict=True)):
         diff = values[:, None] - centers[None, :, j]
         F *= np.exp(-(diff * diff) / widths[None, :])[index]
     return F
@@ -237,6 +237,7 @@ class ResidualProblem:
         self.n_data = X.size
         self._w_sq_norms = np.sum(W * W, axis=1)
         self.prior = prior
+        self._last: tuple[Array, tuple[Array, Array, Array]] | None = None
         if prior is not None:
             inv = np.linalg.inv(np.asarray(prior.centers_cov, dtype=np.float64))
             # Symmetrize so that Sigma^-1 dc is exactly half the quadratic's gradient.
@@ -255,6 +256,18 @@ class ResidualProblem:
         """`axis_grid` of the coordinates, for :meth:`cost` and
         :meth:`cost_grad_hess` (computed on first use)."""
         return axis_grid(self.R)
+
+    def _factors(self, x: ArrayLike) -> tuple[Array, Array, Array]:
+        """Centers, widths and `factors` (V, K) at ``x``. The last point's are
+        kept: `bounded_lm` assembles the Hessian at the point it has just
+        evaluated, and reuses them unchanged."""
+        x = np.array(x, dtype=np.float64).ravel()
+        if self._last is not None and np.array_equal(self._last[0], x):
+            return self._last[1]
+        C, w = self._unpack(x)
+        out = (C, w, factors(self.R, C, w, self._grid))
+        self._last = (x, out)
+        return out
 
     def _center_prior(self, C: Array) -> tuple[Array, Array]:
         """Center residuals r_c (K,) and their gradients dr_c/dC (K, D)."""
@@ -363,8 +376,7 @@ class ResidualProblem:
     def cost(self, x: ArrayLike, loss: str) -> float:
         """Objective ``0.5 * sum(rho(r**2))`` over :meth:`residual` (without
         ``cost_offset``), evaluated without forming the residual vector."""
-        C, w = self._unpack(x)
-        F = factors(self.R, C, w, self._grid)
+        C, w, F = self._factors(x)
         total = self.engine.data_cost(F, self.s, loss)
         if self.prior is not None:
             total += self._prior_terms(C, w, loss, derivatives=False)[0]
@@ -396,11 +408,13 @@ class ResidualProblem:
         costs O(V K (D+1)**2). The parameters of factor k are
         ``theta_k = (c_k1, ..., c_kD, w_k)``.
         """
-        C, w = self._unpack(x)
         K, D, P = self.K, self.D, self.n_params
         s = self.s
         if derivatives is None:
-            derivatives = factor_derivatives(self.R, C, w, self._grid)
+            C, w, F = self._factors(x)
+            derivatives = factor_derivatives(self.R, C, w, self._grid, F)
+        else:
+            C, w = self._unpack(x)
         E, F, G = derivatives
         cost, M, H_ka = self.engine.gauss_newton(np.ascontiguousarray(F.T), G, s, loss)
         MT = np.ascontiguousarray(M.T)  # (K, V)
@@ -456,7 +470,11 @@ class ResidualProblem:
 
 
 def factor_derivatives(
-    R: Array, C: Array, w: Array, grid: AxisGrid | None = None
+    R: Array,
+    C: Array,
+    w: Array,
+    grid: AxisGrid | None = None,
+    F: Array | None = None,
 ) -> tuple[Array, Array, Array]:
     """Factors and their derivatives in a factor-major, voxel-last layout.
 
@@ -467,7 +485,8 @@ def factor_derivatives(
     passes and per-factor sums over voxels as batched matrix products.
 
     ``d`` and ``F`` are, bit for bit, the transposes of `sq_distances` and
-    `factors` with the same ``grid``.
+    `factors` with the same ``grid``; ``F`` (V, K) passes the latter when the
+    caller has it.
     """
     K, D = C.shape
     V = R.shape[0]
@@ -481,9 +500,13 @@ def factor_derivatives(
         np.multiply(E[:, 0], E[:, 0], out=d)
         for j in range(1, D):
             d += E[:, j] * E[:, j]
-        F = np.exp(-d / w[:, None])
     else:
         d[:] = sq_distances(R, C, grid).T
+    if F is not None:
+        F = np.ascontiguousarray(F.T)
+    elif grid is None:
+        F = np.exp(-d / w[:, None])
+    else:
         F = np.ascontiguousarray(factors(R, C, w, grid).T)
     E[:, D + 1] = 1.0
     Fw = F / w[:, None]
@@ -545,6 +568,7 @@ class ProjectedProblem:
         self.n_params = K * (self.D + 1)
         self._prior_only: ResidualProblem | None = None
         self._grid = axis_grid(self.R)
+        self._last: tuple[Array, tuple[Array, ...]] | None = None
         # The data go to the engine once; every evaluation sends new weights.
         self.engine.set(self.X, np.zeros((K, self.X.shape[1])))
 
@@ -570,10 +594,22 @@ class ProjectedProblem:
         inv = (vecs[:, keep] / vals[keep]) @ vecs[:, keep].T
         return inv @ (F.T @ self.X), inv
 
+    def _at(self, x: ArrayLike) -> tuple[Array, ...]:
+        """Centers, widths, `factors` (V, K), weights and gram inverse at ``x``
+        (`_weights`). The last point's are kept: `bounded_lm` assembles the
+        Hessian at the point it has just evaluated, and reuses them unchanged."""
+        x = np.array(x, dtype=np.float64).ravel()
+        if self._last is not None and np.array_equal(self._last[0], x):
+            return self._last[1]
+        C, w = self._unpack(x)
+        F = factors(self.R, C, w, self._grid)
+        out = (C, w, F, *self._weights(F))
+        self._last = (x, out)
+        return out
+
     def weights(self, x: ArrayLike) -> Array:
         """Ridge weights (K, T) at ``x`` (see `_weights`)."""
-        C, w = self._unpack(x)
-        return self._weights(factors(self.R, C, w, self._grid))[0]
+        return self._at(x)[3]
 
     def _prior_cost(self, C: Array, w: Array) -> float:
         if self.prior is None:
@@ -592,9 +628,7 @@ class ProjectedProblem:
     def cost(self, x: ArrayLike, loss: str = "linear") -> float:
         """``phi(x)``, from the data residual ``X - F W`` on the engine (as in
         `cost_grad_hess`, so that the solver compares like with like)."""
-        C, w = self._unpack(x)
-        F = factors(self.R, C, w, self._grid)
-        W, _ = self._weights(F)
+        C, w, F, W, _ = self._at(x)
         self.engine.set_weights(W)
         data = self.engine.data_cost(F, self.s, "linear")
         ridge = 0.5 * self.s**2 * self.beta * float(np.sum(W * W))
@@ -614,12 +648,11 @@ class ProjectedProblem:
         """``phi``, its gradient, Gauss-Newton matrix and Hessian (P, P)."""
         if loss != "linear":
             raise ValueError(f"ProjectedProblem needs the linear loss, got {loss!r}")
-        C, w = self._unpack(x)
+        C, w, F_vk, W, Mi = self._at(x)
         K, D = self.K, self.D
         A, P, s2 = D + 1, self.n_params, self.s**2
-        derivatives = factor_derivatives(self.R, C, w, self._grid)
+        derivatives = factor_derivatives(self.R, C, w, self._grid, F_vk)
         _, F, G = derivatives
-        W, Mi = self._weights(F.T)
         inner = ResidualProblem(
             self.X, W, self.R, self.engine, self.prior, data_on_engine=True
         )
