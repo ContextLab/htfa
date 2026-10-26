@@ -610,6 +610,302 @@ def test_animate_network_long_mp4(tmp_path):
     assert colors[1][1] > 20 and colors[1][0] == 0
 
 
+# ------------------------------------------- duration, interpolation, spin
+
+
+def _pngs(folder, n):
+    return [_rgb(Image.open(folder / f"{k + 1}.png")) for k in range(n)]
+
+
+def test_animate_network_duration_frame_count(tmp_path):
+    """duration sets round(duration * fps) frames for GIF and mp4 alike."""
+    import imageio.v2 as iio
+
+    for duration, fps, want in [(1.2, 5, 6), (0.9, 10, 9)]:
+        gif = bn.animate_network(
+            CENTERS,
+            _frames(),
+            tmp_path / "d.gif",
+            mesh=None,
+            size=(200, 125),
+            fps=fps,
+            duration=duration,
+        )
+        with Image.open(gif) as g:
+            print("gif", duration, fps, "->", g.n_frames, g.info["duration"], "ms")
+            assert g.n_frames == want and g.info["duration"] == 1000 / fps
+        mp4 = bn.animate_network(
+            CENTERS,
+            _frames(),
+            tmp_path / "d.mp4",
+            mesh=None,
+            size=(200, 125),
+            fps=fps,
+            duration=duration,
+        )
+        reader = iio.get_reader(mp4, "ffmpeg")
+        try:
+            print("mp4", duration, fps, "->", reader.count_frames())
+            assert reader.count_frames() == want
+            assert reader.get_meta_data()["fps"] == fps
+        finally:
+            reader.close()
+    # n_frames instead of duration: 7 frames out of 3 connectivity frames
+    bn.animate_network(
+        CENTERS,
+        _frames(),
+        tmp_path / "n.gif",
+        mesh=None,
+        size=(200, 125),
+        n_frames=7,
+        frames_dir=tmp_path / "n",
+    )
+    assert len(list((tmp_path / "n").iterdir())) == 7
+
+
+def test_animate_network_linear_interpolation(tmp_path):
+    """Between two windows, frames show the linearly interpolated matrix.
+
+    Edge 4-5 goes from 0 to 1 (threshold 0.45), edges 0-1 and 2-3 change
+    sign. On 5 output frames at t = 0, 0.25, 0.5, 0.75, 1: edge 4-5 is 0,
+    0.25, 0.5, 0.75, 1, so it appears from the middle frame on, and the top
+    edge is 0.8, 0.4, 0, -0.4, -0.8: drawn red, hidden, hidden, hidden, blue.
+    """
+    E0, E1 = _conn(0.0), -_conn()
+    E1[4, 5] = E1[5, 4] = 1.0
+    series = np.stack([E0, E1])
+    kw = dict(mesh=None, snap=False, threshold=0.45, size=(400, 250))
+    bn.animate_network(
+        CENTERS,
+        series,
+        tmp_path / "lin.gif",
+        n_frames=5,
+        frames_dir=tmp_path / "lin",
+        **kw,
+    )
+    got = _pngs(tmp_path / "lin", 5)
+    for k, t in enumerate(np.linspace(0, 1, 5)):
+        want = _rgb(bn.plot_network(CENTERS, (1 - t) * E0 + t * E1, **kw))
+        diff = np.abs(got[k] - want)
+        print(
+            f"frame {k} (t={t}): max |frame - plot_network(interpolated)|", diff.max()
+        )
+        assert diff.max() == 0
+    # visibility follows the interpolated weight; rows of z = 50, 0, -40 in
+    # the 400 x 250 image, between the nodes (y = -60 and 40)
+    bottom = [_red(a[180:189, 150:250]).sum() for a in got]
+    print("red px of edge 4-5 per frame:", bottom)
+    assert bottom[0] == bottom[1] == 0 and min(bottom[2:]) > 5
+    upper = [a[55:133, 150:250].min() for a in got]
+    print("darkest value at z = 50..0 per frame:", upper)
+    assert upper[1] == upper[2] == upper[3] == 255  # |w| <= 0.4: hidden
+    assert _red(got[0][55:64, 150:250]).sum() > 5
+    assert _blue(got[4][55:64, 150:250]).sum() > 5
+    # "nearest": frames 0-1 show window 0 and frames 2-4 window 1 (t >= 0.5)
+    bn.animate_network(
+        CENTERS,
+        series,
+        tmp_path / "near.gif",
+        n_frames=5,
+        interpolation="nearest",
+        frames_dir=tmp_path / "near",
+        **kw,
+    )
+    near = _pngs(tmp_path / "near", 5)
+    a0, a1 = (
+        _rgb(bn.plot_network(CENTERS, E0, **kw)),
+        _rgb(bn.plot_network(CENTERS, E1, **kw)),
+    )
+    assert [np.abs(f - a0).max() for f in near[:2]] == [0, 0]
+    assert [np.abs(f - a1).max() for f in near[2:]] == [0, 0, 0]
+
+
+def test_animate_network_captions_follow_time(tmp_path):
+    """Sequence captions use the nearest window; a callable gets the time."""
+    seen = []
+
+    def caption(t):
+        seen.append(t)
+        return f"t = {t:.2f}"
+
+    bn.animate_network(
+        CENTERS,
+        _frames(),
+        tmp_path / "c.gif",
+        mesh=None,
+        size=(200, 125),
+        n_frames=5,
+        captions=caption,
+    )
+    print("caption times:", seen)
+    assert np.allclose(seen, [0, 0.5, 1, 1.5, 2])
+    bn.animate_network(
+        CENTERS,
+        _frames(),
+        tmp_path / "s.gif",
+        mesh=None,
+        size=(200, 125),
+        n_frames=5,
+        captions=["a", "b", "c"],
+        frames_dir=tmp_path / "s",
+    )
+    # frames 1 and 2 (t = 0.5, 1) both take caption "b" (nearest window: 1)
+    bands = [a[:-125] for a in _pngs(tmp_path / "s", 5)]
+    assert np.array_equal(bands[1], bands[2])
+    assert not np.array_equal(bands[0], bands[1])
+    assert not np.array_equal(bands[2], bands[3])
+
+
+def test_animate_network_static_with_duration(tmp_path):
+    """A (K, K) matrix with duration gives a movie of fixed edges."""
+    out = bn.animate_network(
+        CENTERS,
+        _conn(),
+        tmp_path / "s.gif",
+        mesh=None,
+        size=(200, 125),
+        fps=4,
+        duration=1.0,
+        frames_dir=tmp_path / "f",
+    )
+    frames = _pngs(tmp_path / "f", 4)
+    assert len(list((tmp_path / "f").iterdir())) == 4
+    # Pillow stores identical consecutive GIF frames once, with their
+    # durations added, so the GIF still plays for 1 s
+    with Image.open(out) as g:
+        total = 0
+        for k in range(g.n_frames):
+            g.seek(k)
+            total += g.info["duration"]
+    print("GIF frames stored:", g.n_frames, "total duration (ms):", total)
+    assert total == 1000
+    assert all(np.array_equal(frames[0], f) for f in frames[1:])
+    assert _red(frames[0]).sum() > 20 and _blue(frames[0]).sum() > 20
+
+
+def test_animate_network_option_errors(tmp_path):
+    out = tmp_path / "e.gif"
+    with pytest.raises(ValueError, match=r"\(T, K, K\)"):
+        bn.animate_network(CENTERS, _conn(), out, mesh=None, spin=(0, 0, 1))
+    with pytest.raises(ValueError, match="not both"):
+        bn.animate_network(CENTERS, _frames(), out, mesh=None, duration=1, n_frames=3)
+    with pytest.raises(ValueError, match="duration"):
+        bn.animate_network(CENTERS, _frames(), out, mesh=None, duration=0.01)
+    with pytest.raises(ValueError, match="n_frames"):
+        bn.animate_network(CENTERS, _frames(), out, mesh=None, n_frames=0)
+    with pytest.raises(ValueError, match="interpolation"):
+        bn.animate_network(CENTERS, _frames(), out, mesh=None, interpolation="cubic")
+    with pytest.raises(ValueError, match="spin"):
+        bn.animate_network(CENTERS, _frames(), out, mesh=None, spin=(0, 1))
+    with pytest.raises(ValueError, match="spin"):
+        bn.animate_network(CENTERS, _frames(), out, mesh=None, spin=(0, np.nan, 1))
+    assert not out.exists()
+
+
+def test_animate_network_spin_returns_to_start(tmp_path):
+    """Frame k shows k / n_frames of the turns: a whole turn is the start view.
+
+    With spin=(0, 0, 2) over 8 frames, frame 4 is one full turn about z and
+    frame 2 half a turn; spin=(0, 0, 1) over 4 frames visits the same
+    orientations (so the same zoom) and reaches half a turn at frame 2, the
+    same camera. Around x and y as well.
+    """
+    kw = dict(mesh=None, snap=False, size=(400, 250))
+    for axis in range(3):
+        two, one = np.zeros(3), np.zeros(3)
+        two[axis], one[axis] = 2, 1
+        bn.animate_network(
+            CENTERS,
+            _conn(),
+            tmp_path / "a.gif",
+            spin=tuple(two),
+            n_frames=8,
+            frames_dir=tmp_path / f"two{axis}",
+            **kw,
+        )
+        bn.animate_network(
+            CENTERS,
+            _conn(),
+            tmp_path / "b.gif",
+            spin=tuple(one),
+            n_frames=4,
+            frames_dir=tmp_path / f"one{axis}",
+            **kw,
+        )
+        f2, f1 = _pngs(tmp_path / f"two{axis}", 8), _pngs(tmp_path / f"one{axis}", 4)
+        d_turn = np.abs(f2[4] - f2[0]).mean()
+        d_half = np.abs(f2[2] - f1[2]).mean()
+        d_moved = np.abs(f2[1] - f2[0]).mean()
+        print(
+            f"axis {axis}: |turn - start| {d_turn:.4f}, "
+            f"|half (2 turns) - half (1 turn)| {d_half:.4f}, "
+            f"|quarter - start| {d_moved:.3f}"
+        )
+        assert d_turn < 0.05 and d_half < 0.05
+        assert d_moved > 0.5
+
+
+def test_animate_network_spin_half_turn_views(tmp_path):
+    """Half a turn about z shows the other side: the left view mirrored.
+
+    A quarter turn looks along the y axis, onto the x = 0 plane that holds
+    all nodes edge-on, so the drawing collapses to a narrow vertical strip.
+    """
+    bn.animate_network(
+        CENTERS,
+        _conn(),
+        tmp_path / "h.gif",
+        mesh=None,
+        snap=False,
+        size=(400, 250),
+        n_frames=4,
+        spin=(0, 0, 1),
+        frames_dir=tmp_path / "h",
+    )
+    f = _pngs(tmp_path / "h", 4)
+
+    def cols(a):
+        c = np.flatnonzero((a.min(axis=2) < 250).any(0))
+        return c[0], c[-1]
+
+    widths = [cols(a)[1] - cols(a)[0] for a in f]
+    print("drawn column span per frame (0, 90, 180, 270 deg):", widths)
+    assert widths[1] < widths[0] / 4 and widths[3] < widths[0] / 4
+    mirrored = bn.image_diff(
+        Image.fromarray(f[2][:, ::-1].astype(np.uint8)),
+        Image.fromarray(f[0].astype(np.uint8)),
+    )
+    print("image_diff(180 deg mirrored, 0 deg):", mirrored)
+    assert mirrored < 2
+    # red top edge stays on top: a turn about z does not flip up and down
+    assert _red(f[2][:125]).sum() > 20 and _blue(f[2][:125]).sum() == 0
+
+
+@pytest.mark.parametrize("spin", [(1, 0, 0), (0, 1, 0), (0, 0, 1)])
+def test_animate_network_spin_keeps_brain_in_frame(ch2, tmp_path, spin):
+    """No frame of a spin cuts the mesh, and the fit is tight in some frame."""
+    w, h = 320, 200
+    bn.animate_network(
+        CENTERS,
+        _conn(),
+        tmp_path / "s.gif",
+        mesh=ch2,
+        size=(w, h),
+        n_frames=12,
+        spin=spin,
+        frames_dir=tmp_path / "f",
+    )
+    fill = []
+    for k, a in enumerate(_pngs(tmp_path / "f", 12)):
+        nz = a.min(axis=2) < 250
+        rows, cols = np.flatnonzero(nz.any(1)), np.flatnonzero(nz.any(0))
+        assert rows[0] > 1 and rows[-1] < h - 2, (k, rows[0], rows[-1])
+        assert cols[0] > 1 and cols[-1] < w - 2, (k, cols[0], cols[-1])
+        fill.append(max((rows[-1] - rows[0]) / h, (cols[-1] - cols[0]) / w))
+    print(spin, "largest extent / image size per frame:", np.round(fill, 3))
+    assert max(fill) > 0.85
+
+
 # ------------------------------------------------------------------ panels
 
 
@@ -770,6 +1066,22 @@ def test_results_animate_network_renders(res_htfa, tmp_path):
           "frame 2:", _red(second).sum(), _blue(second).sum())  # fmt: skip
     assert _red(first).sum() >= 10 and _blue(first).sum() == 0
     assert _blue(second).sum() >= 10 and _red(second).sum() == 0
+
+
+def test_results_animate_network_duration_and_spin(res_htfa, tmp_path):
+    """HTFAResults.animate_network passes duration, spin and fps through."""
+    out = res_htfa.animate_network(
+        tmp_path / "s.gif",
+        subject=1,
+        connectivity=_signed_edges(4),
+        mesh=None,
+        size=(200, 125),
+        fps=5,
+        duration=0.8,
+        spin=(0, 0, 1),
+    )
+    with Image.open(out) as g:
+        assert g.n_frames == 4 and g.info["duration"] == 200
 
 
 # ------------------------------------------------- JPEG output and configs

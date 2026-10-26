@@ -31,7 +31,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -961,6 +961,8 @@ class _Scene:
             )
         self.node_opacity = node_opacity
         self.size = (int(size[0]), int(size[1]))
+        self.view_dir, self.view_up = (np.asarray(v, float) for v in VIEWS[view])
+        self.verts = None if mesh is None else np.asarray(mesh[0], float)
         s = _SUPERSAMPLE
         pl = pv.Plotter(
             off_screen=True,
@@ -1081,6 +1083,43 @@ class _Scene:
             **_DULL,
         )
 
+    def fit_spin(self, rotations: Array) -> tuple[Array, float]:
+        """Rotation center and parallel scale for a spinning camera.
+
+        The center is the middle of the mesh's bounding box (of the node
+        spheres' without a mesh). The scale is 5% more than the smallest one
+        that keeps the mesh and the nodes inside the image for every brain
+        rotation in ``rotations`` (shape (n, 3, 3)).
+        """
+        if self.verts is None:
+            lo = (self.centers - self.radii[:, None]).min(axis=0)
+            hi = (self.centers + self.radii[:, None]).max(axis=0)
+        else:
+            lo, hi = self.verts.min(axis=0), self.verts.max(axis=0)
+        center = (lo + hi) / 2
+        w, h = self.size
+        right = np.cross(self.view_dir, self.view_up)
+        nodes = self.centers - center
+        scale = 0.0
+        for start in range(0, len(rotations), 16):
+            R = rotations[start : start + 16]
+            # image axes in brain coordinates: R^T up and R^T right
+            axes = np.einsum("nji,aj->ain", R, np.stack([self.view_up, right]))
+            ext = (np.abs(nodes @ axes) + self.radii[:, None]).max(axis=1)
+            if self.verts is not None:
+                ext = np.maximum(ext, np.abs((self.verts - center) @ axes).max(axis=1))
+            scale = max(scale, float(np.max(np.maximum(ext[0], ext[1] * h / w))))
+        return center, 1.05 * scale
+
+    def orbit(self, R: Array, center: Array, scale: float) -> None:
+        """Place the camera so the brain looks rotated by ``R`` about ``center``."""
+        cam = self.pl.camera
+        cam.focal_point = center
+        cam.position = center + 500.0 * (R.T @ self.view_dir)
+        cam.up = R.T @ self.view_up
+        cam.parallel_scale = scale
+        cam.clipping_range = (1, 1000)
+
     def image(self) -> Any:
         Image = _pil()
         self.pl.render()
@@ -1100,7 +1139,7 @@ def _rgb(color: Any) -> tuple[float, float, float]:
 def _connectivity(connectivity: Any, K: int, ndim: int) -> Array:
     E = np.asarray(connectivity, dtype=np.float64)
     if E.ndim != ndim or E.shape[-2:] != (K, K):
-        want = "(K, K)" if ndim == 2 else "(T, K, K)"
+        want = "(K, K)" if ndim == 2 else "(T, K, K) (or (K, K) with duration)"
         raise ValueError(f"connectivity must be {want} with K={K}, got {E.shape}")
     if not np.all(np.isfinite(E)):
         raise ValueError("connectivity contains NaN or inf")
@@ -1272,12 +1311,72 @@ def plot_network(
     return img
 
 
+def _movie_length(
+    duration: float | None, n_frames: int | None, fps: float
+) -> int | None:
+    """Number of movie frames set by ``duration`` or ``n_frames`` (else None)."""
+    if duration is not None and n_frames is not None:
+        raise ValueError("give duration or n_frames, not both")
+    if duration is not None:
+        n = round(float(duration) * fps)
+        if n < 1:
+            raise ValueError(f"duration {duration} s at {fps} fps gives no frames")
+        return n
+    if n_frames is not None and (int(n_frames) != n_frames or n_frames < 1):
+        raise ValueError(f"n_frames must be a positive integer, got {n_frames!r}")
+    return None if n_frames is None else int(n_frames)
+
+
+def _spin_rotations(spin: Any, n: int) -> Array:
+    """Brain rotation of each of ``n`` frames, shape (n, 3, 3).
+
+    Frame k turns the brain by ``spin * k / n`` full turns about the x, then
+    the y, then the z axis (right-hand rule).
+    """
+    turns = np.asarray(spin, dtype=np.float64)
+    if turns.shape != (3,) or not np.all(np.isfinite(turns)):
+        raise ValueError(
+            f"spin must be three finite numbers of turns (x, y, z), got {spin!r}"
+        )
+    c, s = (f(2 * np.pi * np.outer(np.arange(n) / n, turns)) for f in (np.cos, np.sin))
+    one = np.ones(n)
+
+    def rot(a: int, b: int, axis: int) -> Array:
+        R = np.zeros((n, 3, 3))
+        R[:, axis, axis] = one
+        R[:, a, a] = R[:, b, b] = c[:, axis]
+        R[:, a, b], R[:, b, a] = -s[:, axis], s[:, axis]
+        return R
+
+    return rot(0, 1, 2) @ rot(2, 0, 1) @ rot(1, 2, 0)
+
+
+def _nearest(t: float, T: int) -> int:
+    """Index of the window nearest to time ``t`` (halves round up)."""
+    return min(int(np.floor(t + 0.5)), T - 1)
+
+
+def _at_time(E: Array, t: float, interpolation: str) -> Array:
+    """Connectivity at fractional window index ``t``."""
+    if interpolation == "nearest":
+        return E[_nearest(t, len(E))]
+    lo = min(int(np.floor(t)), len(E) - 1)
+    frac = t - lo
+    if frac == 0:
+        return E[lo]
+    return (1 - frac) * E[lo] + frac * E[lo + 1]
+
+
 def animate_network(
     nodes: Any,
     connectivity: Any,
     out: str | os.PathLike,
     *,
     fps: float = 10,
+    duration: float | None = None,
+    n_frames: int | None = None,
+    interpolation: str = "linear",
+    spin: Sequence[float] | None = None,
     sizes: Any = None,
     widths: Any = None,
     subject: Any = "global",
@@ -1286,14 +1385,17 @@ def animate_network(
     mask: Any = None,
     scale_by_mass: bool = False,
     fade_by_mass: bool | float = False,
-    captions: Sequence[str] | None = None,
+    captions: Sequence[str] | Callable[[float], str] | None = None,
     frames_dir: str | os.PathLike | None = None,
     jpeg_quality: int | None = None,
     **style: Any,
 ) -> Path:
     """Render a ``(T, K, K)`` connectivity series as an mp4 or GIF.
 
-    The camera, mesh, nodes and threshold stay fixed across frames.
+    By default the movie has one frame per connectivity window, and the
+    camera, mesh, nodes and threshold stay fixed. ``duration`` (or
+    ``n_frames``) sets the number of frames instead, interpolating between
+    windows, and ``spin`` turns the brain.
 
     Parameters
     ----------
@@ -1301,17 +1403,48 @@ def animate_network(
         As in `plot_network` (``snap`` is on by default).
     **style
         As in `plot_network`.
-    connectivity : array of shape (T, K, K)
-        One edge matrix per frame.
+    connectivity : array of shape (T, K, K), or (K, K) with duration
+        One edge matrix per window. A single ``(K, K)`` matrix needs
+        ``duration`` or ``n_frames`` and gives fixed edges (for a spin).
     out : path
         ``.mp4`` (H.264 via imageio-ffmpeg) or ``.gif``. An mp4 is encoded
         while frames render, holding one frame in memory at a time. A GIF
         needs all frames for its shared palette, about 4.8 MB per
         1600 x 1000 frame (see `write_animation`).
     fps : float
-        Frames per second.
-    captions : sequence of T str, optional
+        Frame rate of the movie, in frames per second (default 10).
+    duration : float, optional
+        Length of the movie in seconds: it gets ``round(duration * fps)``
+        frames whatever T is, so the windows play in slow motion or fast
+        forward. Movie frame ``i`` of ``n`` shows window time
+        ``t = i * (T - 1) / (n - 1)`` (all of the windows, first to last).
+    n_frames : int, optional
+        The number of movie frames, instead of ``duration``.
+    interpolation : {"linear", "nearest"}
+        How a fractional ``t`` is drawn: ``"linear"`` (default) mixes the
+        two neighbouring windows, ``(1 - f) * E[floor(t)] + f * E[floor(t)
+        + 1]`` with ``f = t - floor(t)``, so edges fade in and out
+        smoothly as their weights cross ``threshold``; ``"nearest"`` shows
+        the nearest window (halves round up).
+    spin : (x, y, z) turns, optional
+        Number of full turns of the brain about the MNI x, y and z axes over
+        the whole movie, through the center of the mesh's bounding box (of
+        the nodes without a mesh). Fractions are allowed. Movie frame ``k``
+        of ``n`` turns the brain by ``spin * k / n`` turns, about x first,
+        then y, then z (right-hand rule: ``(0, 0, 0.25)`` brings the front
+        of the brain towards the camera in the left lateral view). The turn
+        is made by orbiting the camera (with its light) around the brain,
+        with the parallel projection kept and the zoom fixed at the largest
+        one that keeps the brain and nodes inside every frame. With a whole
+        number of turns the movie loops seamlessly: frame ``n`` would be
+        frame 0 again. ``None`` (default) keeps the fixed camera of
+        ``view``; any spin, even ``(0, 0, 0)``, uses the centered, fitted
+        zoom.
+    captions : sequence of T str, or callable, optional
         Text shown in a white band above each frame (not over the brain).
+        A sequence gives the caption of each window (a movie frame takes
+        that of the nearest window); a callable is called with each frame's
+        window time ``t`` (a float) and returns its caption.
     frames_dir : path, optional
         Also save each frame there as ``1.png``, ``2.png``, ... (``.jpg``
         with ``jpeg_quality``).
@@ -1323,17 +1456,52 @@ def animate_network(
     -------
     pathlib.Path
         ``out``.
+
+    Examples
+    --------
+    A 6 s movie of 30 windows at 15 frames per second (90 frames, three per
+    window, interpolated), turning once about the vertical axis:
+
+    >>> animate_network(centers, E, "net.mp4", fps=15, duration=6,
+    ...                 spin=(0, 0, 1))  # doctest: +SKIP
+
+    A 4 s spin of one static network:
+
+    >>> animate_network(centers, C, "spin.gif", fps=12, duration=4,
+    ...                 spin=(0, 0, 1), size=(480, 300))  # doctest: +SKIP
     """
     scene_opts, edge_opts = _style(dict(style))
-    centers, node_sizes, opacity = _display_nodes(
-        nodes, sizes, widths, subject, snap, mask, scale_by_mass, fade_by_mass
-    )
-    E = _connectivity(connectivity, len(centers), 3)
-    if captions is not None and len(captions) != len(E):
-        raise ValueError(f"{len(captions)} captions for {len(E)} frames")
+    if interpolation not in ("linear", "nearest"):
+        raise ValueError(
+            f"interpolation must be 'linear' or 'nearest', got {interpolation!r}"
+        )
+    n = _movie_length(duration, n_frames, fps)
     out = Path(out)
     if out.suffix.lower() not in (".mp4", ".gif"):
         raise ValueError(f"out must end in .mp4 or .gif, got {out.name!r}")
+    centers, node_sizes, opacity = _display_nodes(
+        nodes, sizes, widths, subject, snap, mask, scale_by_mass, fade_by_mass
+    )
+    K = len(centers)
+    if n is not None and np.ndim(connectivity) == 2:
+        E = _connectivity(connectivity, K, 2)[None]
+    else:
+        E = _connectivity(connectivity, K, 3)
+    T = len(E)
+    if callable(captions):
+        caption: Callable[[float], str] | None = captions
+    elif captions is not None:
+        if len(captions) != T:
+            raise ValueError(f"{len(captions)} captions for {T} frames")
+        seq = list(captions)
+
+        def caption(t: float) -> str:
+            return seq[_nearest(t, T)]
+
+    else:
+        caption = None
+    times = np.arange(T, dtype=np.float64) if n is None else np.linspace(0, T - 1, n)
+    rotations = None if spin is None else _spin_rotations(spin, len(times))
     folder = None if frames_dir is None else Path(frames_dir)
     if folder is not None:
         folder.mkdir(parents=True, exist_ok=True)
@@ -1342,16 +1510,20 @@ def animate_network(
     )
 
     def frames() -> Iterator[Any]:
-        for t, frame in enumerate(E):
-            scene.set_edges(frame, **edge_opts)
+        if rotations is not None:
+            center, scale = scene.fit_spin(rotations)
+        for k, t in enumerate(times):
+            if rotations is not None:
+                scene.orbit(rotations[k], center, scale)
+            scene.set_edges(_at_time(E, float(t), interpolation), **edge_opts)
             img = scene.image()
-            if captions is not None:
-                img = _with_header(img, [captions[t]])
+            if caption is not None:
+                img = _with_header(img, [caption(float(t))])
             if jpeg_quality is not None:
                 img = _jpeg(img, jpeg_quality)
             if folder is not None:
                 ext = ".png" if jpeg_quality is None else ".jpg"
-                _save(img, folder / f"{t + 1}{ext}", jpeg_quality)
+                _save(img, folder / f"{k + 1}{ext}", jpeg_quality)
             yield img
 
     try:
@@ -1376,7 +1548,9 @@ def write_animation(
     ramps, plus median-cut colors of all frames), without dithering, so colors
     do not flicker between frames. Choosing that palette needs every frame,
     so a GIF holds all frames in memory: about 4.8 MB per 1600 x 1000 frame
-    (300 frames: about 1.4 GB). Use mp4 for long movies.
+    (300 frames: about 1.4 GB). Use mp4 for long movies. Pillow stores
+    identical consecutive GIF frames once, with their durations added, so
+    such a GIF has fewer frames but the same running time.
     """
     out = Path(out)
     suffix = out.suffix.lower()

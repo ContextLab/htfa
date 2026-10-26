@@ -604,7 +604,15 @@ class HTFAResults:
         ``connectivity`` defaults to ``isfc(window)`` for ``"global"`` and to
         ``dynamic_connectivity(subject, window)`` otherwise. Nodes are
         snapped by default as in `plot_network`. Other keyword arguments go to
-        `htfa.brainnet.animate_network`. Needs the ``brain3d`` extra.
+        `htfa.brainnet.animate_network`, among them ``fps`` (frame rate),
+        ``duration`` (seconds; frames interpolated between windows, see
+        ``interpolation``) and ``spin`` (turns about x, y, z). Needs the
+        ``brain3d`` extra.
+
+        Examples
+        --------
+        >>> res.animate_network("isfc.mp4", fps=15, duration=8,
+        ...                     spin=(0, 0, 1))  # doctest: +SKIP
         """
         centers, widths, conn = self._network_inputs(subject, connectivity, window)
         self._network_defaults(subject, widths, kwargs)
