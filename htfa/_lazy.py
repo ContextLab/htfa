@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
+from inspect import getmodulename
 from types import ModuleType
 
 from packaging.requirements import Requirement
@@ -170,10 +171,22 @@ def imported_distributions() -> dict[str, str]:
     """Installed version of each distribution that provides a loaded module.
 
     Keys are canonical distribution names; a top-level name in ``sys.modules``
-    is mapped to its distributions with ``packages_distributions``. A version
-    that is not PEP 440 cannot be written as a pin and is left out.
+    is mapped to its distributions with ``packages_distributions`` and, as
+    Python 3.11+ does, the top-level entries of each distribution's file list.
+    A version that is not PEP 440 cannot be written as a pin and is left out.
     """
-    providers = importlib.metadata.packages_distributions()
+    providers = {
+        module: set(dists)
+        for module, dists in importlib.metadata.packages_distributions().items()
+    }
+    # Python 3.10's packages_distributions reads only top_level.txt, which
+    # wheels not built by setuptools (numpy, packaging) do not have.
+    for dist in importlib.metadata.distributions():
+        name = dist.metadata["Name"]
+        for path in dist.files or ():
+            top = path.parts[0] if len(path.parts) > 1 else getmodulename(path.name)
+            if name and top and "." not in top:  # skips *.dist-info and ../bin
+                providers.setdefault(top, set()).add(name)
     names = {
         canonicalize_name(dist)
         for module in list(sys.modules)
