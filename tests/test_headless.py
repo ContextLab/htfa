@@ -164,6 +164,16 @@ def test_plot_network_renders_without_display(tmp_path):
         timeout=600,
     )
     print(run.stdout, run.stderr)
+    if (
+        LINUX
+        and not os.environ.get("DISPLAY")
+        and not any(brainnet._gl_window_works(w) for w in brainnet.HEADLESS_WINDOWS)
+    ):
+        # No offscreen library here: the call must fail cleanly (no segfault)
+        # with the error that names the packages to install.
+        assert run.returncode == 1, run.stderr
+        assert "RuntimeError" in run.stderr and "apt-get install" in run.stderr
+        return
     assert run.returncode == 0, run.stderr
     assert out.stat().st_size > 1000
     assert np.asarray(brainnet._open(out)).std() > 5
