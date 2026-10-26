@@ -491,17 +491,14 @@ def factor_derivatives(
     K, D = C.shape
     V = R.shape[0]
     E = np.empty((K, D + 2, V))
-    # From a contiguous copy of R.T: the subtraction from the strided view of R
-    # took 13 ms of the 18 ms (K=100, V=25k); the values are the same.
+    # From a contiguous copy of R.T: 1.3 ms instead of 3.0 ms from the strided
+    # view of R (K=100, V=25k); the values are the same.
     np.subtract(np.ascontiguousarray(R.T)[None], C[:, :, None], out=E[:, :D])
+    # The sums of `sq_distances` (with or without a grid), in its order.
     d = E[:, D]
-    if grid is None:
-        # The sums of `sq_distances`, in its order.
-        np.multiply(E[:, 0], E[:, 0], out=d)
-        for j in range(1, D):
-            d += E[:, j] * E[:, j]
-    else:
-        d[:] = sq_distances(R, C, grid).T
+    np.multiply(E[:, 0], E[:, 0], out=d)
+    for j in range(1, D):
+        d += E[:, j] * E[:, j]
     if F is not None:
         F = np.ascontiguousarray(F.T)
     elif grid is None:
