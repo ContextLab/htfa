@@ -20,6 +20,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
       # off-screen pyvista rendering (htfa.brainnet): Xvfb on Linux, Mesa on Windows
       - uses: pyvista/setup-headless-display-action@v5
+      # Mesa's EGL, as on Colab: htfa renders without a display through VTK's
+      # EGL window (tests/test_headless.py). The action above installs only
+      # GLX and Xvfb.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get install -y --no-install-recommends libegl1 libegl-mesa0
       # BrainNet Viewer meshes are downloaded from NITRC on first use; keep them
       - uses: actions/cache@v4
         with:
@@ -29,24 +34,6 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: ruff format --check .
-      - name: GL diagnostics (temporary)
-        if: runner.os == 'Linux'
-        run: |
-          ldconfig -p | grep -i -E "libEGL|OSMesa|libGLX|libgallium|egl_mesa|libGL\.so" || true
-          ls /usr/share/glvnd/egl_vendor.d/ 2>/dev/null || echo "no EGL vendor files"
-          dpkg -l | grep -i -E "libegl|osmesa|mesa" | awk '{print $2, $3}' || true
-          python -c "import vtk; print('vtk', vtk.vtkVersion.GetVTKVersion())"
-          for d in ":99.0" ""; do
-            for w in vtkEGLRenderWindow vtkOSOpenGLRenderWindow; do
-              echo "=== DISPLAY='$d' window=$w"
-              env DISPLAY="$d" VTK_DEFAULT_OPENGL_WINDOW=$w python -c "
-          import vtkmodules.vtkRenderingOpenGL2
-          from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
-          w = vtkRenderWindow(); w.SetOffScreenRendering(1); w.SetSize(8, 8)
-          w.AddRenderer(vtkRenderer()); w.Render(); print('class', w.GetClassName())
-          " 2>&1 | tail -5; echo "exit ${PIPESTATUS[0]}"
-            done
-          done
       - run: pytest -q
         env:
           HTFA_DATA_DIR: ${{ runner.temp }}/htfa-data
