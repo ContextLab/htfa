@@ -24,8 +24,6 @@ These extras are declared in ``pyproject.toml``:
      - hypertools, sentence-transformers (only to re-execute the word-decoding tutorial)
    * - ``gpu``
      - torch (``backend='torch'``, ``'cuda'`` or ``'mps'``)
-   * - ``tutorials``
-     - hypertools, sentence-transformers (libraries some tutorials use besides htfa)
    * - ``dev``
      - pytest, pytest-cov, ruff, mypy, build, twine, plus the optional libraries above
    * - ``docs``
