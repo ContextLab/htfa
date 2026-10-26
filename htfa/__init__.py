@@ -1,6 +1,7 @@
 """Hierarchical Topographic Factor Analysis."""
 
-from ._lazy import set_autoinstall
+from . import datasets as datasets
+from ._lazy import require, set_autoinstall
 from .brainnet import animate_network, plot_network
 from .connectivity import dynamic_connectivity, isfc, static_connectivity
 from .fit import fit
@@ -27,6 +28,7 @@ __all__ = [
     "make_tfa_data",
     "plot_network",
     "plot_timecourse",
+    "require",
     "set_autoinstall",
     "static_connectivity",
 ]

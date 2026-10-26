@@ -13,9 +13,12 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Sequence
 from types import ModuleType
 
 from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
+from packaging.utils import canonicalize_name
 
 ENV_VAR = "HTFA_AUTO_INSTALL"
 TORCH_INDEX = "https://download.pytorch.org/whl/"
@@ -88,38 +91,150 @@ def _manual(extra: str) -> str:
     return f'pip install "htfa[{extra}]"'
 
 
-def _pip_install(args: list[str]) -> None:
+_DISTRIBUTIONS = {"PIL": "pillow", "sklearn": "scikit-learn"}
+
+
+def declared_requirement(module: str) -> str:
+    """Requirement spec htfa's metadata declares for the library ``module``.
+
+    The version constraints of every extra that lists the library are combined.
+    """
+    top = module.split(".")[0]
+    name = canonicalize_name(_DISTRIBUTIONS.get(top, top))
+    found = None
+    spec = SpecifierSet()
+    for line in importlib.metadata.requires("htfa") or []:
+        req = Requirement(line)
+        if canonicalize_name(req.name) == name:
+            found = req.name
+            spec &= req.specifier
+    if found is None:
+        raise ImportError(
+            f"{module} is not installed, and htfa does not declare it in any extra, "
+            "so it is not installed automatically; install it yourself, or pass "
+            "the htfa extra that provides it"
+        )
+    return f"{found}{spec}"
+
+
+def _succeeds(cmd: list[str]) -> bool:
+    try:
+        run = subprocess.run(
+            cmd, capture_output=True, check=False, cwd=tempfile.gettempdir()
+        )
+    except OSError:
+        return False
+    return run.returncode == 0
+
+
+def _installer() -> list[str]:
+    """Command prefix that installs packages into this interpreter's environment.
+
+    pip if it works; else uv (a bare ``uv venv`` has no pip); else pip
+    bootstrapped with ensurepip.
+    """
     # -I and a neutral cwd keep a planted pip.py in the caller's cwd off sys.path
-    subprocess.run(
-        [sys.executable, "-I", "-m", "pip", "install", "-q", *args],
-        check=True,
-        cwd=tempfile.gettempdir(),
+    pip = [sys.executable, "-I", "-m", "pip"]
+    if _succeeds([*pip, "--version"]):
+        return [*pip, "install", "-q"]
+    uv = _find_executable("uv")
+    if uv is not None:
+        print(f"htfa: pip is not available; installing with {uv}", file=sys.stderr)
+        return [uv, "pip", "install", "-q", "--python", sys.executable]
+    print(
+        "htfa: pip is not available; bootstrapping it with ensurepip", file=sys.stderr
     )
+    if _succeeds([sys.executable, "-I", "-m", "ensurepip"]) and _succeeds(
+        [*pip, "--version"]
+    ):
+        return [*pip, "install", "-q"]
+    raise ImportError(
+        f"no installer works for {sys.executable}: pip is missing, uv is not on "
+        "PATH and ensurepip failed. Install pip (`apt-get install python3-pip` "
+        "on Debian/Ubuntu, or `python -m ensurepip`) or uv, then rerun"
+    )
+
+
+def _pip_install(args: list[str]) -> None:
+    subprocess.run([*_installer(), *args], check=True, cwd=tempfile.gettempdir())
     importlib.invalidate_caches()
 
 
-def lazy_import(module: str, extra: str, purpose: str | None = None) -> ModuleType:
-    """Import ``module``, installing the htfa ``extra`` that provides it if missing."""
+def _import(
+    module: str, requirements: Callable[[], list[str]], manual: str, need: str
+) -> ModuleType:
     try:
         return importlib.import_module(module)
     except ImportError as first:
-        need = f" (needed for {purpose})" if purpose else ""
-        manual = _manual(extra)
         if not autoinstall_enabled():
             raise ImportError(
                 f"{module} is not installed{need}. Install it with `{manual}` "
                 "(automatic installation is off)."
             ) from first
         try:
-            reqs = extra_requirements(extra)
+            reqs = requirements()
             print(f"htfa: installing {', '.join(reqs)}{need}...", file=sys.stderr)
             _pip_install(reqs)
             return importlib.import_module(module)
         except (subprocess.CalledProcessError, ImportError, ValueError) as second:
             raise ImportError(
                 f"{module} is not installed{need}, and installing it automatically "
-                f"failed ({type(second).__name__}). Install it with `{manual}`."
+                f"failed ({type(second).__name__}: {second}). "
+                f"Install it with `{manual}`."
             ) from second
+
+
+def lazy_import(module: str, extra: str, purpose: str | None = None) -> ModuleType:
+    """Import ``module``, installing the htfa ``extra`` that provides it if missing."""
+    need = f" (needed for {purpose})" if purpose else ""
+    return _import(module, lambda: extra_requirements(extra), _manual(extra), need)
+
+
+def require(module: str, extra: str | None = None) -> ModuleType:
+    """Import a third-party library, installing it on first use.
+
+    Installation follows the same rules as htfa's own optional dependencies (see
+    :func:`set_autoinstall`): it uses the version constraints declared in htfa's
+    package metadata, and is off when ``HTFA_AUTO_INSTALL=0``. Only libraries
+    that htfa declares are installed.
+
+    Parameters
+    ----------
+    module : str
+        Name to import, for example ``"hypertools"`` or ``"matplotlib.pyplot"``.
+    extra : str, optional
+        The htfa extra to install if ``module`` is missing, for example
+        ``"tutorials"`` (hypertools, sentence-transformers). By default only the
+        library itself is installed, with the constraints that htfa's extras
+        declare for it.
+
+    Returns
+    -------
+    module
+        The imported module.
+
+    Raises
+    ------
+    ImportError
+        If the module is missing and cannot be installed: installation is off,
+        htfa does not declare it, or the installer failed. The message names the
+        command to run.
+
+    Examples
+    --------
+    >>> import htfa
+    >>> np = htfa.require("numpy")
+    >>> np.__name__
+    'numpy'
+    """
+    if extra is not None:
+        return lazy_import(module, extra)
+    try:
+        return importlib.import_module(module)
+    except ImportError:
+        pass
+    spec = declared_requirement(module)
+    return _import(module, lambda: [spec], f'pip install "{spec}"', "")
 
 
 def torch_index_url(nvidia_smi_output: str | None, system: str) -> str | None:
@@ -143,8 +258,8 @@ def _under(path: str, root: str) -> bool:
         return False
 
 
-def _find_nvidia_smi() -> str | None:
-    """Locate nvidia-smi without ever consulting the current directory."""
+def _find_executable(name: str, candidates: Sequence[str] = ()) -> str | None:
+    """Locate ``name`` on PATH, or else at ``candidates``, never in the cwd."""
     cwd = os.path.realpath(os.getcwd())
     exts = [""]
     if sys.platform == "win32":
@@ -153,11 +268,16 @@ def _find_nvidia_smi() -> str | None:
         if not d or not os.path.isabs(d) or _under(os.path.realpath(d), cwd):
             continue
         for ext in exts:
-            path = os.path.join(d, "nvidia-smi" + ext)
+            path = os.path.join(d, name + ext)
             if os.path.isfile(path) and os.access(path, os.X_OK):
                 real = os.path.realpath(path)
                 if os.path.isabs(real) and not _under(real, cwd):
                     return path
+    return next((c for c in candidates if os.path.isfile(c)), None)
+
+
+def _find_nvidia_smi() -> str | None:
+    """Locate nvidia-smi without ever consulting the current directory."""
     candidates = ["/usr/bin/nvidia-smi"]
     root = os.environ.get("SystemRoot")
     if root:
@@ -167,7 +287,7 @@ def _find_nvidia_smi() -> str | None:
         candidates.append(
             os.path.join(files, "NVIDIA Corporation", "NVSMI", "nvidia-smi.exe")
         )
-    return next((c for c in candidates if os.path.isfile(c)), None)
+    return _find_executable("nvidia-smi", candidates)
 
 
 def ensure_torch() -> ModuleType:

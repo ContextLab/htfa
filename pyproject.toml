@@ -44,6 +44,7 @@ nilearn = ["nilearn>=0.10.1"]
 tutorials = ["hypertools>=1.1", "sentence-transformers>=3"]
 gpu = ["torch>=2.2"]
 brain3d = ["pyvista>=0.43", "imageio>=2.31", "imageio-ffmpeg>=0.4.9", "pillow>=10.1"]
+tutorials = ["hypertools>=1.1", "sentence-transformers>=5"]
 dev = [
   "pytest>=8",
   "pytest-cov>=5",
