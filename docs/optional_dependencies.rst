@@ -56,6 +56,20 @@ a shared temporary directory could redirect the package index). This also skips
 your own ``uv.toml``; set the index with environment variables such as
 ``UV_INDEX_URL`` instead, which uv still reads.
 
+An installation on demand never changes the version of a package that is already
+imported in the running process: replacing a loaded package on disk leaves the
+old code in memory importing modules from the new version, which fails later
+(for example pandas raising ``ImportError`` from ``pandas.io.formats`` when a
+DataFrame is displayed). Every installed distribution with an imported module is
+pinned to its current version in a constraints file passed to the installer
+(``-c``), so pip or uv picks versions of the new packages that work with the
+loaded ones, for example an older nilearn when the newest one needs a newer
+pandas than the one imported. If no such versions exist, nothing is installed
+and the call raises ``ImportError`` naming the loaded package that is in the way;
+restart the Python process (in Jupyter or Colab, restart the kernel or runtime)
+and run the ``pip install "htfa[extra]"`` command it gives before importing
+anything else.
+
 Other libraries
 ---------------
 

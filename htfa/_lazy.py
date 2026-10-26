@@ -20,6 +20,7 @@ from types import ModuleType
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
+from packaging.version import InvalidVersion, Version
 
 ENV_VAR = "HTFA_AUTO_INSTALL"
 TORCH_INDEX = "https://download.pytorch.org/whl/"
@@ -131,12 +132,14 @@ def _installer(cwd: str) -> list[str]:
 
     pip if it works; else uv (a bare ``uv venv`` has no pip); else pip
     bootstrapped with ensurepip. ``cwd`` is the private directory they run in.
+    pip runs without ``-q``: its output is captured, and only a failed run's is
+    shown, which then includes the constraint that blocked the resolution.
     """
     # -I keeps a planted pip.py off sys.path; pip still reads the user's and
     # the global pip.conf (a corporate index keeps working), never the cwd.
     pip = [sys.executable, "-I", "-m", "pip"]
     if _succeeds([*pip, "--version"], cwd):
-        return [*pip, "install", "-q"]
+        return [*pip, "install"]
     uv = _find_executable("uv")
     if uv is not None:
         print(f"htfa: pip is not available; installing with {uv}", file=sys.stderr)
@@ -151,7 +154,7 @@ def _installer(cwd: str) -> list[str]:
     if _succeeds([sys.executable, "-I", "-m", "ensurepip"], cwd) and _succeeds(
         [*pip, "--version"], cwd
     ):
-        return [*pip, "install", "-q"]
+        return [*pip, "install"]
     raise ImportError(
         f"no installer works for {sys.executable}: pip is missing, uv is not on "
         "PATH and ensurepip failed. Install pip (`apt-get install python3-pip` "
@@ -159,14 +162,82 @@ def _installer(cwd: str) -> list[str]:
     )
 
 
-def _pip_install(args: list[str]) -> None:
+class _RestartRequired(ImportError):
+    """The install needs another version of a package this process has loaded."""
+
+
+def imported_distributions() -> dict[str, str]:
+    """Installed version of each distribution that provides a loaded module.
+
+    Keys are canonical distribution names; a top-level name in ``sys.modules``
+    is mapped to its distributions with ``packages_distributions``. A version
+    that is not PEP 440 cannot be written as a pin and is left out.
+    """
+    providers = importlib.metadata.packages_distributions()
+    names = {
+        canonicalize_name(dist)
+        for module in list(sys.modules)
+        if "." not in module
+        for dist in providers.get(module, ())
+    }
+    pins: dict[str, str] = {}
+    for name in sorted(names):
+        try:
+            version = importlib.metadata.version(name)
+            Version(version)
+        except (importlib.metadata.PackageNotFoundError, InvalidVersion):
+            continue
+        pins[name] = version
+    return pins
+
+
+def _restart(changed: list[str], manual: str) -> _RestartRequired:
+    return _RestartRequired(
+        f"the automatic install would replace {', '.join(changed)}, already "
+        "imported in this Python process, and a loaded package cannot be replaced "
+        "safely. Restart the process (in Jupyter or Colab: restart the kernel or "
+        f"runtime), then run `{manual}` before importing anything else."
+    )
+
+
+def _pip_install(args: list[str], manual: str) -> None:
+    """Install ``args`` without changing any distribution that is loaded.
+
+    Every distribution with an imported module is pinned to its installed
+    version through a constraints file, so the installer either leaves them
+    alone or fails before changing anything; a failure that names a pin raises
+    ``_RestartRequired``.
+    """
+    pins = imported_distributions()
     # A fresh private directory as cwd: nothing in the shared temp dir is read.
     work = tempfile.mkdtemp(prefix="htfa-install-")
     try:
-        subprocess.run([*_installer(work), *args], check=True, cwd=work)
+        constraints = os.path.join(work, "constraints.txt")
+        with open(constraints, "w", encoding="utf-8") as f:
+            f.writelines(f"{name}=={version}\n" for name, version in pins.items())
+        cmd = [*_installer(work), "-c", constraints, *args]
+        run = subprocess.run(
+            cmd, cwd=work, capture_output=True, text=True, errors="replace"
+        )
     finally:
         shutil.rmtree(work, ignore_errors=True)
     importlib.invalidate_caches()
+    if run.returncode != 0:
+        output = run.stdout + run.stderr
+        print(output, end="", file=sys.stderr)
+        # pip and uv both quote the constraint that blocks the resolution.
+        blocked = [
+            f"{name} {version}"
+            for name, version in pins.items()
+            if re.search(
+                rf"(?<![\w.-]){re.escape(name)}=={re.escape(version)}(?![\w.+-])",
+                output,
+                re.IGNORECASE,
+            )
+        ]
+        if blocked:
+            raise _restart(blocked, manual)
+        raise subprocess.CalledProcessError(run.returncode, cmd, run.stdout, run.stderr)
 
 
 def _import(
@@ -183,8 +254,10 @@ def _import(
         try:
             reqs = requirements()
             print(f"htfa: installing {', '.join(reqs)}{need}...", file=sys.stderr)
-            _pip_install(reqs)
+            _pip_install(reqs, manual)
             return importlib.import_module(module)
+        except _RestartRequired:
+            raise
         except (subprocess.CalledProcessError, ImportError, ValueError) as second:
             raise ImportError(
                 f"{module} is not installed{need}, and installing it automatically "
@@ -340,8 +413,10 @@ def ensure_torch() -> ModuleType:
     )
     args = ["torch>=2.2"] + (["--index-url", url] if url else [])
     try:
-        _pip_install(args)
+        _pip_install(args, manual)
         return importlib.import_module("torch")
+    except _RestartRequired:
+        raise
     except (subprocess.CalledProcessError, ImportError) as err:
         raise ImportError(
             f"torch could not be installed automatically ({type(err).__name__}). "

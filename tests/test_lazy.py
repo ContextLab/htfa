@@ -1,5 +1,7 @@
 """Tests for on-demand dependency installation (htfa._lazy)."""
 
+import importlib.metadata
+import json
 import os
 import shutil
 import subprocess
@@ -237,7 +239,7 @@ def test_installer_uses_pip_when_available(tmp_path):
     )
     print(out.stdout, out.stderr)
     assert out.returncode == 0, out.stderr
-    assert out.stdout.strip() == str([str(py), "-I", "-m", "pip", "install", "-q"])
+    assert out.stdout.strip() == str([str(py), "-I", "-m", "pip", "install"])
 
 
 def _uv_venv(tmp_path: Path, seed: bool = False) -> Path:
@@ -396,3 +398,100 @@ def test_require_torch_goes_through_ensure_torch():
     print(exc.value)
     # ensure_torch's message, not a bare `pip install "torch>=2.2"`
     assert 'pip install "htfa[gpu]"' in str(exc.value)
+
+
+def test_imported_distributions_pins_only_loaded_packages():
+    # A clean interpreter: numpy is imported, pytest is installed but not imported.
+    code = (
+        "import json, numpy; from htfa import _lazy; "
+        "print(json.dumps(_lazy.imported_distributions()))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-I", "-c", code], capture_output=True, text=True
+    )
+    print(out.stdout, out.stderr)
+    assert out.returncode == 0, out.stderr
+    pins = json.loads(out.stdout)
+    assert pins["numpy"] == importlib.metadata.version("numpy")
+    assert pins["packaging"] == importlib.metadata.version("packaging")
+    assert "pytest" not in pins
+    assert "json" not in pins  # the standard library has no distribution
+
+
+def _venv_with(tmp_path: Path, installer: str, *packages: str) -> tuple[Path, str]:
+    """A venv with htfa and ``packages``; pip or uv does the on-demand install."""
+    py = _uv_venv(tmp_path, seed=installer == "pip")
+    uv = shutil.which("uv")
+    subprocess.run(
+        [uv, "pip", "install", "--python", str(py), "-q", *packages],
+        check=True,
+        timeout=900,
+    )
+    path = os.environ["PATH"]
+    if installer == "uv":
+        path = os.pathsep.join([os.path.dirname(uv), "/usr/bin", "/bin"])
+    return py, path
+
+
+def _run_in(py: Path, path: str, code: str) -> subprocess.CompletedProcess:
+    env = dict(os.environ, PATH=path)
+    env.pop("HTFA_AUTO_INSTALL", None)
+    out = subprocess.run(
+        [str(py), "-c", code], capture_output=True, text=True, timeout=1800, env=env
+    )
+    print(out.stdout, out.stderr)
+    return out
+
+
+@pytest.mark.network
+@pytest.mark.slow
+@pytest.mark.parametrize("installer", ["pip", "uv"])
+def test_install_keeps_versions_of_imported_packages(tmp_path, installer):
+    # The Colab failure: packaging (imported by htfa itself) is older than the
+    # newest nilearn needs. The install must pick a nilearn that works with the
+    # loaded packaging rather than upgrade packaging under the running process.
+    py, path = _venv_with(tmp_path, installer, "packaging==24.2")
+    code = (
+        "import json, importlib.metadata as md, packaging; "
+        "from htfa._lazy import lazy_import; "
+        "lazy_import('nilearn.datasets', 'nilearn'); "
+        "print(json.dumps({'disk': md.version('packaging'), "
+        "'memory': packaging.__version__, 'nilearn': md.version('nilearn')}))"
+    )
+    out = _run_in(py, path, code)
+    assert out.returncode == 0, out.stderr
+    got = json.loads(out.stdout.strip().splitlines()[-1])
+    assert got["disk"] == got["memory"] == "24.2", got
+    assert "installing" in out.stderr
+
+
+@pytest.mark.network
+@pytest.mark.parametrize("installer", ["pip", "uv"])
+def test_install_conflicting_with_imported_package_asks_for_restart(
+    tmp_path, installer
+):
+    # The images extra needs tifffile>=2023.1; an older tifffile is imported.
+    py, path = _venv_with(tmp_path, installer, "tifffile==2022.10.10")
+    code = (
+        "import sys, tifffile; from htfa import require\n"
+        "try:\n"
+        "    require('PIL', extra='images')\n"
+        "except ImportError as err:\n"
+        "    print(err); sys.exit(3)\n"
+    )
+    out = _run_in(py, path, code)
+    assert out.returncode == 3
+    message = out.stdout.strip().splitlines()[-1]
+    # the installer's own explanation is shown too
+    assert "tifffile==2022.10.10" in out.stderr
+    assert "tifffile 2022.10.10" in message
+    assert "restart" in message
+    assert 'pip install "htfa[images]"' in message
+    # nothing was installed or changed: no half-upgraded environment
+    check = _run_in(
+        py,
+        path,
+        "import importlib.metadata as md, importlib.util as u; "
+        "print(md.version('tifffile'), u.find_spec('PIL') is None)",
+    )
+    assert check.stdout.split() == ["2022.10.10", "True"]
