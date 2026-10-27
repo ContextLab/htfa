@@ -36,6 +36,7 @@ def one(mode):
         "serial_nt1": {"n_jobs": 1, "n_threads": 1},
         "parallel": {"n_jobs": n},
         "parallel_nt4": {"n_jobs": n, "n_threads": 4},
+        "serial_env1": {"n_jobs": 1, "n_threads": 1},
     }[mode]
     m = HTFA(**kw, **extra).fit(Xs, Rs)
 
@@ -49,12 +50,17 @@ if len(sys.argv) > 2 and sys.argv[1] == "--mode":
     one(sys.argv[2])
     sys.exit(0)
 rounds = int(sys.argv[1])
-modes = ["serial", "serial_nt1", "parallel", "parallel_nt4"]
+modes = sys.argv[2].split(",") if len(sys.argv) > 2 else [
+    "serial", "serial_nt1", "parallel", "parallel_nt4"]
 seen = collections.defaultdict(collections.Counter)
 for r in range(rounds):
     for mode in modes:
+        env = dict(os.environ)
+        if mode == "serial_env1":  # OpenBLAS loaded with one thread, as in a worker
+            env["OPENBLAS_NUM_THREADS"] = env["OMP_NUM_THREADS"] = "1"
         out = subprocess.run(
-            [sys.executable, __file__, "--mode", mode], capture_output=True, text=True
+            [sys.executable, __file__, "--mode", mode],
+            capture_output=True, text=True, env=env,
         )
         line = next((s for s in out.stdout.splitlines() if s.startswith("RESULT")), None)
         if line is None:
