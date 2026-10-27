@@ -56,8 +56,9 @@ Hessian assembly, the projected objective from ``||X||**2 - <F^T X, W>``; see
 **Kernels over generated scenarios** (``tests/test_equivalence.py``). The
 oracle is ``tests/reference_kernels_3298278.py``, the kernel module of
 ``3298278`` unchanged. Each scenario draws one value from every family below,
-with seeded random sizes and parameters; 480 scenarios, plus 6 large ones
-(V = 6000, K = 50 and 100, T = 1, 168 and 300; marked ``slow``), each at three
+with seeded random sizes and parameters; 480 scenarios, plus 12 large ones
+(V = 6000, D = 2 and 3, K = 50 and 100, T = 1, 168 and 300; marked
+``slow``), each at three
 points (the scenario's centers and widths and two perturbations of them).
 
 .. list-table:: Scenario families
@@ -110,7 +111,7 @@ an observed difference to amplification x factor difference was 23.7 (the
 varpro Hessian, whose coupling terms use the gram inverse twice) and 1.3 for
 every other quantity. No tolerance may reach 1e-6.
 
-Results over 14571 comparisons (``scripts/equivalence_summary.py --slow``).
+Results over 14811 comparisons (``scripts/equivalence_summary.py --slow``).
 Tolerances: median 1e-10, maximum 9.0e-7, 297 above 1e-8.
 
 .. list-table:: Kernel differences (median / max)
@@ -122,24 +123,24 @@ Tolerances: median 1e-10, maximum 9.0e-7, 297 above 1e-8.
      - soft_l1
      - huber
    * - cost
-     - 1.4e-16 / 7.7e-10
+     - 1.5e-16 / 7.7e-10
      - 0 / 1.1e-17
      - 0 / 1.9e-16
      - 0 / 1.8e-15
    * - gradient
-     - 4.7e-21 / 4.6e-10
+     - 3.9e-20 / 4.6e-10
      - 0 / 1.1e-13
      - 0 / 3.1e-13
      - 0 / 5.7e-14
    * - Gauss-Newton matrix
-     - 1.2e-27 / 1.2e-9
+     - 2.5e-27 / 1.2e-9
      - 1.0e-41 / 1.1e-13
      - 0 / 1.5e-13
      - 0 / 4.4e-14
    * - Hessian
-     - 1.7e-21 / 1.3e-7
+     - 3.9e-20 / 1.3e-7
      - 1.5e-24 / 1.7e-13
-     - 4.6e-46 / 4.5e-13
+     - 1.2e-38 / 4.5e-13
      - 1.1e-29 / 9.2e-14
    * - weights / F W
      - 0 / 4.5e-10, 0 / 9.2e-10
@@ -151,7 +152,7 @@ Factors differed by at most 2.0e-13 per entry and their derivatives by
 1.1e-13. The largest varpro difference, 1.3e-7 in the Hessian at a
 tolerance of 5.4e-7, is in an 'ols' scenario with near-singular factors.
 
-Of the 1458 points, 132 varpro stages were not compared with the oracle:
+Of the 1476 points, 132 varpro stages were not fully compared with the oracle:
 
 - 120 stages in 46 scenarios where every gram eigenvalue is below
   ``GRAM_FLOOR`` (every factor below about 1e-146 at every voxel). The
@@ -163,9 +164,10 @@ Of the 1458 points, 132 varpro stages were not compared with the oracle:
 - 12 stages in 8 scenarios (all 'ols'; huge widths, near-duplicate or
   near-singular factors) whose amplification (the condition number of the
   kept gram eigenvalues) is 6.3e6 to 6.1e7, just below the truncation cutoff
-  (6.7e7). Neither version's
-  weights are determined to better than about that times 1e-16 there; the
-  tolerance would have to be 1.1e-6 to 4.1e-4.
+  (6.7e7). Neither version's weights and derivatives are determined to
+  better than about that times 1e-16 there (the tolerance would have to be
+  1.1e-6 to 4.1e-4), so only the cost and ``F W`` are compared, at 1e-8:
+  measured differences at most 3.9e-10 and 1.8e-9.
 
 63 varpro points have a gram eigenvalue ratio within a factor 100 of the
 truncation cutoff. At 57 both versions keep the same eigenvalues and they are
@@ -178,8 +180,9 @@ identity cost 125, and of one row of the weights 77 (11 of them
 near-duplicate 'ols' scenarios). A reuse test interleaves cost and Hessian
 calls where only the widths, only the centers, or only the prior's centers or
 widths (in place) change, and repeats points after other ones: every result
-equals a fresh problem's bit for bit. A cache that ignored the widths failed
-14 of its 40 cases.
+equals that of a fresh problem with an empty cache bit for bit. A cache
+keyed on the widths only failed 32 of its 40 cases, one keyed on the centers
+only 32, and a cost cached on the point alone (ignoring prior changes) 27.
 
 **Whole fits, well-conditioned synthetic problems**
 (``tests/test_fit_equivalence.py``). 36 fits with the defaults (2D grids 20 x

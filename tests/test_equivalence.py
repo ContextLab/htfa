@@ -20,8 +20,8 @@ larger of `RTOL`
 and `AMP_FACTOR` x amplification x the measured factor difference, where the
 amplification is the larger of the gram's condition number on its kept
 eigenvalues (varpro) and max(|F| |W|) / max|X| (weights that cancel). It never
-exceeds `TOL_CAP`: a stage whose amplification would need more is not compared
-beyond the factors, and is recorded in `SKIPS` with the reason. So are points
+exceeds `TOL_CAP`: a stage whose amplification would need more is compared on
+its cost and ``F W`` only (`ILL_TOL`), and recorded in `SKIPS`. So are points
 where the two versions keep different gram eigenvalues, which are checked on
 the current code's own properties (`_check_own`) instead.
 """
@@ -44,8 +44,11 @@ FACTOR_RTOL = 1e-12
 # at most 1.3 for the other quantities.
 AMP_FACTOR = 100.0
 TOL_CAP = 1e-6
+# Cost and F W where the amplification needs more than TOL_CAP (ill-conditioned
+# 'ols' grams): measured at most 3.9e-10 and 1.8e-9.
+ILL_TOL = 1e-8
 N_FAST = 480
-N_SLOW = 6
+N_SLOW = 12
 # (scenario, quantity, relative difference, tolerance, amplification x factor
 # difference) of every comparison and
 # (scenario, reason) of every stage not compared with the oracle, for summaries
@@ -354,11 +357,6 @@ def compare(sc: Scenario) -> dict[str, float]:
             amp = max(cond, cancel, 1.0)
             base = amp * dF
             tol = max(RTOL, AMP_FACTOR * base)
-            if tol > TOL_CAP:
-                SKIPS.append(
-                    (sc.index, f"{stage}: amplification {amp:.1e} needs tol {tol:.1e}")
-                )
-                continue
             # Natural scales: the zero model's cost (plus the prior's), and the
             # fixed-weight Gauss-Newton matrix and Hessian.
             s = b.s
@@ -368,6 +366,22 @@ def compare(sc: Scenario) -> dict[str, float]:
             prior_cost = c_fx - fx.engine.data_cost(F_ref, s, lname)
             cost_scale = 0.5 * float(np.sum(rho)) + abs(prior_cost)
             ca, cb = a.cost(x, lname), b.cost(x, lname)
+            if tol > TOL_CAP:
+                # The weights and derivatives are not determined to TOL_CAP, but
+                # the cost and F W (a projection) still are.
+                check(
+                    f"{stage} cost (ill-conditioned)", abs(ca - cb), cost_scale, ILL_TOL
+                )
+                fw = mdiff(F_new @ a.weights(x), F_ref @ W)
+                check(f"{stage} F W (ill-conditioned)", fw, x_max, ILL_TOL)
+                SKIPS.append(
+                    (
+                        sc.index,
+                        f"{stage}: amplification {amp:.1e} needs tol {tol:.1e} "
+                        "(cost and F W compared only)",
+                    )
+                )
+                continue
             check(f"{stage} cost", abs(ca - cb), cost_scale, tol)
             ra, rb = a.cost_grad_hess(x, lname), b.cost_grad_hess(x, lname)
             check(f"{stage} cgh cost", abs(ra[0] - rb[0]), cost_scale, tol)
@@ -430,7 +444,7 @@ def test_kernels_equal_reference_on_generated_scenarios(block):
 def _large_scenario(i: int) -> Scenario:
     rng = np.random.default_rng([7, i])
     K = (50, 100)[i % 2]
-    D = 3
+    D = (2, 3)[(i // 2) % 2]
     kind = ("mni2mm", "grid", "jittered")[i % 3]
     R = _coords(rng, D, kind, 6000)
     T = (1, 300, 168)[i % 3]
@@ -450,7 +464,8 @@ def _large_scenario(i: int) -> Scenario:
 @pytest.mark.slow
 @pytest.mark.parametrize("i", range(N_SLOW))
 def test_kernels_equal_reference_on_large_scenarios(i):
-    """V = 6000, K = 50 or 100, T up to 300, grid and jittered coordinates."""
+    """V = 6000, D = 2 and 3, K = 50 and 100, T up to 300; MNI-like, grid and
+    jittered coordinates."""
     sc = _large_scenario(i)
     worst = compare(sc)
     print(f"{sc}: " + ", ".join(f"{k} {v:.2e}" for k, v in sorted(worst.items())))
@@ -498,8 +513,11 @@ def test_reuse_is_exact_under_interleaved_calls(i):
             return "ValueError"
 
     def fresh_value(kind, x, prior):
+        # A fresh, unprimed problem (its cache empty), with the objective form
+        # that `prob` chose at its first point copied over.
         fresh = make(prior)
-        fresh.cost(xs[0], lname)  # the same first point (objective form)
+        if hasattr(prob, "_identity"):
+            fresh._identity = prob._identity
         return call(fresh, kind, x)
 
     lname = "linear" if stage == "varpro" else stage
