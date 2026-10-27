@@ -4,13 +4,18 @@ Loading different kinds of input
 
 :func:`htfa.load` turns files, folders, nibabel images and numpy arrays into
 :class:`htfa.Subject` objects, each holding a ``(V, T)`` data matrix and ``(V, D)``
-coordinates. This example writes tiny synthetic NIfTI files (two subjects, 8 x 8 x 8
-voxels, 10 volumes) and a PNG image to a temporary directory, loads them in each
-supported way and prints what comes back. It then fits the folder with
-:func:`htfa.fit`; that fit only shows that loading works, because the data are
-noise and contain no structure to recover. Automatic installation of optional
-packages is switched off with :func:`htfa.set_autoinstall` so that the build never
-calls pip. The printed numbers come from the code below.
+coordinates. This example builds two small synthetic subjects in a real brain shape:
+nilearn's bundled MNI152 template and brain mask (shipped with nilearn, so nothing is
+downloaded) are averaged into 8 mm voxels, giving a 24 x 29 x 23 grid with the MNI
+affine. Each subject has 10 volumes: the template intensity inside the brain, two
+smooth blobs whose amplitudes change over time, and a little noise; voxels outside
+the brain are zero. The example writes these as NIfTI files, together with a PNG
+image, to a temporary directory, loads them in each supported way and prints what
+comes back. It then fits the folder with :func:`htfa.fit`, as a quick check that
+loaded data go straight into a fit (10 volumes are far too few for a meaningful
+model). Automatic installation of optional packages is switched off with
+:func:`htfa.set_autoinstall` so that the build never calls pip. The printed numbers
+come from the code below.
 """
 
 import tempfile
@@ -21,6 +26,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
+from nilearn import datasets, plotting
 from PIL import Image
 
 import htfa
@@ -28,9 +34,52 @@ import htfa
 htfa.set_autoinstall(False)
 
 rng = np.random.default_rng(0)
-affine = np.diag([3.0, 3.0, 3.0, 1.0])  # 3 mm voxels
-vols = [rng.random((8, 8, 8, 10)) + 1 for _ in range(2)]
 
+# %%
+# A brain-shaped grid from the bundled MNI152 template
+# ----------------------------------------------------
+# The 2 mm template is averaged over 4 x 4 x 4 blocks of voxels into 8 mm voxels;
+# a block counts as brain when most of it lies inside the brain mask.
+template = datasets.load_mni152_template(resolution=2)
+brain = datasets.load_mni152_brain_mask(resolution=2)
+block = 4
+crop = tuple(slice(0, n - n % block) for n in template.shape)
+
+
+def block_mean(img):
+    a = np.asarray(img.dataobj, dtype=float)[crop]
+    nx, ny, nz = (s // block for s in a.shape)
+    return a.reshape(nx, block, ny, block, nz, block).mean(axis=(1, 3, 5))
+
+
+inside = block_mean(brain) > 0.5
+anatomy = block_mean(template)
+anatomy /= anatomy[inside].mean()
+affine = template.affine @ np.diag([block, block, block, 1.0])
+affine[:3, 3] = nib.affines.apply_affine(template.affine, [(block - 1) / 2] * 3)
+print("grid:", inside.shape, "brain voxels:", int(inside.sum()))
+
+# %%
+# Two subjects with changing activations
+# --------------------------------------
+ijk = np.indices(inside.shape).reshape(3, -1).T
+xyz = nib.affines.apply_affine(affine, ijk).reshape(*inside.shape, 3)
+centers = np.array([[-40.0, -20.0, 40.0], [30.0, -70.0, 10.0]])  # mm, MNI
+T = 10
+vols = []
+for subject in range(2):
+    v = np.repeat(anatomy[..., None], T, axis=-1)
+    for c, phase in zip(centers, (0.0, np.pi / 2), strict=True):
+        blob = np.exp(-np.sum((xyz - c) ** 2, axis=-1) / (2 * 12.0**2))
+        amplitude = np.cos(2 * np.pi * np.arange(T) / T + phase + subject)
+        v += 0.8 * blob[..., None] * amplitude
+    v += 0.05 * rng.standard_normal(v.shape)
+    v[~inside] = 0.0
+    vols.append(v)
+
+# %%
+# Loading each kind of input
+# --------------------------
 with tempfile.TemporaryDirectory() as tmp:
     folder = Path(tmp) / "nifti"
     folder.mkdir()
@@ -79,10 +128,7 @@ with tempfile.TemporaryDirectory() as tmp:
             str(folder), K=2, standardize=False, max_global_iter=10, random_state=0
         )
     elapsed = time.perf_counter() - start
-    print(
-        "warnings raised by the fit (noise data, so no real structure):",
-        sorted({w.category.__name__ for w in caught}),
-    )
+    print("warnings raised by the fit:", sorted({w.category.__name__ for w in caught}))
     print(
         f"htfa.fit on the folder: {elapsed:.1f} s, subjects fitted: {len(res.subjects)}"
     )
@@ -90,17 +136,31 @@ with tempfile.TemporaryDirectory() as tmp:
 
     shown = from_png[0].to_image(from_png[0].data[:, 0])
     first_volume = from_folder[0].to_image(from_folder[0].data[:, 0])
-    first_volume = np.asarray(first_volume.dataobj)
 
-fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-axes[0].imshow(shown, cmap="gray")
-axes[0].set_title("PNG loaded as a 16 x 20 image")
-axes[0].set_xlabel("column")
-axes[0].set_ylabel("row")
-im = axes[1].imshow(first_volume[:, :, 4], cmap="viridis")
-axes[1].set_title("NIfTI subject 1, volume 0, slice z = 4")
-axes[1].set_xlabel("x voxel")
-axes[1].set_ylabel("y voxel")
-fig.colorbar(im, ax=axes[1], label="intensity")
-fig.tight_layout()
+# %%
+# The PNG and the first NIfTI volume
+# ----------------------------------
+# :meth:`htfa.Subject.to_image` puts a column of the data back into image space,
+# with NaN outside the loaded voxels; those are set to zero and left blank in the
+# plot. The cuts pass through the first blob's centre.
+volume = np.nan_to_num(np.asarray(first_volume.dataobj))
+fig = plt.figure(figsize=(11, 4))
+ax = fig.add_axes((0.06, 0.13, 0.24, 0.72))
+ax.imshow(shown, cmap="gray")
+ax.set_title("PNG (16 x 20 pixels)")
+ax.set_xlabel("column")
+ax.set_ylabel("row")
+brain_ax = fig.add_axes((0.34, 0.02, 0.65, 0.84))
+brain_ax.set_title("NIfTI subject 1, volume 0 (8 mm voxels)")
+plotting.plot_img(
+    nib.Nifti1Image(volume, affine),
+    display_mode="ortho",
+    cut_coords=tuple(centers[0]),
+    colorbar=True,
+    cmap="viridis",
+    threshold=1e-3,
+    black_bg=False,
+    axes=brain_ax,
+    figure=fig,
+)
 plt.show()
