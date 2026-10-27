@@ -831,8 +831,8 @@ def test_stopping_objective_subsample_sizes():
 
 
 # (mode, seed) of this setup where a factor vanishes. Measured over seeds
-# 0-299: exact 3, 22, 27, 33, ...; fast 54, 166, 173, 251, 257.
-VANISHING_CASES = [("exact", 3), ("fast", 54)]
+# 0-299: exact 3, 22, 27, 33, ... (13 seeds); fast 173 only.
+VANISHING_CASES = [("exact", 3), ("fast", 173)]
 
 
 @pytest.mark.parametrize(("mode", "seed"), VANISHING_CASES)
