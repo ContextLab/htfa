@@ -810,3 +810,32 @@ def test_stopping_objective_subsample_sizes():
         1137,
     )
     assert TFA(voxel_ratio=0.5)._eval_sizes(1600, 100, (800, 100)) == (1600, 100)
+
+
+def test_ols_fit_with_a_factor_that_vanishes_finishes():
+    """With 'ols' and a small lower_ratio a width can shrink until its factor is
+    0 at every voxel; the full-data weights then had a singular gram and
+    ridge_weights raised LinAlgError (seeds 0, 3, 4, 18 of this setup). Now
+    the fit finishes, the vanished factor gets a weight of about 0 (the minimum-norm
+    weights the varpro objective uses; measured 8.6e-10 of the largest weight)
+    and cost_ is finite."""
+    from htfa._kernels import gram_solve
+
+    rng = np.random.default_rng(3)
+    R, X = rng.uniform(0, 100, (30, 3)), rng.normal(size=(30, 10))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        m = TFA(
+            K=4, weight_method="ols", lower_ratio=1e-5, max_iter=20, random_state=3
+        ).fit(X, R)
+    F = factors(R, m.centers_, m.widths_)
+    vanished = ~F.any(axis=0)
+    W, _, _ = gram_solve(F, standardize_data(X, "auto"), 0.0)
+    print(
+        f"vanished factors {np.flatnonzero(vanished)}, widths {m.widths_}, "
+        f"cost {m.cost_:.6g}, weight rows max {np.abs(m.weights_).max(1)}"
+    )
+    assert vanished.any()
+    assert np.abs(m.weights_[vanished]).max() <= 1e-8 * np.abs(m.weights_).max()
+    np.testing.assert_allclose(m.weights_, W, rtol=1e-12, atol=0)
+    assert np.isfinite(m.cost_)

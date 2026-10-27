@@ -1157,3 +1157,73 @@ def test_projected_objective_form_is_chosen_once_per_problem():
             assert got == prob.cost_grad_hess(x)[0]
         assert (direct(prob, x_true)[1] >= IDENTITY_MIN_FRACTION) is identity
         assert max(rel) < 1e-12
+
+
+def test_ridge_weights_with_a_vanished_factor_uses_the_minimum_norm_weights():
+    """'ols' with a factor that is 0 at every voxel: the gram is singular, so
+    scipy's Cholesky solve raises; ridge_weights then returns gram_solve's
+    minimum-norm weights (0 for that factor) instead of raising LinAlgError.
+    Nonsingular grams keep the Cholesky solution bit for bit."""
+    from htfa._kernels import gram_solve
+
+    rng = np.random.default_rng(8)
+    R, centers, widths, _, X = _random_problem_inputs(rng, 3, V=80, T=6, K=4)
+    F = factors(R, centers, widths)
+    W_ok = ridge_weights(X, F, "ols")
+    np.testing.assert_array_equal(
+        W_ok, scipy.linalg.solve(F.T @ F, F.T @ X, assume_a="pos")
+    )
+    F[:, 2] = 0.0
+    with pytest.raises(np.linalg.LinAlgError):
+        scipy.linalg.solve(F.T @ F, F.T @ X, assume_a="pos")
+    W = ridge_weights(X, F, "ols")
+    W_ref = np.linalg.lstsq(F, X, rcond=None)[0]  # minimum-norm least squares
+    print(
+        f"vanished-factor weights {np.abs(W[2]).max():.2e}, "
+        f"vs lstsq {_rel(W, W_ref):.2e}"
+    )
+    np.testing.assert_array_equal(W, gram_solve(F, X, 0.0)[0])
+    assert np.abs(W[2]).max() <= 1e-12 * np.abs(W).max()
+    assert _rel(W, W_ref) < 1e-10
+
+
+def _rel(a, b):
+    return float(np.max(np.abs(a - b)) / np.max(np.abs(b)))
+
+
+@pytest.mark.parametrize("method", ["ols", "rr"])
+def test_projected_problem_where_every_factor_vanishes(method):
+    """Every factor below about 1e-154 at every voxel (a gram of subnormal
+    numbers). The gram inverse used to overflow there in some configurations
+    (NaN costs at 76 of the 286 such points of tests/test_equivalence.py) and
+    to fit factors of 1e-155 with weights of 1e155 in the others (here a cost
+    of 75.13). Now its eigenvalues below GRAM_FLOOR are dropped, so such
+    factors count as 0: with 'ols' the weights are 0 and the cost is
+    0.5 s**2 ||X||**2, the largest the objective takes, so a trial step there
+    is rejected, and a start there raises a ValueError that says what to
+    change. 'rr' keeps its ridge eigenvalues and is unaffected."""
+    from htfa._kernels import GRAM_FLOOR, ProjectedProblem, bounded_lm
+
+    rng = np.random.default_rng(9)
+    R, C, w, _, X = _random_problem_inputs(rng, 3, V=60, T=5, K=3)
+    far = R.max(0) + 30.0 + 10.0 * np.arange(3)[:, None]
+    d_min = np.min(sq_distances(R, far), axis=0)
+    w_far = d_min / 355.0  # exp(-355) = 7e-155 at the nearest voxel
+    x = np.concatenate([far.ravel(), w_far])
+    F = factors(R, far, w_far)
+    gram_max = float(np.max(np.linalg.eigvalsh(F.T @ F)))
+    prob = ProjectedProblem(X, R, 3, NumpyEngine(), None, method)
+    cost, W = prob.cost(x), prob.weights(x)
+    print(f"{method}: F max {F.max():.2e}, gram max eig {gram_max:.2e}, cost {cost}")
+    assert 0 < gram_max <= GRAM_FLOOR
+    assert np.isfinite(cost) and np.all(np.isfinite(W))
+    if method == "rr":
+        return
+    assert not W.any()
+    assert cost == pytest.approx(0.5 * prob.s**2 * np.sum(X * X), rel=1e-12)
+    with pytest.raises(ValueError, match="factors are 0 at every voxel"):
+        prob.cost_grad_hess(x)
+    lb, ub = bounds(R, 3, 1e-9, 1.8)
+    lb[:9], ub[:9] = -1e9, 1e9
+    with pytest.raises(ValueError, match="raise lower_ratio or start elsewhere"):
+        bounded_lm(prob, x, (lb, ub), "linear", np.ones(x.size))

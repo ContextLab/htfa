@@ -44,6 +44,10 @@ def ftol_for(eps: float) -> float:
 # Relative eigenvalue cutoff of the weights' gram matrix in `ProjectedProblem`
 # (the square root of float64 epsilon: a condition number above 6.7e7).
 GRAM_RCOND = float(np.sqrt(np.finfo(np.float64).eps))
+# Gram eigenvalues at or below this are dropped whatever the largest one is:
+# their reciprocals (above 4.5e291) times F^T X would overflow. Only a gram
+# whose factors are all below about 1e-146 at every voxel has none above it.
+GRAM_FLOOR = float(np.finfo(np.float64).tiny / np.finfo(np.float64).eps)
 
 # `ProjectedProblem` evaluates ||X - F W||**2 + beta ||W||**2 as ||X||**2 -
 # <F^T X, W> (exact at the ridge solution) when, at the first point it evaluates,
@@ -136,17 +140,46 @@ def factors(
     return F
 
 
+def gram_solve(F: Array, X: Array, beta: float) -> tuple[Array, Array, Array]:
+    """Weights (K, T) minimizing ``||X - F W||**2 + beta ||W||**2``, the
+    (pseudo-)inverse (K, K) of ``F^T F + beta I``, from its eigendecomposition,
+    and ``F^T X`` (K, T).
+
+    Eigenvalues below `GRAM_RCOND` times the largest, or below `GRAM_FLOOR`,
+    are dropped (only possible with ``beta = 0`` or constant data: a vanishing
+    or a near-duplicate factor). Their directions would otherwise give weights
+    of order ``1 / gap`` that cancel in ``F W``, and the residual sums would
+    then differ by more than the solver's tolerance between evaluation orders
+    (measured: 1.9e-7 relative for two factors 1e-6 apart). The weights are
+    then the minimum-norm minimizer on the kept eigenvectors (0 where every
+    factor vanishes).
+    """
+    vals, vecs = np.linalg.eigh(F.T @ F + beta * np.eye(F.shape[1]))
+    keep = vals > max(GRAM_RCOND * vals[-1], GRAM_FLOOR)
+    inv = (vecs[:, keep] / vals[keep]) @ vecs[:, keep].T
+    B = F.T @ X
+    return inv @ B, inv, B
+
+
 def ridge_weights(X: Array, F: Array, method: str = "rr") -> Array:
     """Weights (K, T) solving ``(F^T F + beta I) W = F^T X``.
 
     ``method="rr"`` uses ``beta = var(X)``; ``method="ols"`` uses ``beta = 0``.
+    A singular gram (with ``'ols'``: a factor that is 0 at every voxel, as a
+    width shrunk to a small ``lower_ratio`` can make it, or two equal factors;
+    with ``'rr'``: constant data) gets the minimum-norm weights of
+    `gram_solve`, the ones the varpro objective uses.
     """
     if method not in ("rr", "ols"):
         raise ValueError(f"weight method must be 'rr' or 'ols', got {method!r}")
+    beta = float(np.var(X)) if method == "rr" else 0.0
     gram = F.T @ F
     if method == "rr":
-        gram = gram + np.var(X) * np.eye(F.shape[1])
-    result: Array = scipy.linalg.solve(gram, F.T @ X, assume_a="pos")
+        gram = gram + beta * np.eye(F.shape[1])
+    try:
+        result: Array = scipy.linalg.solve(gram, F.T @ X, assume_a="pos")
+    except np.linalg.LinAlgError:
+        result = gram_solve(F, X, beta)[0]
     return result
 
 
@@ -587,23 +620,8 @@ class ProjectedProblem:
         return x[:n].reshape(self.K, self.D), x[n:]
 
     def _weights(self, F: Array) -> tuple[Array, Array, Array]:
-        """Weights (K, T) minimizing ``||X - F W||**2 + beta ||W||**2``, the
-        (pseudo-)inverse (K, K) of ``F^T F + beta I``, from its eigendecomposition,
-        and ``F^T X`` (K, T).
-
-        Eigenvalues below `GRAM_RCOND` times the largest are dropped (only
-        possible with ``'ols'``: a vanishing or a near-duplicate factor). Their
-        directions would otherwise give weights of order ``1 / gap`` that cancel
-        in ``F W``, and the residual sums would then differ by more than the
-        solver's tolerance between evaluation orders (measured: 1.9e-7
-        relative for two factors 1e-6 apart). The weights are then the
-        minimum-norm minimizer on the kept eigenvectors.
-        """
-        vals, vecs = np.linalg.eigh(F.T @ F + self.beta * np.eye(self.K))
-        keep = vals > GRAM_RCOND * vals[-1]
-        inv = (vecs[:, keep] / vals[keep]) @ vecs[:, keep].T
-        B = F.T @ self.X
-        return inv @ B, inv, B
+        """`gram_solve` with this problem's data and ``beta``."""
+        return gram_solve(F, self.X, self.beta)
 
     def _at(self, x: ArrayLike) -> tuple[Any, ...]:
         """Centers, widths, `factors` (V, K), weights and gram inverse at ``x``
@@ -678,6 +696,16 @@ class ProjectedProblem:
         if loss != "linear":
             raise ValueError(f"ProjectedProblem needs the linear loss, got {loss!r}")
         C, w, F_vk, W, Mi, data = self._at(x)
+        if not Mi.any():
+            # bounded_lm assembles the Hessian at its start and at accepted
+            # points only; a step to such a point (cost 0.5 s**2 ||X||**2, the
+            # largest the objective takes) is never accepted.
+            raise ValueError(
+                f"all {self.K} factors are 0 at every voxel at this start (gram "
+                "eigenvalues below GRAM_FLOOR): its widths are too small or its "
+                "centers too far from the voxels; raise lower_ratio or start "
+                "elsewhere"
+            )
         K, D = self.K, self.D
         A, P, s2 = D + 1, self.n_params, self.s**2
         derivatives = factor_derivatives(self.R, C, w, self._grid, F_vk)
