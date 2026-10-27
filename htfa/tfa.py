@@ -11,10 +11,8 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.spatial import cKDTree
 from sklearn.base import BaseEstimator
-from sklearn.cluster import KMeans
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.utils.validation import check_is_fitted
-from threadpoolctl import threadpool_limits
 
 from htfa._engines import LOSS_NAMES, loss_terms, select_engine
 from htfa._kernels import (
@@ -25,6 +23,7 @@ from htfa._kernels import (
     bounds,
     factors,
     init_centers_widths,
+    kmeans,
     max_sigma,
     ridge_weights,
     solve_centers_widths,
@@ -230,8 +229,7 @@ def _weighted_start(
 ) -> tuple[Array, Array]:
     """Weighted K-means++ centers and widths ``(4/D)`` times each cluster's
     weighted mean squared distance to its center, clipped to the width bounds."""
-    km = KMeans(n_clusters=K, init="k-means++", n_init=10, random_state=seed)
-    km.fit(R, sample_weight=weights)
+    km = kmeans(R, K, seed, sample_weight=weights)
     C = np.asarray(km.cluster_centers_, dtype=np.float64)
     w = np.empty(K)
     for k in range(K):
@@ -239,19 +237,6 @@ def _weighted_start(
         d2 = np.sum((R[m] - C[k]) ** 2, axis=1)
         w[k] = 4.0 / R.shape[1] * np.average(d2, weights=weights[m])
     return C, np.clip(w, w_lo, w_hi)
-
-
-def _one_openmp_thread(job: Callable[[], tuple[Array, Array]]) -> tuple[Array, Array]:
-    """Run ``job`` with one OpenMP thread.
-
-    Multithreaded K-means sums in a varying order (starts differed by 1e-14
-    between identical runs, which at K=100 on real data led to different
-    optima). The limit is set here, in the thread that runs the K-means: the
-    OpenMP thread count is per thread, so a limit set in the thread that starts
-    the pool does not reach its workers.
-    """
-    with threadpool_limits(limits=1, user_api="openmp"):
-        return job()
 
 
 def _initial_starts(
@@ -286,11 +271,9 @@ def _initial_starts(
             weights = _power_weights(power)
         jobs[name] = partial(_weighted_start, R, K, seeds[name], weights, w_lo, w_hi)
     # The candidates run concurrently on threads (sklearn's K-means releases the
-    # GIL), each K-means on one OpenMP thread.
+    # GIL), each K-means on one OpenMP thread (see `kmeans`).
     with ThreadPoolExecutor(max(1, len(jobs))) as pool:
-        futures = {
-            name: pool.submit(_one_openmp_thread, job) for name, job in jobs.items()
-        }
+        futures = {name: pool.submit(job) for name, job in jobs.items()}
         return {name: future.result() for name, future in futures.items()}
 
 

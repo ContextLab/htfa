@@ -16,6 +16,7 @@ from numpy.typing import ArrayLike, NDArray
 from scipy.optimize import least_squares
 from scipy.sparse.linalg import LinearOperator
 from sklearn.cluster import KMeans
+from threadpoolctl import threadpool_limits
 
 from htfa._engines import EPS, Engine, NumpyEngine, loss_terms
 
@@ -206,12 +207,32 @@ def bounds(
     return lb, ub
 
 
+def kmeans(
+    R: Array,
+    K: int,
+    random_state: int | np.random.RandomState | None,
+    sample_weight: Array | None = None,
+) -> KMeans:
+    """K-means++ (``n_init=10``) on ``R``, fitted on one OpenMP thread.
+
+    Multithreaded K-means sums in a varying order: starts differed by 1e-14
+    between identical runs, which at K=100 on real data led TFA to different
+    optima. The limit is set here, in the thread that runs the K-means, because
+    the OpenMP thread count is per thread: a limit set in another thread (for
+    example the one that starts a thread pool) does not apply.
+    """
+    km = KMeans(n_clusters=K, init="k-means++", n_init=10, random_state=random_state)
+    with threadpool_limits(limits=1, user_api="openmp"):
+        km.fit(R, sample_weight=sample_weight)
+    return km
+
+
 def init_centers_widths(
     R: Array, K: int, random_state: int | np.random.RandomState | None
 ) -> tuple[Array, Array]:
-    """K-means++ centers (K, D) on ``R`` and widths (K,) equal to ``max_sigma(R)``."""
-    km = KMeans(n_clusters=K, init="k-means++", n_init=10, random_state=random_state)
-    km.fit(R)
+    """K-means++ centers (K, D) on ``R`` (`kmeans`) and widths (K,) equal to
+    ``max_sigma(R)``."""
+    km = kmeans(R, K, random_state)
     centers = np.asarray(km.cluster_centers_, dtype=np.float64)
     return centers, np.full(K, max_sigma(R))
 

@@ -255,6 +255,25 @@ def test_init_centers_widths():
     np.testing.assert_array_equal(centers, again)
 
 
+def test_init_centers_widths_bitwise_reproducible_on_any_thread():
+    """Multithreaded K-means sums in a varying order, and an OpenMP limit only
+    applies to the thread that sets it. Measured before the limit moved into
+    `kmeans` (12 cores): direct calls, on the main thread or a worker, gave a
+    different start (7e-15 apart) in nearly every call on this grid."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from htfa.synthetic import make_tfa_data
+
+    _, R, _ = make_tfa_data((20, 20, 20), 3, K=10, spacing=1.7, random_state=0)
+    first = init_centers_widths(R, 30, random_state=0)[0]
+    with ThreadPoolExecutor(1) as pool:
+        runs = [pool.submit(init_centers_widths, R, 30, 0).result() for _ in range(4)]
+    runs += [init_centers_widths(R, 30, random_state=0) for _ in range(4)]
+    for centers, _ in runs:
+        print("max |center difference|:", np.abs(centers - first).max())
+        np.testing.assert_array_equal(centers, first)
+
+
 def test_numpy_engine_ops():
     rng = np.random.default_rng(3)
     X = rng.normal(size=(5, 4))
