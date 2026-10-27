@@ -6,12 +6,12 @@ on:
     branches: [repro/njobs-openblas]
 
 jobs:
-  diag:
+  modes:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [windows-latest]
         shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
@@ -20,16 +20,7 @@ jobs:
           python-version: "3.13"
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".[dev]"
-      - name: alignment probe
+      - name: CPU and BLAS
         run: python .github/repro/align_probe.py
-      - name: diagnostic
-        run: python .github/repro/njobs_diag.py 4
-      - name: the test, 10 runs
-        shell: bash
-        run: |
-          fails=0
-          for i in $(seq 1 10); do
-            pytest -q -p no:cacheprovider tests/test_htfa.py::test_htfa_bitwise_independent_of_n_jobs > out_$i.txt 2>&1 || { fails=$((fails+1)); echo "run $i FAILED"; grep -E "subject [0-9]+:|layouts|Mismatch|Max (abs|rel)" out_$i.txt; }
-          done
-          echo "failures: $fails / 10"
-          test $fails -eq 0
+      - name: fresh-process fits per mode
+        run: python .github/repro/njobs_modes.py 12
