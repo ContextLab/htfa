@@ -11,24 +11,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.13"]
+        os: [ubuntu-latest, windows-latest]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.13"
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".[dev]"
-      - run: python -c "import numpy; numpy.show_config()"
+      - name: alignment probe
+        run: python .github/repro/align_probe.py
       - name: diagnostic
-        run: python .github/repro/njobs_diag.py 10
-      - name: the test, 20 runs
+        run: python .github/repro/njobs_diag.py 4
+      - name: the test, 10 runs
         shell: bash
         run: |
           fails=0
-          for i in $(seq 1 20); do
-            pytest -q -p no:cacheprovider tests/test_htfa.py::test_htfa_bitwise_independent_of_n_jobs > out_$i.txt 2>&1 || { fails=$((fails+1)); echo "run $i FAILED"; grep -E "subject [0-9]+:|Mismatch|Max (abs|rel)" out_$i.txt; }
+          for i in $(seq 1 10); do
+            pytest -q -p no:cacheprovider tests/test_htfa.py::test_htfa_bitwise_independent_of_n_jobs > out_$i.txt 2>&1 || { fails=$((fails+1)); echo "run $i FAILED"; grep -E "subject [0-9]+:|layouts|Mismatch|Max (abs|rel)" out_$i.txt; }
           done
-          echo "failures: $fails / 20"
+          echo "failures: $fails / 10"
           test $fails -eq 0
