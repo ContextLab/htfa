@@ -249,6 +249,8 @@ class HTFA(BaseEstimator):
         results do not depend on it: every subject fit, serial or parallel, runs
         BLAS on one thread (`htfa._engines.one_blas_thread`), since BLAS rounds
         differently with different thread counts and the workers get fewer.
+        On macOS, a standalone `htfa.TFA` fit and the stage-0 fit of the same
+        subject can therefore differ at rounding level.
     n_threads : int, optional
         OpenMP and NumPy engine threads per subject fit (the engine splits each
         pass into fixed voxel chunks, so the count does not change results;

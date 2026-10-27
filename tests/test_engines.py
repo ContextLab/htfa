@@ -1,10 +1,12 @@
 """Engines: NumPy vs torch parity and backend selection (real devices, no mocks)."""
 
 import importlib.util
+import warnings
 
 import numpy as np
 import pytest
 
+from htfa import _engines
 from htfa._engines import GPU_MIN_WORK, NumpyEngine, TorchEngine, select_engine
 
 
@@ -193,3 +195,38 @@ def test_chunks_respect_min_rows_and_bound_in_flight_results():
     print(f"most results pending at once: {high[0]}")
     assert starts == [sl.start for sl in slices]
     assert high[0] <= 2 * eng.n_threads
+
+
+accelerate = pytest.mark.skipif(
+    _engines._accelerate() is None, reason="needs macOS Accelerate (BLASSetThreading)"
+)
+
+
+@accelerate
+def test_one_blas_thread_sets_and_restores_accelerate_mode():
+    lib = _engines._accelerate()
+    before = lib.BLASGetThreading()
+    with _engines.one_blas_thread():
+        inside = lib.BLASGetThreading()
+    print(
+        f"Accelerate mode before {before}, inside {inside}, after",
+        lib.BLASGetThreading(),
+    )
+    assert inside == _engines.ACCELERATE_SINGLE_THREADED
+    assert lib.BLASGetThreading() == before
+
+
+@accelerate
+def test_unsupported_accelerate_mode_warns_once_and_keeps_the_fit_running():
+    """Accelerate returns -1 for a mode it does not support (measured: modes 2,
+    99 and -1) and keeps its current mode; the helper then warns once and
+    reports no previous mode, so nothing is restored."""
+    lib = _engines._accelerate()
+    _engines._warn_threading_unsupported.cache_clear()
+    before = lib.BLASGetThreading()
+    with pytest.warns(RuntimeWarning, match="may depend on n_jobs"):
+        assert _engines._single_threaded_accelerate(mode=2) is None
+    assert lib.BLASGetThreading() == before
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert _engines._single_threaded_accelerate(mode=2) is None

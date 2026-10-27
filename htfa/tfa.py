@@ -287,6 +287,10 @@ class TFA(BaseEstimator):
     centers and widths, from one or more candidate starts (see ``init``), and keeps
     the candidate with the lowest final objective.
 
+    On macOS, a standalone TFA fit and HTFA's stage-0 fit of the same subject
+    can differ at rounding level, because HTFA runs subject fits on one BLAS
+    thread and a standalone fit uses the caller's BLAS threads.
+
     Parameters
     ----------
     K : int, default=50

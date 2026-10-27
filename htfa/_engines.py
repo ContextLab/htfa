@@ -11,6 +11,7 @@ import ctypes
 import importlib.util
 import os
 import sys
+import warnings
 from collections import deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -85,14 +86,31 @@ def _accelerate() -> Any:
     return lib
 
 
-def _single_threaded_accelerate() -> int | None:
-    """Put Accelerate on one thread in the calling thread; return the previous
-    mode (None without Accelerate)."""
+@cache
+def _warn_threading_unsupported(mode: int, rc: int) -> None:
+    """One warning per (mode, return code) that Accelerate rejected a mode."""
+    warnings.warn(
+        f"Accelerate's BLASSetThreading({mode}) returned {rc} (unsupported); BLAS "
+        "keeps its current threading, so HTFA results may depend on n_jobs on "
+        "this system.",
+        RuntimeWarning,
+        stacklevel=4,
+    )
+
+
+def _single_threaded_accelerate(mode: int = ACCELERATE_SINGLE_THREADED) -> int | None:
+    """Set Accelerate's threading ``mode`` (default: one thread) in the calling
+    thread; return the previous mode, or None without Accelerate or when it
+    rejects the mode (return code -1: the fit continues with the current mode,
+    after a one-time RuntimeWarning)."""
     lib = _accelerate()
     if lib is None:
         return None
     previous = int(lib.BLASGetThreading())
-    lib.BLASSetThreading(ACCELERATE_SINGLE_THREADED)
+    rc = int(lib.BLASSetThreading(mode))
+    if rc != 0:
+        _warn_threading_unsupported(mode, rc)
+        return None
     return previous
 
 

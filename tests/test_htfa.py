@@ -9,7 +9,7 @@ import pytest
 from sklearn.exceptions import ConvergenceWarning
 
 from htfa._matching import match_factors
-from htfa.htfa import HTFA, assign_posterior, map_update
+from htfa.htfa import HTFA, _fit_subject, assign_posterior, map_update
 from htfa.synthetic import make_htfa_data
 
 # Tolerances: measured values (seed 0) are recorded with ~2-3x headroom.
@@ -171,6 +171,23 @@ def test_htfa_parallel_equals_serial() -> None:
         np.testing.assert_allclose(a.weights_[s], b.weights_[s], **close)
 
 
+# Factors of the n_jobs test: K (D + 1) * 8 bytes = 1152 >= 1024, so every
+# parameter-sized vector is above NumPy's small-allocation cache (< 1024 bytes)
+# and macOS's tiny malloc zone (<= 1008 bytes, 16-byte quantum), whose varying
+# 64-byte alignment changes Accelerate's rounding (measured: a 400 x 400 gemv
+# gave 8 results at 8 offsets; at K=20, 4 to 6 distinct results in 12 repeated
+# fits).
+N_JOBS_TEST_K = 36
+
+
+def _scramble_small_allocations(seed: int) -> list:
+    """Live arrays of random small sizes, so that the next small allocations
+    land at other addresses (and alignments)."""
+    rng = np.random.default_rng(seed)
+    sizes = rng.integers(1, 130, size=int(rng.integers(50, 400)))
+    return [np.empty(int(n)) for n in sizes]
+
+
 def test_htfa_bitwise_independent_of_n_jobs() -> None:
     """joblib's loky workers get BLAS thread variables of cpu_count // n_jobs
     (1 from n_jobs > cpu_count / 2), and BLAS rounds differently with one
@@ -178,16 +195,27 @@ def test_htfa_bitwise_independent_of_n_jobs() -> None:
     1e-13 on CI). Measured before every subject fit ran on one BLAS thread (12
     cores, 7 workers): this case gave different subject centers; on real data
     at K=100 (8 subjects, n_jobs=8 vs 4) a different template and optima.
-    K=32: at K=20, repeated serial fits in one process already differ on macOS
-    (Accelerate's rounding depends on the alignment of small arrays), which
-    would hide the n_jobs effect; from K=31 on they were identical."""
+
+    The comparison is meaningful only where repeated serial fits agree bit for
+    bit whatever the memory layout, so that is checked first, with the small
+    allocations scrambled between fits (see N_JOBS_TEST_K)."""
     n = max(2, (os.cpu_count() or 1) // 2 + 1)
+    K = N_JOBS_TEST_K
     Xs, Rs, _ = make_htfa_data(
         n_subjects=n, grid_shape=(20, 20, 20), n_samples=60, K=20, random_state=0
     )
-    kw = {"K": 32, "init": "ncorr", "max_global_iter": 2, "random_state": 0}
+    kw = {"K": K, "init": "ncorr", "max_global_iter": 2, "random_state": 0}
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ConvergenceWarning)
+        layouts = set()
+        for seed in range(4):
+            junk = _scramble_small_allocations(seed)
+            fit = _fit_subject(HTFA(**kw)._tfa_params(10), Xs[0], Rs[0], None,
+                               None, 7, 1, True)  # fmt: skip
+            layouts.add((fit.centers_.tobytes(), fit.widths_.tobytes()))
+            del junk
+        print(f"serial subject fits under 4 memory layouts: {len(layouts)} distinct")
+        assert len(layouts) == 1, "serial subject fits depend on the memory layout"
         serial = HTFA(n_jobs=1, **kw).fit(Xs, Rs)
         parallel = HTFA(n_jobs=n, **kw).fit(Xs, Rs)
     for s in range(n):
