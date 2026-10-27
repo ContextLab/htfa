@@ -255,7 +255,9 @@ results that do not depend on ``n_jobs``. They differ in two places of
 - The step where the Hessian is not positive definite on the free variables.
   ``'exact'`` takes the damped Gauss-Newton step there, as earlier versions
   did. ``'fast'`` keeps the Hessian and raises the damping until the damped
-  matrix is positive definite (a damped Newton step).
+  matrix is positive definite (a damped Newton step). At the k-th consecutive
+  failed factorization of a step the damping is multiplied by 2**k
+  (`htfa._kernels.FAILED_FACTOR_GROWTH`), in both modes.
 - The precision of the curvature. ``'exact'`` assembles the Gauss-Newton
   matrix and the Hessian in float64. ``'fast'`` forms their three largest
   products for the linear loss (``G G^T``, ``F G^T`` and ``G X``, with ``G``
@@ -270,14 +272,26 @@ at nearly every point of a solve. In six logged solves (sub-pixar123 and
 sub-pixar124, K = 50 and 100, 'ncorr' and 'kmeans' starts) the exact mode
 took the Newton step in 0 to 11 of 85 to 523 accepted steps; the others were
 Gauss-Newton steps, which converge linearly on this large-residual problem.
-The 'kmeans' solve of sub-pixar123 at K = 100 took 466 steps to a cost of
-990024.95 in exact mode and 155 steps to 988678.64 with the damped Newton
-step; its 'ncorr' solve at K = 50 took 258 steps (1003580.12) and 98 steps
-(1003673.70). The fast mode can therefore end at a different local minimum,
-lower or higher; :doc:`validation` gives its effect on the objective, the
-held-out reconstruction and the decoding. On the synthetic problems of the
-test suite the two modes agree to 2e-7 or better in whole fits, and single
-solves agree to 1e-11 except where the first step meets negative curvature.
+With a prototype of the damped Newton step (float64), the 'kmeans' solve of
+sub-pixar123 at K = 100 took 155 steps to a cost of 988678.64 against 466
+steps to 990024.95 in exact mode, and its 'ncorr' solve at K = 50 98 steps
+(1003673.70) against 258 (1003580.12). The fast mode can therefore end at a
+different local minimum, lower or higher; :doc:`validation` gives its effect
+on the objective, the held-out reconstruction, the decoding and the HTFA
+template.
+
+**The damping after failed factorizations.** Earlier code multiplied the
+damping by ``nu`` and doubled ``nu`` at each failed factorization, so ``nu``
+stayed raised for the rejections of the same step. Now ``nu`` counts rejected
+steps only. Doubling the damping per failure (at most twice the damping that
+works) was tried: on a well-conditioned synthetic problem of the test suite
+(two-stage loss, 12³ grid, K = 8) the fast fit then reached another local
+minimum, 2.9e-3 above the exact fit's objective with centers 1.45 lengths
+away; with the growth by 2**k it ends within the test's tolerances of the
+exact fit (objective within 1e-8). The
+change moves exact-mode fits only where a damped Gauss-Newton factorization
+fails: of six development_fmri adults at K = 50 and 100, two K = 100 fits
+changed (sub-pixar125: objective 1031218.0061 to 1031218.0202).
 
 **Why float32.** On sub-pixar123 (V = 25079, T = 168, K = 100) ``G G^T``,
 ``F G^T`` and ``G X`` took 4.4, 2.5 and 2.7 ms in float32 against 10.6, 7.5
@@ -285,44 +299,12 @@ and 7.1 ms in float64 (Accelerate), and a Hessian assembly 9% to 17% less
 (K = 50 and 100), with relative errors of 5e-6 to 1e-5 in the Gauss-Newton
 matrix and the Hessian.
 
-.. list-table:: Whole TFA fits, 12 development_fmri adults, defaults
-   (``init='auto'``, all voxels), 12 threads, mean seconds per fit
-   :header-rows: 1
+**Timings.** The first six adults (full runs, defaults, 12 threads), the
+exact and the fast fit of each subject one after the other, 2026-10-27, at
+load averages of 2.5 to 5.7 (every speedup quoted in these docs is from
+this run):
 
-   * - fit
-     - exact
-     - damped Newton only
-     - fast (damped Newton and float32)
-   * - K = 50, full run (T = 168)
-     - 25.5
-     - 11.2
-     - 10.3
-   * - K = 50, training segment (T = 80)
-     - 24.9
-     - 9.7
-     - 8.7
-   * - K = 100, full run
-     - 116.2
-     - 27.4
-     - 22.8
-   * - K = 100, training segment
-     - 94.1
-     - 25.6
-     - 22.4
-
-Measured 2026-10-27 with prototypes of the two changes that give the same
-results as the released code bit for bit (checked on two subjects), one
-configuration after the other, at load averages of 3 to 10 (test runs
-overlapped some of the K = 50 fits). Per subject, the fast full-run fit took
-1.4 to 4.0 times less time than the exact one at K = 50 and 1.9 to 8.6 times
-less at K = 100: the number of steps depends on which local minimum a fit
-reaches.
-
-Timed again with the released code on the first six adults (full runs,
-defaults, 12 threads), the exact and the fast fit of each subject one after
-the other, at load averages of 1.7 to 2.9 (K = 50) and 2.4 to 6.2 (K = 100):
-
-.. list-table:: Whole TFA fits, 6 development_fmri adults, 2026-10-27
+.. list-table:: Whole TFA fits, 6 development_fmri adults
    :header-rows: 1
 
    * - K
@@ -331,23 +313,23 @@ the other, at load averages of 1.7 to 2.9 (K = 50) and 2.4 to 6.2 (K = 100):
      - ratio of total times (per subject)
      - Hessian assemblies per fit, exact / fast
    * - 50
-     - 24.5 s
-     - 8.9 s
-     - 2.8 (1.9 to 4.5)
-     - 241 to 693 / 105 to 215
+     - 24.6 s
+     - 8.7 s
+     - 2.8 (1.7 to 4.4)
+     - 241 to 693 / 105 to 186
    * - 100
-     - 111.9 s
-     - 21.8 s
-     - 5.1 (3.2 to 8.7)
-     - 695 to 1881 / 205 to 261
+     - 113.4 s
+     - 21.6 s
+     - 5.3 (3.2 to 8.4)
+     - 695 to 1881 / 195 to 247
 
-HTFA with its defaults on the twelve adults (K = 50, ``n_jobs=6``, 10
-global iterations in both modes) took 634 s in exact mode and 232 s in fast
-mode (2.7 times) at load averages of 4.7 to 7.8 from other jobs; a rerun with
-``scripts/validation_modes.py --htfa`` gave the same fits in 680 s and 251 s
-at a load average of about 9.
+HTFA with its defaults on the twelve adults (K = 50, ``n_jobs=6``, 10 global
+iterations in both modes; ``scripts/validation_modes.py --htfa``) took 664 s
+in exact mode and 244 s in fast mode (2.7 times; load average 4.9 when the
+run started, other jobs raised it during the run).
 
-**Options measured and not adopted** (development_fmri, same machine):
+**Options measured and not adopted** (development_fmri, same machine, with
+the earlier damping rule):
 
 - Gauss-Newton steps only (skipping the second-order terms, which the exact
   mode computes and then rarely uses). The few Newton steps matter near the
@@ -360,6 +342,9 @@ at a load average of about 9.
   and 54), for 22.8 s and 19.5 s.
 - float32 curvature products with the exact step model: 20.4, 20.9 and
   20.8 s against 22.8, 20.8 and 24.9 s (sub-pixar123 to 125, K = 50).
+- Limiting the damped Newton step to the length of the Gauss-Newton step: on
+  the synthetic fits of the test suite it moved other well-conditioned fits
+  to other minima (one 6.2e-3 from the exact objective).
 - The approximate Hessians of "Cost of one evaluation" below (from a voxel
   subsample, or reused across steps): 0.3 to 2.0 times the exact solver's
   time on single solves.

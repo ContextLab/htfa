@@ -188,14 +188,16 @@ OTHER_STARTS = (1, 2, 3)
 # Fast objective at most max(SPREAD_FACTOR x the exact start spread,
 # SPREAD_FLOOR) above the exact fit's (relative); fast recovery error of the
 # noiseless signal at most RECOVERY_FACTOR times the worst exact start's.
-# Measured (macOS): fast - exact at most 1.5 times the spread (overfit seed 1:
-# +2.5e-4 against 1.7e-4); fast recovery at most 1.05 times the worst exact
-# start's (overfit_2d seed 0: 0.0231 against 0.0221).
+# Measured: fast - exact at most 0.99 times the spread on macOS (Accelerate)
+# and 1.0 times on Linux (OpenBLAS; noise_dominated seed 0: +3.96e-5 against
+# 3.96e-5); fast recovery at most 1.03 times the worst exact start's (both;
+# overfit_2d seed 1: 0.0217 against 0.0212).
 SPREAD_FACTOR = 2.0
 SPREAD_FLOOR = 1e-6
 RECOVERY_FACTOR = 1.1
 # The families must exercise the fast mode's step: the exact solver met an
-# indefinite Hessian at 47% to 93% of its accepted steps per fit (macOS).
+# indefinite Hessian at 47% to 93% (macOS) and 44% to 93% (Linux) of its
+# accepted steps per fit.
 MIN_INDEFINITE_FRACTION = 0.4
 MIN_MEAN_INDEFINITE_FRACTION = 0.7
 
@@ -361,9 +363,9 @@ def test_fast_tfa_fits_match_exact_on_well_conditioned_problems():
     PERTURBATION of the data, the fast fit recovers the truth as well and is
     within THRESHOLD (centers, widths, weights) and COST_RTOL of the exact fit.
     Measured: 54 cases qualified on macOS (Accelerate) and 55 on Linux
-    (OpenBLAS), with max differences of 5.2e-8 and 3.5e-8 lengths (centers),
+    (OpenBLAS), with max differences of 5.1e-8 and 3.5e-8 lengths (centers),
     1.7e-7 and 1.9e-7 (widths), 9.5e-8 and 1.2e-7 (weights), 1.4e-10 and
-    2.0e-10 (cost)."""
+    2.3e-10 (cost)."""
     rows, excluded = [], []
     for i, (family, data) in enumerate(_tfa_cases()):
         exact = _tfa_fit(family, data, "exact")
@@ -500,7 +502,7 @@ def test_tfa_rejects_unknown_mode():
 
 # Real data: full-run fit of the first adult, defaults otherwise. Measured over
 # the 12 adults (docs/validation.rst): fast - exact objective from -4.5e-4 to
-# +2.3e-4 at K = 50 and from -5.1e-4 to +3.3e-4 at K = 100.
+# +2.7e-4 at K = 50 and from -4.1e-4 to +3.4e-4 at K = 100.
 REAL_COST_RTOL = 1e-3
 
 

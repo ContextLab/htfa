@@ -65,14 +65,22 @@ Added:
   keeps it and raises the damping instead of taking a Gauss-Newton step, and
   it forms the largest curvature products of the linear loss in float32;
   costs and gradients are unchanged. On six development_fmri adults a
-  full-run TFA fit took 8.9 s instead of 24.5 s at K = 50 and 21.8 s instead
-  of 111.9 s at K = 100. The fast fits reach other local minima of the same
-  objective: on twelve adults their objectives were within -5.1e-4 to
-  +3.3e-4 (relative) of the exact fits, with mean held-out R² 0.0429 and
-  0.0506 against 0.0427 and 0.0506. On well-conditioned synthetic problems
-  the two modes agree to 2e-7. Exact mode is the reference for the
-  equivalence tests and the BrainIAK cross-checks (see :doc:`performance`
-  and :doc:`validation`).
+  full-run TFA fit took 8.7 s instead of 24.6 s at K = 50 and 21.6 s instead
+  of 113.4 s at K = 100. The fast fits reach other local minima of the same
+  objective: on twelve adults their objectives were within -4.5e-4 to
+  +3.4e-4 (relative) of the exact fits, with mean held-out R² 0.0429 and
+  0.0507 against 0.0427 and 0.0506. The fast HTFA template (12 adults,
+  K = 50) is a different map: 15.8 mm from the exact one (median center
+  distance), against 2.0 to 5.6 mm between exact fits of data changed by
+  1e-12; ``mode='exact'`` gives the reference template. On well-conditioned
+  synthetic problems the two modes agree to 2e-7. Exact mode is the
+  reference for the equivalence tests and the BrainIAK cross-checks (see
+  :doc:`performance` and :doc:`validation`).
+- After a failed Cholesky factorization the structured solver multiplies the
+  damping by 2, 4, 8, ... for consecutive failures and no longer raises the
+  step-rejection factor ``nu`` as well. Exact-mode fits change only where a
+  damped Gauss-Newton factorization fails (2 of 12 fits: six development_fmri
+  adults at K = 50 and 100).
 - A stopping rule for subsampled fits: the fit stops when the lowest objective
   so far (on a fixed evaluation subsample) has fallen by less than a relative
   1e-4 per iteration over the last three iterations, after at least five

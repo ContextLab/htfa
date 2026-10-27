@@ -866,9 +866,10 @@ def bounded_lm(
     points of a solve (6 solves, K = 50 and 100), where Gauss-Newton steps
     converge linearly: one solve from the K-means start (K = 100) took 466
     steps to a cost of 990024.95 with ``'exact'`` and 155 steps to 988678.64
-    with ``'fast'``. ``'fast'`` also forms the largest curvature products of
-    the linear loss in float32 (`curvature_operand`). Both modes minimize the
-    same cost, in float64; they can end at different local minima.
+    with a float64 prototype of the ``'fast'`` step. ``'fast'`` also forms
+    the largest curvature products of the linear loss in float32
+    (`curvature_operand`). Both modes minimize the same cost, in float64; they
+    can end at different local minima.
 
     ``trace`` (a list, for diagnostics) receives one dict per accepted step:
     ``indefinite`` (the Hessian was not positive definite on the free

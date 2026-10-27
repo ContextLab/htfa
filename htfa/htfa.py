@@ -240,11 +240,26 @@ class HTFA(BaseEstimator):
         matched stage-0 fits (`empirical_dispersion`, floored at 1% of the
         initial values).
     nlss_method, nlss_loss, x_scale, weight_method, upper_ratio, lower_ratio,
-    voxel_ratio, tr_ratio, max_voxels, max_trs, standardize, backend, mode,
-    init, n_screen_iter
+    voxel_ratio, tr_ratio, max_voxels, max_trs, standardize, backend, init,
+    n_screen_iter
         Passed to each subject's `TFA` (``init`` and ``n_screen_iter`` only matter
         for the template fits, the only ones with several candidate starts).
-        ``mode`` defaults to ``'fast'``, as in `TFA`.
+    mode : {'fast', 'exact'}, default='fast'
+        Passed to each subject's `TFA` (see there). On the twelve
+        development_fmri adults (K = 50, defaults, 10 global iterations) the
+        fast fit took 244 s against 664 s, and its template is a different
+        map: its centers are 15.8 mm (median; 42.3 mm at most) from the exact
+        template's, while a 1e-12 change of the data moved the exact template
+        by 2.0 to 5.6 mm (median; 8.8 to 13.6 at most) in three trials. The
+        template subject's stage-0 fit is 16.4 mm (median) from the exact one
+        in fast mode and was unchanged by the perturbation in exact mode. The
+        summed objective was 9.5e-4 lower than the exact fit's (the perturbed
+        exact fits: -6.0e-4 to +1.1e-3), and the held-out R^2 of fits to the
+        training segments 0.04078 against 0.04127. Run on to the stopping
+        rule (14 to 17 global iterations) the templates were 15.8 mm apart
+        (median), a perturbed exact fit 2.3 mm from the exact one
+        (docs/validation.rst). Pass ``mode='exact'`` for the reference
+        template.
     n_jobs : int, optional
         Number of joblib workers for the subject fits (numpy engines only). The
         results do not depend on it: every subject fit, serial or parallel, runs
