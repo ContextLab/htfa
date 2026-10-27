@@ -52,6 +52,10 @@ Added:
 - Of several candidate starts that reach the same optimum (costs within a
   relative 1e-9), the first in ``init`` order wins, so that the choice does not
   depend on the thread count.
+- Every K-means start runs on one OpenMP thread, with the limit set in the
+  worker thread that runs it (the OpenMP thread count is per thread), so that
+  identical fits get identical starts: multithreaded K-means sums in a varying
+  order.
 - A stopping rule for subsampled fits: the fit stops when the lowest objective
   so far (on a fixed evaluation subsample) has fallen by less than a relative
   1e-4 per iteration over the last three iterations, after at least five
