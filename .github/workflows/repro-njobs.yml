@@ -6,7 +6,7 @@ on:
     branches: [repro/njobs-openblas]
 
 jobs:
-  modes:
+  pytest-loop:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -20,7 +20,15 @@ jobs:
           python-version: "3.13"
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".[dev]"
-      - name: alignment probe at the test's shapes
+      - name: CPU
         run: python .github/repro/align_probe2.py
-      - name: fresh-process fits per mode
-        run: python .github/repro/njobs_modes.py 20 parallel,serial_env1,serial
+      - name: the test, 30 runs, hashes of both sides
+        shell: bash
+        run: |
+          fails=0
+          for i in $(seq 1 30); do
+            pytest -q -s -p no:cacheprovider tests/test_htfa.py::test_htfa_bitwise_independent_of_n_jobs > out_$i.txt 2>&1 || fails=$((fails+1))
+            grep -h REPROHASH out_$i.txt | sed "s/^/run $i /"
+          done
+          echo "failures: $fails / 30"
+          grep -h REPROHASH out_*.txt | sort | uniq -c

@@ -218,6 +218,13 @@ def test_htfa_bitwise_independent_of_n_jobs() -> None:
         assert len(layouts) == 1, "serial subject fits depend on the memory layout"
         serial = HTFA(n_jobs=1, **kw).fit(Xs, Rs)
         parallel = HTFA(n_jobs=n, **kw).fit(Xs, Rs)
+    import hashlib  # REPRO side branch only
+
+    def _h(a):
+        return hashlib.sha1(np.ascontiguousarray(a).tobytes()).hexdigest()[:8]
+
+    for name, m in (("serial", serial), ("parallel", parallel)):
+        print("REPROHASH", name, _h(m.global_centers_), *[_h(c) for c in m.centers_])
     for s in range(n):
         diff = np.abs(serial.centers_[s] - parallel.centers_[s]).max()
         print(f"subject {s}: max |center difference| {diff:.3g}")
