@@ -85,6 +85,9 @@ Common model parameters
    * - ``backend``
      - ``'auto'``
      - ``'numpy'``, ``'cpu'``, ``'torch'``, ``'cuda'``, ``'mps'`` or ``'auto'``; see :doc:`performance`
+   * - ``mode``
+     - ``'fast'``
+     - Step model of the center/width solver: ``'fast'`` keeps the Hessian where it is indefinite, ``'exact'`` (the reference, used by the equivalence tests and BrainIAK cross-checks) takes Gauss-Newton steps there; see :doc:`performance`
    * - ``n_jobs`` (HTFA)
      - ``None``
      - joblib workers for the per-subject fits (NumPy backend)

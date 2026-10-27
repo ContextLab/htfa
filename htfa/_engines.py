@@ -234,7 +234,7 @@ class Engine(Protocol):
     def data_cost(self, F: NDArray[np.float64], s: float, loss: str) -> float: ...
 
     def gauss_newton(
-        self, F: NDArray[np.float64], G: NDArray[np.float64], s: float, loss: str
+        self, F: NDArray[np.float64], G: NDArray[np.floating], s: float, loss: str
     ) -> tuple[float, NDArray[np.float64], NDArray[np.float64]]: ...
 
 
@@ -256,7 +256,7 @@ class _ChunkedDataTerm:
     min_chunk_rows: int = MIN_CHUNK_ROWS
     n_threads: int = 1
 
-    def _put(self, a: NDArray[np.float64]) -> Any:
+    def _put(self, a: NDArray[np.floating]) -> Any:
         raise NotImplementedError
 
     @staticmethod
@@ -325,7 +325,7 @@ class _ChunkedDataTerm:
         return 0.5 * sum(self._imap(chunk, self._chunks(max(T, K * K))))
 
     def gauss_newton(
-        self, F: NDArray[np.float64], G: NDArray[np.float64], s: float, loss: str
+        self, F: NDArray[np.float64], G: NDArray[np.floating], s: float, loss: str
     ) -> tuple[float, NDArray[np.float64], NDArray[np.float64]]:
         """Data-term cost, ``(rho' r) W^T`` and Gauss-Newton matrix.
 
@@ -335,7 +335,9 @@ class _ChunkedDataTerm:
             Factors.
         G : ndarray, shape (K, A, V)
             ``G[k, a, v] = dF[v, k] / dtheta[k, a]`` for factor ``k``'s ``A``
-            parameters.
+            parameters. float32 (the solver's mode 'fast', linear loss) forms
+            the NumPy engine's ``G G^T`` products in float32; they are summed
+            into the float64 result.
         s : float
             Residual scale, ``r = s (X - F W)``.
         loss : str
@@ -412,7 +414,7 @@ class NumpyEngine(_ChunkedDataTerm):
         self._W64 = self._W
         self._reset_cache()
 
-    def _put(self, a: NDArray[np.float64]) -> NDArray[np.float64]:
+    def _put(self, a: NDArray[np.floating]) -> NDArray[np.floating]:
         return a
 
     @staticmethod
@@ -473,7 +475,7 @@ class TorchEngine(_ChunkedDataTerm):
     def _put_index(self, index: NDArray[np.int64]) -> Any:
         return self._torch.from_numpy(index).to(self.device)
 
-    def _put(self, a: NDArray[np.float64]) -> Any:
+    def _put(self, a: NDArray[np.floating]) -> Any:
         t = self._torch.from_numpy(np.ascontiguousarray(a, dtype=np.float64))
         return t.to(device=self.device, dtype=self._dtype)
 

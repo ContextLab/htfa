@@ -32,10 +32,28 @@ Array = NDArray[np.float64]
 # the same solver on the variable-projection objective (linear loss only; see
 # `ProjectedProblem`) and the scipy least_squares methods kept for cross-checking.
 NLSS_METHODS = ("bounded-lm", "varpro", "trf", "dogbox")
-# Step models of the structured solver (`bounded_lm`): 'exact' falls back to the
+# Modes of the structured solver (`bounded_lm`). 'exact' falls back to the
 # Gauss-Newton matrix wherever the Hessian is not positive definite on the free
-# variables; 'fast' keeps the Hessian there and raises the damping instead.
+# variables, and assembles the curvature in float64. 'fast' keeps the Hessian
+# there and raises the damping instead, and forms the largest curvature
+# products of the linear loss in float32 (`curvature_operand`).
 SOLVER_MODES = ("fast", "exact")
+
+
+def curvature_operand(a: Array, mode: str) -> NDArray[np.floating]:
+    """``a`` as an operand of the curvature (Gauss-Newton matrix and Hessian)
+    products: a float32 copy in mode ``'fast'``, ``a`` itself otherwise.
+
+    Only the curvature is affected; costs and gradients stay in float64, so the
+    solver minimizes the same objective. Measured on development_fmri: float32
+    ``G G^T``, ``F G^T`` and ``G X`` (V = 25079, T = 168, K = 100) took 4.4,
+    2.5 and 2.7 ms against 10.6, 7.5 and 7.1 ms in float64; a Hessian assembly
+    took 9% to 17% less time (K = 50 and 100), with relative errors of 5e-6 to
+    1e-5 in the Gauss-Newton matrix and the Hessian.
+    """
+    return a.astype(np.float32) if mode == "fast" else a
+
+
 # scipy.optimize.least_squares' default tolerances, used by the structured solver
 # with the same meaning (see `bounded_lm`).
 FTOL = XTOL = GTOL = 1e-8
@@ -464,11 +482,13 @@ class ResidualProblem:
         x: ArrayLike,
         loss: str,
         derivatives: tuple[Array, Array, Array] | None = None,
+        mode: str = "exact",
     ) -> tuple[float, Array, Array, Array]:
         """Cost (as :meth:`cost`), gradient (P,), positive semidefinite
         Gauss-Newton matrix (P, P) and Hessian (P, P) of the objective.
         ``derivatives`` passes `factor_derivatives` at ``x`` when the caller has
-        them already.
+        them already. With the linear loss in ``mode='fast'`` the Gauss-Newton
+        product ``G G^T`` is formed in float32 (`curvature_operand`).
 
         The Gauss-Newton matrix is the Hessian without the data term's
         second-order part ``sum_i rho'_i r_i Hess(r_i)`` (the prior terms keep
@@ -493,7 +513,11 @@ class ResidualProblem:
         else:
             C, w = self._unpack(x)
         E, F, G = derivatives
-        cost, M, H_ka = self.engine.gauss_newton(np.ascontiguousarray(F.T), G, s, loss)
+        # The robust losses multiply G by float64 loss weights in the engine.
+        G_gn = curvature_operand(G, mode) if loss == "linear" else G
+        cost, M, H_ka = self.engine.gauss_newton(
+            np.ascontiguousarray(F.T), G_gn, s, loss
+        )
         MT = np.ascontiguousarray(M.T)  # (K, V)
         grad_ka = -s * (G @ MT[:, :, None])[:, :, 0]
         # Second derivatives of F = exp(-d / w) per factor, contracted with M,
@@ -653,6 +677,11 @@ class ProjectedProblem:
         n = self.K * self.D
         return x[:n].reshape(self.K, self.D), x[n:]
 
+    @cached_property
+    def _x32(self) -> NDArray[np.float32]:
+        """The data in float32, for the curvature products of mode 'fast'."""
+        return self.X.astype(np.float32)
+
     def _weights(self, F: Array) -> tuple[Array, Array, Array]:
         """`gram_solve` with this problem's data and ``beta``."""
         return gram_solve(F, self.X, self.beta)
@@ -724,9 +753,11 @@ class ProjectedProblem:
         return inner.column_norms(x)
 
     def cost_grad_hess(
-        self, x: ArrayLike, loss: str = "linear"
+        self, x: ArrayLike, loss: str = "linear", mode: str = "exact"
     ) -> tuple[float, Array, Array, Array]:
-        """``phi``, its gradient, Gauss-Newton matrix and Hessian (P, P)."""
+        """``phi``, its gradient, Gauss-Newton matrix and Hessian (P, P). In
+        ``mode='fast'`` the products ``G G^T``, ``F G^T`` and ``G X`` of the
+        curvature are formed in float32 (`curvature_operand`)."""
         if loss != "linear":
             raise ValueError(f"ProjectedProblem needs the linear loss, got {loss!r}")
         C, w, F_vk, W, Mi, data = self._at(x)
@@ -747,14 +778,16 @@ class ProjectedProblem:
         inner = ResidualProblem(
             self.X, W, self.R, self.engine, self.prior, data_on_engine=True
         )
-        cost, grad, gn, hess = inner.cost_grad_hess(x, "linear", derivatives)
+        cost, grad, gn, hess = inner.cost_grad_hess(x, "linear", derivatives, mode)
         if data is None:
             cost += 0.5 * s2 * self.beta * float(np.sum(W * W))
         else:
             cost = data + self._prior_cost(C, w)
-        G2 = G.reshape(K * A, -1)  # [(k, a), v]
-        P2 = F @ G2.T  # (K, KA): P2[l, (k, a)] = sum_v F[l, v] G[k, a, v]
-        Bt = G2 @ self.X - P2.T @ W  # (KA, T): G_ka^T (X - F W)
+        G2 = curvature_operand(G.reshape(K * A, -1), mode)  # [(k, a), v]
+        X = self._x32 if mode == "fast" else self.X
+        # (K, KA): P2[l, (k, a)] = sum_v F[l, v] G[k, a, v]
+        P2 = np.asarray(curvature_operand(F, mode) @ G2.T, dtype=np.float64)
+        Bt = G2 @ X - P2.T @ W  # (KA, T): G_ka^T (X - F W), float64
         Y = Mi @ P2  # M^-1 P2
         WW = W @ W.T
         rows = np.repeat(np.arange(K), A)  # factor k of each (k, a)
@@ -821,8 +854,9 @@ def bounded_lm(
     points of a solve (6 solves, K = 50 and 100), where Gauss-Newton steps
     converge linearly: one solve from the K-means start (K = 100) took 466
     steps to a cost of 990024.95 with ``'exact'`` and 155 steps to 988678.64
-    with ``'fast'``. Both modes minimize the same cost; they can end at
-    different local minima.
+    with ``'fast'``. ``'fast'`` also forms the largest curvature products of
+    the linear loss in float32 (`curvature_operand`). Both modes minimize the
+    same cost, in float64; they can end at different local minima.
 
     Raises
     ------
@@ -850,7 +884,7 @@ def bounded_lm(
     x = np.clip(np.asarray(x0, dtype=np.float64), lb, ub)
     max_nfev = 100 * x.size if max_nfev is None else max_nfev
     ftol = ftol_for(problem.engine.eps)
-    cost, g, gn, hess = problem.cost_grad_hess(x, loss)
+    cost, g, gn, hess = problem.cost_grad_hess(x, loss, mode=mode)
     nfev, nu = 1, 2.0
     lam = LM_TAU * max(float(np.max(scale**2 * np.diag(gn))), EPS)
     while True:
@@ -907,7 +941,7 @@ def bounded_lm(
                 return x, cost_new if accepted else cost, status, nfev
             if accepted:
                 break
-        cost, g, gn, hess = problem.cost_grad_hess(x, loss)
+        cost, g, gn, hess = problem.cost_grad_hess(x, loss, mode=mode)
         nfev += 1
 
 

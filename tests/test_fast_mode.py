@@ -56,10 +56,11 @@ SAME_COST_RTOL = 1e-9
 SAME_CENTER_ATOL = 1e-3
 BASIN_JUMPS = {("tfa", "linear", ("3d", 2), True), ("tfa", "soft_l1", ("3d", 2), True)}
 # HTFA: template (lengths sqrt(max_sigma / 2)) and summed final local objective
-# of the fast fit against the exact one. Measured over the 19 well-conditioned
-# cases below: 1.3e-4 lengths and 7e-8 relative.
+# of the fast fit against the exact one. Measured over the 18 well-conditioned
+# cases below (macOS): 2.9e-5 lengths and 7.0e-8 relative.
 HTFA_GLOBAL_LENGTHS = 1e-3
 HTFA_OBJECTIVE_RTOL = 1e-6
+TRUTH_START_LENGTHS = 0.1
 MIN_WELL_CONDITIONED_TFA = 50
 MIN_WELL_CONDITIONED_HTFA = 15
 
@@ -243,17 +244,21 @@ def _htfa_cases():
     return cases
 
 
-def _htfa_fit(case, mode, perturbation=0.0):
+def _htfa_fit(case, mode, perturbation=0.0, from_truth=False):
     grid, K, update, loss, seed = case
     Xs, Rs, truth = make_htfa_data(3, grid, 40, K=K, noise=0.3, random_state=seed)
     if perturbation:
         rng = np.random.default_rng(seed + 1)
         Xs = [X * (1 + perturbation * rng.standard_normal(X.shape)) for X in Xs]
+    starts = init_template = None
+    if from_truth:
+        starts = list(zip(truth["centers"], truth["widths"], strict=True))
+        init_template = (truth["global_centers"], truth["global_widths"])
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         model = HTFA(
             K=K, template_update=update, nlss_loss=loss, mode=mode, random_state=seed
-        ).fit(Xs, Rs)
+        ).fit(Xs, Rs, starts=starts, init_template=init_template)
     length = float(np.sqrt(max_sigma(Rs[0]) / 2.0))
     return model, np.mean(truth["centers"], axis=0), length
 
@@ -271,19 +276,32 @@ def _template_error(model, target, length):
 
 
 def test_fast_htfa_fits_match_exact_on_well_conditioned_problems():
-    """24 synthetic HTFA problems (3 subjects; see the module docstring): on
-    every one whose exact template recovers the mean true centers to
-    RECOVERY_LENGTHS and is stable under a PERTURBATION of the data (template
-    and local centers within THRESHOLD lengths), the fast template is within
-    HTFA_GLOBAL_LENGTHS of the exact one, its summed final local objective
-    within HTFA_OBJECTIVE_RTOL, and it recovers the truth as well."""
+    """24 synthetic HTFA problems (3 subjects; see the module docstring). A
+    case is well-conditioned when the exact fit recovers the mean true centers
+    to RECOVERY_LENGTHS, is stable under a PERTURBATION of the data (template
+    and local centers within THRESHOLD lengths), and ends near the template of
+    the exact fit started from the truth (subject starts and template):
+    within TRUTH_START_LENGTHS. The global loop stops on loose rules, so that
+    distance is not rounding-sized: measured 1.2e-6 to 2.5e-2 lengths on the
+    cases that pass, 0.17 to 1.85 on those where the exact fit stops at
+    another optimum (case 518: 0.17 lengths from the truth against 0.035 from
+    the truth start; on Linux the fast fit reached 0.028 there). On every
+    well-conditioned case the fast template is within HTFA_GLOBAL_LENGTHS of
+    the exact one, its summed final local objective within
+    HTFA_OBJECTIVE_RTOL, and it recovers the truth as well."""
     rows, excluded = [], []
     for case in _htfa_cases():
         exact, target, length = _htfa_fit(case, "exact")
-        perturbed, _, _ = _htfa_fit(case, "exact", PERTURBATION)
-        stable = _template_difference(exact, perturbed, length)[0] <= THRESHOLD and all(
-            np.max(np.abs(a - b)) / length <= THRESHOLD
-            for a, b in zip(exact.centers_, perturbed.centers_, strict=True)
+        perturbed = _htfa_fit(case, "exact", PERTURBATION)[0]
+        from_truth = _htfa_fit(case, "exact", from_truth=True)[0]
+        stable = (
+            _template_difference(exact, perturbed, length)[0] <= THRESHOLD
+            and all(
+                np.max(np.abs(a - b)) / length <= THRESHOLD
+                for a, b in zip(exact.centers_, perturbed.centers_, strict=True)
+            )
+            and _template_difference(exact, from_truth, length)[0]
+            <= TRUTH_START_LENGTHS
         )
         error = _template_error(exact, target, length)
         if error >= RECOVERY_LENGTHS or not stable:
@@ -327,3 +345,37 @@ def test_tfa_rejects_unknown_mode():
     X, R, _ = make_tfa_data((10, 10), 5, K=2, random_state=0)
     with pytest.raises(ValueError, match="mode must be one of"):
         TFA(K=2, mode="approximate").fit(X, R)
+
+
+# Real data: full-run fit of the first adult, defaults otherwise. Measured over
+# the 12 adults (docs/validation.rst): fast - exact objective from -4.5e-4 to
+# +3.6e-4 at K = 50 and from -4.9e-4 to +3.0e-4 at K = 100.
+REAL_COST_RTOL = 1e-3
+
+
+@pytest.mark.network
+@pytest.mark.slow
+@pytest.mark.parametrize("K", [50, 100])
+def test_fast_mode_on_development_fmri(K):
+    """On real fMRI the two modes end at different local minima of the same
+    objective: their final objectives agree within REAL_COST_RTOL (either can
+    be lower), and the fast fit takes less time (printed, not asserted: it
+    depends on the machine's load)."""
+    import time
+
+    from htfa.datasets import fetch_development_fmri
+
+    ds = fetch_development_fmri(n_subjects=1)
+    X, R = ds.data[0], ds.coords[0]
+    fits, seconds = {}, {}
+    for mode in ("exact", "fast"):
+        t0 = time.perf_counter()
+        fits[mode] = TFA(K=K, mode=mode, random_state=0).fit(X, R)
+        seconds[mode] = time.perf_counter() - t0
+    rel = (fits["fast"].cost_ - fits["exact"].cost_) / fits["exact"].cost_
+    print(
+        f"K={K}: objective exact {fits['exact'].cost_:.6f} ({seconds['exact']:.1f} s, "
+        f"init {fits['exact'].init_}), fast {fits['fast'].cost_:.6f} "
+        f"({seconds['fast']:.1f} s, init {fits['fast'].init_}), relative {rel:+.2e}"
+    )
+    assert abs(rel) <= REAL_COST_RTOL
