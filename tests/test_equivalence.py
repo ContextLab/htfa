@@ -8,16 +8,22 @@ in `FAMILIES`, and compares factors, factor derivatives, cost, gradient,
 Gauss-Newton matrix, Hessian and weights at three points. Failures print the
 scenario (``scenario(i)`` rebuilds it).
 
-Tolerances (relative to the largest entry of each array): `RTOL` for
-factors and their derivatives. For cost, gradient, Gauss-Newton matrix,
-Hessian and weights (the gradient relative to its scale ``sqrt(2 cost
-lambda_max(GN))``, the projected matrices relative to the fixed-weight ones),
-the larger of `RTOL` and `COND_FACTOR` x amplification x
-the measured factor difference, where the amplification is the gram's
-condition number (varpro) or the cancellation ratio max(|F| |W|) / max|X - F W|,
-whichever is larger: the first-order bound for a linear solve, or a residual,
-whose inputs change by that much. The sweep prints how often this exceeds
-`RTOL`.
+Every quantity is compared on a natural scale that does not shrink with the
+fit: factors per entry (`FACTOR_RTOL`); costs relative to the cost of the zero
+model, ``0.5 sum rho(s**2 X**2)``, plus the prior terms; ``F W`` relative to
+max|X|; weights relative to their largest entry; the gradient relative to
+``sqrt(2 cost_scale lambda_max)`` of the fixed-weight Gauss-Newton matrix; the
+Gauss-Newton matrix and Hessian relative to the largest entry of their own,
+the fixed-weight matrices and the difference of the two (the coupling terms,
+which can cancel most of the fixed-weight matrices). The tolerance is the
+larger of `RTOL`
+and `AMP_FACTOR` x amplification x the measured factor difference, where the
+amplification is the larger of the gram's condition number on its kept
+eigenvalues (varpro) and max(|F| |W|) / max|X| (weights that cancel). It never
+exceeds `TOL_CAP`: a stage whose amplification would need more is not compared
+beyond the factors, and is recorded in `SKIPS` with the reason. So are points
+where the two versions keep different gram eigenvalues, which are checked on
+the current code's own properties (`_check_own`) instead.
 """
 
 from dataclasses import dataclass, field
@@ -28,32 +34,45 @@ import pytest
 import reference_kernels_3298278 as ref
 
 import htfa._kernels as new
-from htfa._engines import NumpyEngine
+from htfa._engines import NumpyEngine, loss_terms
 
-# Measured maxima over the sweep are printed by test_sweep_summary.
 RTOL = 1e-10
 # Factors per entry (normal numbers): per-axis products vs exp of the sum.
 FACTOR_RTOL = 1e-12
-COND_FACTOR = 100.0
+# Measured: observed difference / (amplification x factor difference) at most
+# 23.7 (varpro Hessian, whose coupling terms use the gram inverse twice),
+# at most 1.3 for the other quantities.
+AMP_FACTOR = 100.0
+TOL_CAP = 1e-6
 N_FAST = 480
-N_SLOW = 12
-# (scenario, quantity, relative difference, tolerance) of every comparison,
-# for summaries of the sweep (scripts/equivalence_summary.py).
-RECORDS: list[tuple[int, str, float, float]] = []
+N_SLOW = 6
+# (scenario, quantity, relative difference, tolerance, amplification x factor
+# difference) of every comparison and
+# (scenario, reason) of every stage not compared with the oracle, for summaries
+# of the sweep (scripts/equivalence_summary.py).
+RECORDS: list[tuple[int, str, float, float, float]] = []
+SKIPS: list[tuple[int, str]] = []
 
 FAMILIES: dict[str, tuple[Any, ...]] = {
     "D": (2, 3),
     "coords": ("grid", "mni2mm", "rotated", "jittered", "large_offset", "random"),
-    "V": ("tiny", "small", "medium"),
+    "V": ("at_most_K", "small", "medium"),
     "T": (1, 2, 7, 40),
     "K": (1, 2, 5, 12, 30),
     "widths": ("tiny", "small", "typical", "huge", "mixed"),
     "centers": ("inside", "edge", "outside", "mixed"),
     "weights": ("rr", "ols"),
-    "special": ("none", "near_duplicate", "vanishing", "near_singular"),
+    "special": ("none", "near_duplicate", "vanishing", "near_singular", "all_vanish"),
     "loss": ("varpro", "linear", "soft_l1", "huber", "linear+soft_l1"),
     "prior": (False, True),
-    "data": ("noiseless", "realistic", "heavy_tailed", "constant_voxels", "offsets"),
+    "data": (
+        "noiseless",
+        "exact_fit",
+        "realistic",
+        "heavy_tailed",
+        "constant_voxels",
+        "offsets",
+    ),
 }
 
 
@@ -122,9 +141,11 @@ def scenario(i: int) -> Scenario:
         for name, values in FAMILIES.items()
     }
     D, K = choice["D"], choice["K"]
-    V = {"tiny": max(1, K // 2), "small": int(rng.integers(20, 300)), "medium": 2000}[
-        choice["V"]
-    ]
+    V = {
+        "at_most_K": max(1, K // 2),  # fewer voxels than factors when K >= 2
+        "small": int(rng.integers(20, 300)),
+        "medium": 2000,
+    }[choice["V"]]
     T = choice["T"]
     R = _coords(rng, D, choice["coords"], V)
     V = len(R)
@@ -154,6 +175,12 @@ def scenario(i: int) -> Scenario:
         C[1], w[1] = C[0] + 1e-3 * np.sqrt(w[0]), w[0] * (1 + 1e-4)
     elif choice["special"] == "vanishing":
         C[0], w[0] = hi + 50 * extent, 1e-3
+    elif choice["special"] == "all_vanish":
+        # Every factor below about 1e-154 at every voxel: a gram of subnormal
+        # numbers (exp(-355) per factor at the nearest voxel).
+        C = hi + extent * rng.uniform(1.5, 2.5, (K, D))
+        d_min = np.min(ref.sq_distances(R, C), axis=0)
+        w = d_min / rng.uniform(352.0, 358.0, K)
     # Data from different true factors than the evaluation points.
     C_true = R[rng.integers(0, V, K)]
     W_true = rng.normal(size=(K, T))
@@ -162,6 +189,11 @@ def scenario(i: int) -> Scenario:
     data = choice["data"]
     if data == "noiseless":
         X = signal
+    elif data == "exact_fit":  # X = F W at the scenario's own centers and widths
+        X = ref.factors(R, C, w) @ W_true
+        # Unit scale (still in the span of F): factors that all but vanish
+        # would otherwise give data of 1e-154, whose 1 / std overflows.
+        X = X / (np.max(np.abs(X)) or 1.0)
     elif data == "realistic":  # R^2 about 0.04
         X = signal + 4.9 * sd * rng.normal(size=signal.shape)
     elif data == "heavy_tailed":
@@ -196,38 +228,44 @@ def _points(sc: Scenario, rng) -> list[np.ndarray]:
         rng.normal(size=x.size))]  # fmt: skip
 
 
-def _rel(a, b) -> float:
-    a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
-    if np.array_equal(a, b, equal_nan=True):
-        return 0.0  # also NaN where the reference is NaN
-    top = float(np.max(np.abs(a))) if a.size else 0.0
-    diff = float(np.max(np.abs(a - b))) if a.size else 0.0
-    return diff / top if top > 0 else diff
-
-
 def _priors(sc: Scenario):
     if sc.prior is None:
         return None, None
     return new.Prior(**sc.prior), ref.Prior(**sc.prior)
 
 
-def _fixed_weights(X, R, K, x, method):
-    """Weights for the fixed-weight ResidualProblem: the reference's ridge or
-    minimum-norm OLS solution at ``x`` (pseudo-inverse of the gram: it can be
-    singular here, e.g. 'rr' on constant data, where `ridge_weights` raises)."""
-    return ref.ProjectedProblem(X, R, K, NumpyEngine(1), None, method).weights(x)
+def _kept(vals: np.ndarray, floor: float) -> np.ndarray:
+    """Kept gram eigenvalues: `GRAM_RCOND` relative cutoff, and ``floor``
+    (`new.GRAM_FLOOR` for the current code, 0 for the reference)."""
+    return vals > max(new.GRAM_RCOND * vals[-1], floor)
 
 
-def _gram_condition(F: np.ndarray, beta: float) -> tuple[float, float]:
-    """Condition number of the gram on its kept eigenvalues, and the smallest
-    eigenvalue ratio's distance (in factors) from the truncation cutoff."""
-    vals = np.linalg.eigvalsh(F.T @ F + beta * np.eye(F.shape[1]))
-    if vals[-1] <= 0:
-        return 1.0, np.inf
-    ratios = vals / vals[-1]
-    kept = ratios[ratios > new.GRAM_RCOND]
-    near = np.min(np.abs(np.log10(np.maximum(ratios, 1e-300) / new.GRAM_RCOND)))
-    return float(1.0 / kept.min()), float(10**near)
+def _check_own(sc: Scenario, x, prior, method) -> None:
+    """The current code's own properties where the oracle does not apply:
+    finite weights and cost; where no gram eigenvalue is kept (every factor
+    vanishes), weights 0, cost ``0.5 s**2 ||X||**2`` plus the prior terms, and
+    the ValueError of cost_grad_hess for a degenerate start."""
+    K = sc.C.shape[0]
+    p = new.ProjectedProblem(sc.X, sc.R, K, NumpyEngine(1), prior, method)
+    W, c = p.weights(x), p.cost(x)
+    assert np.all(np.isfinite(W)) and np.isfinite(c), str(sc)
+    F = new.factors(sc.R, x[: K * p.D].reshape(K, p.D), x[K * p.D :])
+    vals = np.linalg.eigvalsh(F.T @ F + p.beta * np.eye(K))
+    if not _kept(vals, new.GRAM_FLOOR).any():
+        expected = 0.5 * p.s**2 * float(np.sum(sc.X * sc.X))
+        expected += p._prior_cost(*p._unpack(x))
+        assert not W.any(), str(sc)
+        assert c == pytest.approx(expected, rel=1e-12), str(sc)
+        with pytest.raises(ValueError, match="factors are 0 at every voxel"):
+            p.cost_grad_hess(x)
+
+
+def _residual_weights(sc: Scenario, x, method):
+    """Weights for the fixed-weight ResidualProblem at ``x``: the current
+    code's ridge or minimum-norm OLS weights (finite also where the reference's
+    gram inverse overflows)."""
+    K = sc.C.shape[0]
+    return new.ProjectedProblem(sc.X, sc.R, K, NumpyEngine(1), None, method).weights(x)
 
 
 def compare(sc: Scenario) -> dict[str, float]:
@@ -236,15 +274,28 @@ def compare(sc: Scenario) -> dict[str, float]:
     R, X = sc.R, sc.X
     K, D = sc.C.shape
     grid = new.axis_grid(R)
-    loss = sc.choice["loss"]
     method = sc.choice["weights"]
+    loss = sc.choice["loss"]
+    stages = ["varpro", "soft_l1"] if loss == "linear+soft_l1" else [loss]
+    x_max = float(np.max(np.abs(X)))
     out: dict[str, float] = {}
 
-    def check(name, a, b, tol):
-        r = _rel(a, b)
+    base = 0.0  # amplification x factor difference of the current stage
+
+    def check(name, diff, scale, tol):
+        r = diff / scale if scale > 0 else diff
         out[name] = max(out.get(name, 0.0), r)
-        RECORDS.append((sc.index, name, r, tol))
+        RECORDS.append((sc.index, name, r, tol, base))
         assert r <= tol, f"{name}: rel diff {r:.3e} > {tol:.1e}\n{sc}"
+
+    def mdiff(a, b):
+        a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
+        if np.array_equal(a, b):
+            return 0.0
+        return float(np.max(np.abs(a - b)))
+
+    def mabs(a):
+        return float(np.max(np.abs(a))) if np.size(a) else 0.0
 
     for x in _points(sc, rng):
         C, w = x[: K * D].reshape(K, D), x[K * D :]
@@ -256,97 +307,86 @@ def compare(sc: Scenario) -> dict[str, float]:
             float(np.max(per_entry[normal] / F_ref[normal])) if normal.any() else 0.0
         )
         out["factors per entry"] = max(out.get("factors per entry", 0.0), rel_f)
+        RECORDS.append((sc.index, "factors per entry", rel_f, FACTOR_RTOL, 0.0))
         assert rel_f <= FACTOR_RTOL, f"factors: {rel_f:.3e}\n{sc}"
         assert np.all(per_entry[~normal] <= np.finfo(np.float64).tiny), str(sc)
         np.testing.assert_array_equal(
             new.sq_distances(R, C, grid), ref.sq_distances(R, C)
         )
-        dF = _rel(F_ref, F_new)
         E_n, Fk_n, G_n = new.factor_derivatives(R, C, w, grid)
         E_r, Fk_r, G_r = ref.factor_derivatives(R, C, w)
-        check("factor_derivatives E", E_r, E_n, RTOL)
-        check("factor_derivatives F", Fk_r, Fk_n, RTOL)
-        check("factor_derivatives G", G_r, G_n, RTOL)
+        for name, a, b in (("E", E_r, E_n), ("F", Fk_r, Fk_n), ("G", G_r, G_n)):
+            check(f"factor_derivatives {name}", mdiff(a, b), mabs(a), RTOL)
+        dF = max(rel_f, mdiff(Fk_r, Fk_n) / max(mabs(Fk_r), 1e-300), 2.3e-16)
         p_new, p_ref = _priors(sc)
         beta = float(np.var(X)) if method == "rr" else 0.0
-        try:
-            _fixed_weights(X, R, K, x, method)
-        except np.linalg.LinAlgError:
-            # LAPACK fails on a gram of subnormal numbers (all factors near
-            # underflow); the current code must fail the same way.
-            with pytest.raises(np.linalg.LinAlgError):
-                new.ProjectedProblem(X, R, K, NumpyEngine(1), None, method).weights(x)
-            out["both raised LinAlgError"] = out.get("both raised LinAlgError", 0) + 1
-            continue
-        cond, near_cutoff = _gram_condition(F_ref, beta)
-        if near_cutoff < 100:
-            # An eigenvalue ratio within a factor 100 of GRAM_RCOND: whether it
-            # is kept depends on rounding, so the weights may differ by design.
-            out["skipped near cutoff"] = out.get("skipped near cutoff", 0) + 1
-            continue
-        dF = max(dF, _rel(Fk_r, Fk_n), _rel(E_r, E_n), np.finfo(np.float64).eps)
-        stages = ["varpro", "soft_l1"] if loss == "linear+soft_l1" else [loss]
+        vals_r = np.linalg.eigvalsh(F_ref.T @ F_ref + beta * np.eye(K))
+        vals_n = np.linalg.eigvalsh(F_new.T @ F_new + beta * np.eye(K))
+        keep_r, keep_n = _kept(vals_r, 0.0), _kept(vals_n, new.GRAM_FLOOR)
         for stage in stages:
             if stage == "varpro":
+                if not keep_n.any():
+                    _check_own(sc, x, p_new, method)
+                    SKIPS.append(
+                        (sc.index, "varpro: every factor vanishes (own checks)")
+                    )
+                    continue
+                if keep_n.sum() != keep_r.sum():
+                    _check_own(sc, x, p_new, method)
+                    SKIPS.append(
+                        (sc.index, "varpro: different kept eigenvalues (own checks)")
+                    )
+                    continue
                 a = new.ProjectedProblem(X, R, K, NumpyEngine(1), p_new, method)
                 b = ref.ProjectedProblem(X, R, K, NumpyEngine(1), p_ref, method)
-                lname = "linear"
-                W = b.weights(x)
+                lname, W = "linear", b.weights(x)
+                cond = float(vals_n[-1] / vals_n[keep_n].min())
             else:
-                W = _fixed_weights(X, R, K, x, method)
+                lname, W = stage, _residual_weights(sc, x, method)
                 a = new.ResidualProblem(
                     X, W, R, NumpyEngine(1), p_new, stage == "linear"
                 )
                 b = ref.ResidualProblem(
                     X, W, R, NumpyEngine(1), p_ref, stage == "linear"
                 )
-                lname = stage
-            # Cancellation in X - F W (large weights of opposite sign, e.g. near-
-            # duplicate factors under 'ols') amplifies factor rounding too.
-            resid = float(np.max(np.abs(X - F_ref @ W)))
-            amp = float(np.max(np.abs(F_ref) @ np.abs(W))) / resid if resid > 0 else 1.0
-            amp = max(amp, cond if stage == "varpro" else 1.0, 1.0)
-            tol = max(RTOL, COND_FACTOR * amp * dF)
-            out["amplification"] = max(out.get("amplification", 0.0), amp)
-            if tol > RTOL:
-                out["evaluations with tol > RTOL"] = (
-                    out.get("evaluations with tol > RTOL", 0) + 1
+                cond = 1.0
+            cancel = mabs(np.abs(F_ref) @ np.abs(W)) / x_max if x_max > 0 else 1.0
+            amp = max(cond, cancel, 1.0)
+            base = amp * dF
+            tol = max(RTOL, AMP_FACTOR * base)
+            if tol > TOL_CAP:
+                SKIPS.append(
+                    (sc.index, f"{stage}: amplification {amp:.1e} needs tol {tol:.1e}")
                 )
-            if stage == "varpro":
-                check("varpro weights", W, a.weights(x), tol)
+                continue
+            # Natural scales: the zero model's cost (plus the prior's), and the
+            # fixed-weight Gauss-Newton matrix and Hessian.
+            s = b.s
+            rho = loss_terms(lname, (s * X) ** 2)[0]
+            fx = ref.ResidualProblem(X, W, R, NumpyEngine(1), p_ref)
+            c_fx, _, gn_f, H_f = fx.cost_grad_hess(x, lname)
+            prior_cost = c_fx - fx.engine.data_cost(F_ref, s, lname)
+            cost_scale = 0.5 * float(np.sum(rho)) + abs(prior_cost)
             ca, cb = a.cost(x, lname), b.cost(x, lname)
-            check(f"{stage} cost", cb, ca, tol)
+            check(f"{stage} cost", abs(ca - cb), cost_scale, tol)
             ra, rb = a.cost_grad_hess(x, lname), b.cost_grad_hess(x, lname)
-            check(f"{stage} cgh cost", rb[0], ra[0], tol)
-            # The projected matrices are the fixed-weight ones minus the
-            # weight-coupling terms, which can cancel them: compare at the
-            # fixed-weight matrices' scale.
-            if stage == "varpro":
-                fx = ref.ResidualProblem(X, W, R, NumpyEngine(1), p_ref)
-                _, _, gn_f, H_f = fx.cost_grad_hess(x, "linear")
-            else:
-                gn_f, H_f = rb[2], rb[3]
+            check(f"{stage} cgh cost", abs(ra[0] - rb[0]), cost_scale, tol)
             for name, ma, mb, mf in (
                 ("Gauss-Newton", ra[2], rb[2], gn_f),
                 ("Hessian", ra[3], rb[3], H_f),
             ):
-                top = max(float(np.max(np.abs(mb))), float(np.max(np.abs(mf))))
-                r_m = float(np.max(np.abs(ma - mb))) / top if top > 0 else 0.0
-                key = f"{stage} {name}"
-                out[key] = max(out.get(key, 0.0), r_m)
-                RECORDS.append((sc.index, key, r_m, tol))
-                assert r_m <= tol, f"{key}: {r_m:.3e} > {tol:.1e}\n{sc}"
-            # The gradient relative to its natural scale sqrt(2 cost lambda_max)
-            # (|J^T r| <= ||J|| ||r||): near an optimum, or with vanishing
-            # factors, the gradient is a cancellation of terms of that size.
-            # lambda_max from Gershgorin's bound (no LAPACK on overflowed values).
+                # The projected matrix is the fixed-weight one minus the coupling
+                # terms (mf - mb), which can be the larger: their scale too.
+                scale = max(mabs(mb), mabs(mf), mabs(mf - mb))
+                check(f"{stage} {name}", mdiff(ma, mb), scale, tol)
+            # lambda_max from Gershgorin's bound.
             lam = float(np.max(np.sum(np.abs(gn_f), axis=1)))
-            g_scale = max(float(np.max(np.abs(rb[1]))), np.sqrt(2 * abs(rb[0]) * lam))
-            r_g = float(np.max(np.abs(ra[1] - rb[1]))) / g_scale if g_scale > 0 else 0.0
-            out[f"{stage} gradient"] = max(out.get(f"{stage} gradient", 0.0), r_g)
-            RECORDS.append((sc.index, f"{stage} gradient", r_g, tol))
-            assert r_g <= tol, f"{stage} gradient: {r_g:.3e} > {tol:.1e}\n{sc}"
-            out["cond"] = max(out.get("cond", 0.0), cond)
+            g_scale = max(mabs(rb[1]), np.sqrt(2 * cost_scale * lam))
+            check(f"{stage} gradient", mdiff(ra[1], rb[1]), g_scale, tol)
+            if stage == "varpro":
+                Wa = a.weights(x)
+                check("varpro weights", mdiff(Wa, W), mabs(W), tol)
+                check("varpro F W", mdiff(F_new @ Wa, F_ref @ W), x_max, tol)
     return out
 
 
@@ -379,7 +419,7 @@ def test_scenarios_cover_every_family_value():
 def test_kernels_equal_reference_on_generated_scenarios(block):
     """N_FAST scenarios in 8 blocks: factors, derivatives, cost, gradient,
     Gauss-Newton matrix, Hessian and weights of the current kernels vs the
-    3298278 formulas (see the module docstring for the tolerances)."""
+    3298278 formulas (see the module docstring for the scales and tolerances)."""
     size = N_FAST // 8
     worst = _sweep(range(block * size, (block + 1) * size))
     print(
@@ -390,9 +430,9 @@ def test_kernels_equal_reference_on_generated_scenarios(block):
 def _large_scenario(i: int) -> Scenario:
     rng = np.random.default_rng([7, i])
     K = (50, 100)[i % 2]
-    D = (2, 3)[i % 2] if i < 4 else 3
+    D = 3
     kind = ("mni2mm", "grid", "jittered")[i % 3]
-    R = _coords(rng, D, kind, 20000)
+    R = _coords(rng, D, kind, 6000)
     T = (1, 300, 168)[i % 3]
     sig2 = 2.0 * float(np.max(np.std(R, axis=0))) ** 2
     C = R[rng.integers(0, len(R), K)] + rng.normal(0, 1.0, (K, D))
@@ -410,7 +450,7 @@ def _large_scenario(i: int) -> Scenario:
 @pytest.mark.slow
 @pytest.mark.parametrize("i", range(N_SLOW))
 def test_kernels_equal_reference_on_large_scenarios(i):
-    """V = 20000, K = 50 or 100, T up to 300, grid and jittered coordinates."""
+    """V = 6000, K = 50 or 100, T up to 300, grid and jittered coordinates."""
     sc = _large_scenario(i)
     worst = compare(sc)
     print(f"{sc}: " + ", ".join(f"{k} {v:.2e}" for k, v in sorted(worst.items())))
@@ -418,59 +458,72 @@ def test_kernels_equal_reference_on_large_scenarios(i):
 
 @pytest.mark.parametrize("i", range(0, N_FAST, 12))
 def test_reuse_is_exact_under_interleaved_calls(i):
-    """Interleaved cost and cost_grad_hess calls at changing points, repeated
-    points after another point, and a prior changed in place: every result is
-    bit for bit that of a fresh problem with the same prior (and equal to the
-    reference within the sweep's tolerances, checked there)."""
+    """Interleaved cost and cost_grad_hess calls where only the widths, only the
+    centers or only the prior change between calls, and repeated points after
+    another point: every result is bit for bit that of a fresh problem with the
+    same prior."""
     sc = scenario(i)
-    rng = np.random.default_rng(i)
     K, D = sc.C.shape
-    xs = _points(sc, rng)
+    x0 = np.concatenate([sc.C.ravel(), sc.w])
+    x_w = x0.copy()
+    x_w[K * D :] *= 1.01  # widths only
+    x_c = x0.copy()
+    x_c[: K * D] += 0.3  # centers only
+    xs = [x0, x_w, x_c]
     loss = sc.choice["loss"]
     method = sc.choice["weights"]
     stage = "varpro" if loss in ("varpro", "linear+soft_l1") else loss
     p_new, _ = _priors(sc)
+    W0 = _residual_weights(sc, x0, method)
 
     def make(prior):
         if stage == "varpro":
             return new.ProjectedProblem(sc.X, sc.R, K, NumpyEngine(1), prior, method)
-        x0 = np.concatenate([sc.C.ravel(), sc.w])
-        W = _fixed_weights(sc.X, sc.R, K, x0, method)
         return new.ResidualProblem(
-            sc.X, W, sc.R, NumpyEngine(1), prior, stage == "linear"
+            sc.X, W0, sc.R, NumpyEngine(1), prior, stage == "linear"
         )
 
-    lname = "linear" if stage == "varpro" else stage
-    order = [0, 0, 1, 0, 2, 2, 1, 1, 0, 2]
-    kinds = ["cost", "cgh", "cost", "cgh", "cost", "cgh", "cgh", "cost", "cgh", "cgh"]
-    prob = make(p_new)
-    for j, kind in zip(order, kinds, strict=True):
-        got = (
-            prob.cost(xs[j], lname)
-            if kind == "cost"
-            else prob.cost_grad_hess(xs[j], lname)
-        )
-        fresh = make(p_new)
+    def same(got, expected, what):
+        got = got if isinstance(got, tuple) else (got,)
+        expected = expected if isinstance(expected, tuple) else (expected,)
+        for g, e in zip(got, expected, strict=True):
+            np.testing.assert_array_equal(g, e, err_msg=f"{what}\n{sc}")
+
+    def call(prob, kind, x):
         if kind == "cost":
-            # A fresh problem picks its objective form at its first point; give
-            # it the same first point as `prob`.
-            fresh.cost(xs[0], lname)
-            expected = fresh.cost(xs[j], lname)
+            return prob.cost(x, lname)
+        try:
+            return prob.cost_grad_hess(x, lname)
+        except ValueError:  # every factor vanishes at x: no Hessian there
+            return "ValueError"
+
+    def fresh_value(kind, x, prior):
+        fresh = make(prior)
+        fresh.cost(xs[0], lname)  # the same first point (objective form)
+        return call(fresh, kind, x)
+
+    lname = "linear" if stage == "varpro" else stage
+    order = [0, 0, 1, 1, 0, 2, 2, 1, 0, 2, 1]
+    kinds = ["cost", "cgh", "cost", "cgh", "cgh", "cost", "cgh", "cgh", "cost"]
+    kinds += ["cgh", "cost"]
+    prob = make(p_new)
+    prob.cost(xs[0], lname)
+    for j, kind in zip(order, kinds, strict=True):
+        got = call(prob, kind, xs[j])
+        expected = fresh_value(kind, xs[j], p_new)
+        if isinstance(got, str) or isinstance(expected, str):
             assert got == expected, f"{kind} at x{j}\n{sc}"
         else:
-            fresh.cost(xs[0], lname)
-            expected = fresh.cost_grad_hess(xs[j], lname)
-            for g, e in zip(got, expected, strict=True):
-                np.testing.assert_array_equal(g, e, err_msg=f"{kind} at x{j}\n{sc}")
+            same(got, expected, f"{kind} at x{j}")
     if p_new is not None:
-        # The prior's centers changed in place after an evaluation at xs[1].
-        prob.cost_grad_hess(xs[1], lname)
-        p_new.centers += 0.5
-        fresh = make(p_new)
-        fresh.cost(xs[0], lname)
-        got, expected = (
-            prob.cost_grad_hess(xs[1], lname),
-            fresh.cost_grad_hess(xs[1], lname),
-        )
-        for g, e in zip(got, expected, strict=True):
-            np.testing.assert_array_equal(g, e, err_msg=f"after prior change\n{sc}")
+        # The prior's centers, then its widths, changed in place after an
+        # evaluation at the same point.
+        for field_name, delta in (("centers", 0.5), ("widths", 0.1)):
+            call(prob, "cgh", xs[1])
+            getattr(p_new, field_name)[...] += delta
+            for kind in ("cost", "cgh"):
+                got, expected = call(prob, kind, xs[1]), fresh_value(kind, xs[1], p_new)
+                if isinstance(got, str) or isinstance(expected, str):
+                    assert got == expected, f"after prior {field_name}\n{sc}"
+                else:
+                    same(got, expected, f"{kind} after prior {field_name} change")

@@ -404,7 +404,7 @@ Hessian and weights agree with the earlier code to 6.3e-13, and gradients at
 the perturbed points to 1.4e-11 (relative to the largest entry); at the optima
 themselves the gradient is rounding noise around 0 and its relative difference
 (up to 1.6e-11 here, 1e-2 on synthetic data) is not meaningful. A sweep over
-480 generated scenarios is in :doc:`validation`.
+486 generated scenarios is in :doc:`validation`.
 
 Whole fits are determined only to the precision of the stopping rules, and
 move under any rounding change. Changing the data by a relative 1e-14, 1e-13

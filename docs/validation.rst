@@ -56,9 +56,9 @@ Hessian assembly, the projected objective from ``||X||**2 - <F^T X, W>``; see
 **Kernels over generated scenarios** (``tests/test_equivalence.py``). The
 oracle is ``tests/reference_kernels_3298278.py``, the kernel module of
 ``3298278`` unchanged. Each scenario draws one value from every family below,
-with seeded random sizes and parameters; 480 scenarios, plus 12 large ones
-(marked ``slow``), each at three points (the scenario's centers and widths and
-two perturbations of them):
+with seeded random sizes and parameters; 480 scenarios, plus 6 large ones
+(V = 6000, K = 50 and 100, T = 1, 168 and 300; marked ``slow``), each at three
+points (the scenario's centers and widths and two perturbations of them).
 
 .. list-table:: Scenario families
    :header-rows: 1
@@ -70,39 +70,50 @@ two perturbations of them):
    * - coordinates
      - regular grids with offset origins and anisotropic voxels (1 to 4 mm per
        axis), MNI-like 2 mm ellipsoid masks, rotated (oblique) grids, jittered
-       grids, grids offset by 1e6 mm, uniform random clouds; 152 of the 480 use
-       the per-axis path, the rest the direct one
+       grids, grids offset by 1e6 mm, uniform random clouds; both the per-axis
+       and the direct path occur
    * - sizes
-     - V from 1 (fewer voxels than factors) to 2000, T 1 to 40, K 1 to 30;
-       large: V = 20000, T 1 to 300, K 50 and 100
+     - V = K // 2 (fewer voxels than factors for K >= 2; V = 1 for K = 1), 20
+       to 300, or 2000; T 1 to 40; K 1 to 30
    * - widths
      - tiny (factors 0 or subnormal at almost every voxel), small, typical,
        huge (factors about 1 everywhere), mixed over ten decades
    * - centers
      - inside, at the edge of, and 2 to 5 extents outside the voxel cloud
+   * - special
+     - none; near-duplicate factors (1e-6 apart); a vanishing factor; a
+       near-singular gram; every factor below 1e-154 at every voxel
    * - weights
-     - ``'rr'``, ``'ols'``; near-duplicate factors (1e-6 apart), a vanishing
-       factor, a near-singular gram
+     - ``'rr'``, ``'ols'``
    * - loss
      - varpro (linear), linear (compressed residual problem), ``soft_l1``,
        ``huber``, ``linear+soft_l1``
    * - prior
      - none, a random HTFA prior
    * - data
-     - noiseless, noise for R² about 0.04, t-distributed (2 dof) noise, 30%
-       constant voxels, per-voxel mean offsets of about 100
+     - noiseless; an exact fit (X = F W at the scenario's own factors, so the
+       residual is 0); noise for R² about 0.04; t-distributed (2 dof) noise;
+       30% constant voxels; per-voxel mean offsets of about 100
 
-Compared: factors (per entry, normal numbers, 1e-12; subnormal entries within
-the smallest normal number), factor derivatives, cost, gradient, Gauss-Newton
-matrix, Hessian and weights (relative to the largest entry, 1e-10). Where the
-problem amplifies rounding (the gram's condition number, or cancellation in
-``X - F W``), the tolerance is that amplification times 100 times the measured
-factor difference; this applied to 910 of the 12445 comparisons. A
-comparison is skipped where a gram eigenvalue ratio is within a factor 100 of
-the truncation cutoff, where keeping it depends on rounding. Results
-(``scripts/equivalence_summary.py --slow``):
+Every quantity is compared on a scale that does not shrink with the fit:
+factors per entry (normal numbers, 1e-12; subnormal entries within the
+smallest normal number); costs relative to the cost of the zero model plus
+the prior terms; ``F W`` relative to ``max|X|``; weights relative to their largest
+entry; the gradient relative to ``sqrt(2 cost_scale lambda_max)`` of the
+fixed-weight Gauss-Newton matrix; the Gauss-Newton matrix and Hessian
+relative to the largest of their own, the fixed-weight matrices and the
+coupling terms between the two. The tolerance is 1e-10, or 100 x
+amplification x the measured factor difference where that is larger, with
+the amplification the gram's condition number on its kept eigenvalues
+(varpro) or ``max(|F| |W|) / max|X|`` (weights that cancel); the largest ratio of
+an observed difference to amplification x factor difference was 23.7 (the
+varpro Hessian, whose coupling terms use the gram inverse twice) and 1.3 for
+every other quantity. No tolerance may reach 1e-6.
 
-.. list-table:: Kernel differences, tolerance 1e-10 (median / max)
+Results over 14571 comparisons (``scripts/equivalence_summary.py --slow``).
+Tolerances: median 1e-10, maximum 9.0e-7, 297 above 1e-8.
+
+.. list-table:: Kernel differences (median / max)
    :header-rows: 1
 
    * - quantity
@@ -111,40 +122,64 @@ the truncation cutoff, where keeping it depends on rounding. Results
      - soft_l1
      - huber
    * - cost
-     - 1.2e-16 / 2.4e-12
-     - 0 / 2.3e-16
-     - 0 / 4.9e-16
-     - 0 / 2.3e-16
+     - 1.4e-16 / 7.7e-10
+     - 0 / 1.1e-17
+     - 0 / 1.9e-16
+     - 0 / 1.8e-15
    * - gradient
-     - 0 / 6.9e-14
-     - 0 / 5.4e-16
-     - 0 / 3.6e-15
+     - 4.7e-21 / 4.6e-10
+     - 0 / 1.1e-13
+     - 0 / 3.1e-13
      - 0 / 5.7e-14
    * - Gauss-Newton matrix
-     - 0 / 3.9e-13
-     - 0 / 4.4e-15
-     - 0 / 1.4e-14
-     - 0 / 5.7e-14
+     - 1.2e-27 / 1.2e-9
+     - 1.0e-41 / 1.1e-13
+     - 0 / 1.5e-13
+     - 0 / 4.4e-14
    * - Hessian
-     - 0 / 4.4e-12
-     - 0 / 1.0e-13
-     - 0 / 2.5e-14
-     - 0 / 8.5e-14
-   * - weights
-     - 0 / 7.8e-13
+     - 1.7e-21 / 1.3e-7
+     - 1.5e-24 / 1.7e-13
+     - 4.6e-46 / 4.5e-13
+     - 1.1e-29 / 9.2e-14
+   * - weights / F W
+     - 0 / 4.5e-10, 0 / 9.2e-10
      -
      -
      -
 
-Factors differed by at most 2.0e-13 per entry over all points, and their
-derivatives by 7.9e-14. All 45 scenarios that needed a raised tolerance above
-1e-6 had fewer voxels than factors; there the differences were at most 0.11 of
-it. The gradient is compared relative to its scale ``sqrt(2 cost
-lambda_max)`` and the projected matrices relative to the fixed-weight ones,
-since near an optimum or with vanishing factors they are cancellations of
-terms of that size. A third test interleaves cost and Hessian calls at
-changing points, repeats a point after another one and changes the prior in
-place: every result equals a fresh problem's bit for bit.
+Factors differed by at most 2.0e-13 per entry and their derivatives by
+1.1e-13. The largest varpro difference, 1.3e-7 in the Hessian at a
+tolerance of 5.4e-7, is in an 'ols' scenario with near-singular factors.
+
+Of the 1458 points, 132 varpro stages were not compared with the oracle:
+
+- 120 stages in 46 scenarios where every gram eigenvalue is below
+  ``GRAM_FLOOR`` (every factor below about 1e-146 at every voxel). The
+  earlier code's gram inverse overflowed at some of these points (NaN costs at
+  76 of 286) and fitted factors of 1e-155 with weights of 1e155 at the others;
+  the current code counts such factors as 0. There the test checks the
+  current code itself: weights 0, cost equal to the zero model's, and the
+  ValueError for a start there.
+- 12 stages in 8 scenarios (all 'ols'; huge widths, near-duplicate or
+  near-singular factors) whose amplification (the condition number of the
+  kept gram eigenvalues) is 6.3e6 to 6.1e7, just below the truncation cutoff
+  (6.7e7). Neither version's
+  weights are determined to better than about that times 1e-16 there; the
+  tolerance would have to be 1.1e-6 to 4.1e-4.
+
+63 varpro points have a gram eigenvalue ratio within a factor 100 of the
+truncation cutoff. At 57 both versions keep the same eigenvalues and they are
+compared as above; the other 6 are among the points where every factor
+vanishes.
+
+Error injection (each into the current code, then the sweep rerun): a
+relative 1e-9 change of one factor column failed 315 scenarios, of the
+identity cost 125, and of one row of the weights 77 (11 of them
+near-duplicate 'ols' scenarios). A reuse test interleaves cost and Hessian
+calls where only the widths, only the centers, or only the prior's centers or
+widths (in place) change, and repeats points after other ones: every result
+equals a fresh problem's bit for bit. A cache that ignored the widths failed
+14 of its 40 cases.
 
 **Whole fits, well-conditioned synthetic problems**
 (``tests/test_fit_equivalence.py``). 36 fits with the defaults (2D grids 20 x

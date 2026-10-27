@@ -17,8 +17,6 @@ here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(here, "..", "tests"))
 import test_fit_equivalence as fe  # noqa: E402
 
-import htfa  # noqa: E402
-
 commit = sys.argv[1]
 arrays = {}
 for i, case in enumerate(fe.FIT_CASES):
@@ -26,7 +24,7 @@ for i, case in enumerate(fe.FIT_CASES):
         if k in ("centers", "widths", "weights", "cost"):
             arrays[f"case{i}_{k}"] = v
 arrays["provenance"] = np.array(
-    f"commit {commit}; htfa from {os.path.dirname(htfa.__file__)}; numpy "
+    f"commit {commit}; TFA defaults, FIT_CASES of tests/test_fit_equivalence.py; numpy "
     f"{np.__version__}; {platform.platform()}; "
     f"{datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')}"
 )

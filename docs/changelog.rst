@@ -36,8 +36,15 @@ Added:
   ``||X||**2 - <F^T X, W>``. A cost evaluation is about 3 times and an
   accepted solver step 1.4 times faster on development_fmri (K = 50 and 100);
   whole fits 1.1 to 1.5 times (see :doc:`performance`).
-  Checked against the earlier formulas over 492 generated scenarios and 36
+  Checked against the earlier formulas over 486 generated scenarios and 36
   saved synthetic fits (see :doc:`validation`).
+- An ``'ols'`` fit whose width shrank (with a small ``lower_ratio``) until a
+  factor was 0 at every voxel raised ``LinAlgError`` in its final weights;
+  ``ridge_weights`` now falls back to the minimum-norm weights the varpro
+  objective uses (``gram_solve``). Gram eigenvalues below ``GRAM_FLOOR`` are
+  dropped, so factors below about 1e-146 everywhere count as 0 instead of
+  giving overflowed (NaN) costs, and a solve that starts where every factor
+  vanishes raises a ``ValueError`` that says what to change.
 - HTFA: a global stopping rule that also stops on a plateau of the template
   change or on a stalled summed local objective (``converged_reason_``), and
   ``template_update='fixed'`` and ``'empirical'`` next to BrainIAK's update

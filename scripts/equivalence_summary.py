@@ -1,9 +1,9 @@
 """Distribution of the kernel differences in tests/test_equivalence.py's sweep.
 
 Runs the fast sweep (and, with ``--slow``, the large scenarios) and prints, per
-compared quantity, how many comparisons used the plain tolerance (RTOL) and
-the median and maximum relative difference among them, and the same for the
-comparisons whose tolerance the conditioning raised.
+compared quantity, the number of comparisons and the median and maximum
+relative difference; the distribution of the tolerances; and the stages not
+compared with the oracle, by reason.
 
     python scripts/equivalence_summary.py [--slow]
 """
@@ -19,32 +19,42 @@ sys.path.insert(
 )
 import test_equivalence as eq  # noqa: E402
 
-indices = list(range(eq.N_FAST))
-for i in indices:
-    eq.compare(eq.scenario(i))
+scenarios = [eq.scenario(i) for i in range(eq.N_FAST)]
 if "--slow" in sys.argv:
-    for i in range(eq.N_SLOW):
-        eq.compare(eq._large_scenario(i))
-        indices.append(10_000 + i)
-plain: dict[str, list[float]] = defaultdict(list)
-raised: dict[str, list[tuple[float, float, int]]] = defaultdict(list)
-for index, name, rel, tol in eq.RECORDS:
-    if tol <= eq.RTOL:
-        plain[name].append(rel)
-    else:
-        raised[name].append((rel, tol, index))
-print(f"{len(eq.RECORDS)} comparisons over {len(indices)} scenarios")
-print("| quantity | n (tol 1e-10) | median | max | n (raised tol) | max diff / tol |")
-print("|-|-|-|-|-|-|")
-for name in sorted(set(plain) | set(raised)):
-    p = np.array(plain.get(name, [np.nan]))
-    r = raised.get(name, [])
-    ratio = max((d / t for d, t, _ in r), default=float("nan"))
-    print(
-        f"| {name} | {len(plain.get(name, []))} | {np.nanmedian(p):.1e} | "
-        f"{np.nanmax(p):.1e} | {len(r)} | {ratio:.1e} |"
-    )
-loose = sorted({i for v in raised.values() for _, t, i in v if t > 1e-6})
-print("scenarios with a tolerance above 1e-6 (degenerate):", loose)
-for i in loose:
-    print("  ", eq.scenario(i) if i < 10_000 else eq._large_scenario(i - 10_000))
+    scenarios += [eq._large_scenario(i) for i in range(eq.N_SLOW)]
+for sc in scenarios:
+    eq.compare(sc)
+diffs: dict[str, list[float]] = defaultdict(list)
+for _, name, rel, _, _ in eq.RECORDS:
+    diffs[name].append(rel)
+tols = np.array([tol for *_, tol, _ in eq.RECORDS])
+print(f"{len(eq.RECORDS)} comparisons over {len(scenarios)} scenarios")
+print("| quantity | n | median | max |")
+print("|-|-|-|-|")
+for name in sorted(diffs):
+    v = np.array(diffs[name])
+    print(f"| {name} | {v.size} | {np.median(v):.1e} | {v.max():.1e} |")
+print(
+    f"tolerances: median {np.median(tols):.1e}, max {tols.max():.1e}, "
+    f"{np.sum(tols > 1e-8)} above 1e-8, {np.sum(tols >= 1e-6)} at or above 1e-6"
+)
+
+
+def reason_of(r: str) -> str:
+    """The skip reason without its numbers."""
+    if "amplification" in r:
+        return r.split(":")[0] + ": amplification too large"
+    return r.split(" (")[0]
+
+
+groups: dict[str, list[int]] = defaultdict(list)
+for i, r in eq.SKIPS:
+    groups[reason_of(r)].append(i)
+print(f"{len(eq.SKIPS)} stages not compared with the oracle:")
+for reason, idx in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+    scen = sorted(set(idx))
+    more = " ..." if len(scen) > 12 else ""
+    print(f"  {len(idx):4d}  {reason}  ({len(scen)} scenarios: {scen[:12]}{more})")
+for i, r in eq.SKIPS:
+    if "amplification" in r:
+        print("   ", r, "|", next(sc for sc in scenarios if sc.index == i))
