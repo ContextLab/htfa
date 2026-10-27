@@ -165,7 +165,16 @@ Other settings that change the cost of a fit
   to 8.0 s per start at ``V = 69585``, ``K = 100`` at a load average of 7; 55 to 83 s
   under a load average of 100 to 190).
 - ``n_jobs`` runs the per-subject fits of an HTFA in parallel (NumPy backend).
-  ``n_threads`` sets the BLAS/OpenMP threads of each subject fit; by default
+  Every subject fit runs BLAS on one thread, serial or parallel, so that the
+  results do not depend on ``n_jobs`` (BLAS rounds differently with one thread
+  than with several, and joblib gives each worker ``cpu_count // n_jobs``
+  threads). On development_fmri subject 0 (Accelerate, 12 cores, load average
+  3 to 6, mean of two fits) one BLAS thread made a fit 12% slower at ``K = 50``
+  (15.7 s instead of 14.1 s) and 17% slower at ``K = 100`` (28.9 s instead of
+  24.7 s); workers that joblib already limits to one thread
+  (``n_jobs > cpu_count / 2``) lose nothing. A standalone :class:`htfa.TFA`
+  keeps the BLAS threads of the caller.
+  ``n_threads`` sets the OpenMP and NumPy engine threads of each subject fit; by default
   HTFA takes the lowest limit already in effect (``OMP_NUM_THREADS``,
   ``OPENBLAS_NUM_THREADS``, an enclosing ``threadpoolctl.threadpool_limits``),
   or all CPUs, divided among the ``n_jobs`` workers.

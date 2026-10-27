@@ -52,10 +52,13 @@ Added:
 - Of several candidate starts that reach the same optimum (costs within a
   relative 1e-9), the first in ``init`` order wins, so that the choice does not
   depend on the thread count.
-- Every K-means start runs on one OpenMP thread, with the limit set in the
-  worker thread that runs it (the OpenMP thread count is per thread), so that
-  identical fits get identical starts: multithreaded K-means sums in a varying
-  order.
+- Every K-means runs on one OpenMP and one BLAS thread, with the limits set
+  in the thread that runs it (the OpenMP thread count and Accelerate's
+  threading mode are per thread), so that identical fits get identical starts:
+  multithreaded K-means sums in a varying order.
+- HTFA's results do not depend on ``n_jobs``: every subject fit runs BLAS on
+  one thread, serial or parallel (before, 8 subjects at K=100 with n_jobs=8
+  and n_jobs=4 gave different templates).
 - A stopping rule for subsampled fits: the fit stops when the lowest objective
   so far (on a fixed evaluation subsample) has fallen by less than a relative
   1e-4 per iteration over the last three iterations, after at least five

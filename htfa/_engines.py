@@ -7,17 +7,21 @@ the structured solver (see `gauss_newton`). Prior terms and the mapping to the
 parameter vector are handled by :class:`htfa._kernels.ResidualProblem`.
 """
 
+import ctypes
 import importlib.util
 import os
+import sys
 from collections import deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
+from functools import cache
 from typing import Any, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
+from threadpoolctl import threadpool_limits
 
 BACKENDS = ("auto", "numpy", "cpu", "torch", "cuda", "mps")
 # Minimum V*T*K for 'auto' to prefer a GPU. Measured with the structured solver
@@ -42,6 +46,9 @@ CHUNK_ELEMENTS = 2**21
 MIN_CHUNK_ROWS = 128
 GPU_CHUNK_ELEMENTS = 2**23
 _THREADS: ContextVar[int | None] = ContextVar("htfa_engine_threads", default=None)
+_ONE_BLAS_THREAD: ContextVar[bool] = ContextVar("htfa_one_blas_thread", default=False)
+# Accelerate's BLASSetThreading mode for one thread (BLAS_THREADING_SINGLE_THREADED).
+ACCELERATE_SINGLE_THREADED = 1
 
 
 @contextmanager
@@ -56,6 +63,71 @@ def thread_limit(n: int) -> Iterator[None]:
         yield
     finally:
         _THREADS.reset(token)
+
+
+@cache
+def _accelerate() -> Any:
+    """macOS Accelerate with ``BLASSetThreading`` (macOS 15+), else None.
+
+    threadpoolctl does not see Accelerate (NumPy's and SciPy's BLAS on macOS),
+    and Accelerate reads ``VECLIB_MAXIMUM_THREADS`` only when it loads; its
+    per-thread mode can still be set at run time.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        lib = ctypes.CDLL("/System/Library/Frameworks/Accelerate.framework/Accelerate")
+        get, put = lib.BLASGetThreading, lib.BLASSetThreading
+    except (OSError, AttributeError):
+        return None
+    get.restype, put.restype = ctypes.c_int, ctypes.c_int
+    put.argtypes = [ctypes.c_int]
+    return lib
+
+
+def _single_threaded_accelerate() -> int | None:
+    """Put Accelerate on one thread in the calling thread; return the previous
+    mode (None without Accelerate)."""
+    lib = _accelerate()
+    if lib is None:
+        return None
+    previous = int(lib.BLASGetThreading())
+    lib.BLASSetThreading(ACCELERATE_SINGLE_THREADED)
+    return previous
+
+
+@contextmanager
+def single_threaded_accelerate() -> Iterator[None]:
+    """Accelerate on one thread in the calling thread inside the block (its mode
+    is per thread); no effect without Accelerate."""
+    previous = _single_threaded_accelerate()
+    try:
+        yield
+    finally:
+        if previous is not None:
+            _accelerate().BLASSetThreading(previous)
+
+
+@contextmanager
+def one_blas_thread() -> Iterator[None]:
+    """Run BLAS on one thread inside the block, here and in the chunk threads
+    of NumPy engines.
+
+    BLAS rounds differently with one thread than with several (Accelerate:
+    one vs any other count; OpenBLAS: from one count to the next, 1e-13 on CI),
+    and joblib's loky workers get thread variables of ``cpu_count // n_jobs``.
+    `htfa.htfa.HTFA` fits every subject inside this block, serial or parallel,
+    so that its results do not depend on ``n_jobs``. The engine's chunk threads
+    still run in parallel (see `thread_limit`); their chunks do not depend on
+    the thread count. (K-means runs single-threaded on any thread; see
+    `htfa._kernels.kmeans`.)
+    """
+    token = _ONE_BLAS_THREAD.set(True)
+    try:
+        with threadpool_limits(limits=1, user_api="blas"), single_threaded_accelerate():
+            yield
+    finally:
+        _ONE_BLAS_THREAD.reset(token)
 
 
 def default_threads() -> int:
@@ -188,7 +260,11 @@ class _ChunkedDataTerm:
             yield from (fn(sl) for sl in slices)
             return
         window = 2 * self.n_threads
-        with ThreadPoolExecutor(min(self.n_threads, len(slices))) as pool:
+        one = _ONE_BLAS_THREAD.get()
+        with ThreadPoolExecutor(
+            min(self.n_threads, len(slices)),
+            initializer=_single_threaded_accelerate if one else None,
+        ) as pool:
             pending: deque[Any] = deque()
             for sl in slices:
                 pending.append(pool.submit(fn, sl))

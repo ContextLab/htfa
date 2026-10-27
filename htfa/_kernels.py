@@ -18,7 +18,13 @@ from scipy.sparse.linalg import LinearOperator
 from sklearn.cluster import KMeans
 from threadpoolctl import threadpool_limits
 
-from htfa._engines import EPS, Engine, NumpyEngine, loss_terms
+from htfa._engines import (
+    EPS,
+    Engine,
+    NumpyEngine,
+    loss_terms,
+    single_threaded_accelerate,
+)
 
 Array = NDArray[np.float64]
 
@@ -213,16 +219,19 @@ def kmeans(
     random_state: int | np.random.RandomState | None,
     sample_weight: Array | None = None,
 ) -> KMeans:
-    """K-means++ (``n_init=10``) on ``R``, fitted on one OpenMP thread.
+    """K-means++ (``n_init=10``) on ``R``, fitted on one OpenMP and one BLAS
+    thread.
 
     Multithreaded K-means sums in a varying order: starts differed by 1e-14
     between identical runs, which at K=100 on real data led TFA to different
     optima. The limit is set here, in the thread that runs the K-means, because
     the OpenMP thread count is per thread: a limit set in another thread (for
-    example the one that starts a thread pool) does not apply.
+    example the one that starts a thread pool) does not apply. Accelerate's
+    BLAS mode is per thread as well, and rounds differently on one thread than
+    on several (sklearn limits other BLAS libraries to one thread itself).
     """
     km = KMeans(n_clusters=K, init="k-means++", n_init=10, random_state=random_state)
-    with threadpool_limits(limits=1, user_api="openmp"):
+    with threadpool_limits(limits=1, user_api="openmp"), single_threaded_accelerate():
         km.fit(R, sample_weight=sample_weight)
     return km
 

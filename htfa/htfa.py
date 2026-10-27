@@ -13,7 +13,7 @@ from sklearn.base import BaseEstimator
 from sklearn.exceptions import ConvergenceWarning
 from threadpoolctl import threadpool_info, threadpool_limits
 
-from htfa._engines import select_engine, thread_limit
+from htfa._engines import one_blas_thread, select_engine, thread_limit
 from htfa._kernels import Prior, max_sigma
 from htfa._matching import match_factors
 from htfa.tfa import TFA
@@ -190,6 +190,7 @@ def _fit_subject(
     # Filters are set here so that they also apply inside loky workers.
     with (
         threadpool_limits(n_threads),
+        one_blas_thread(),
         thread_limit(n_threads),
         warnings.catch_warnings(),
     ):
@@ -244,9 +245,14 @@ class HTFA(BaseEstimator):
         Passed to each subject's `TFA` (``init`` and ``n_screen_iter`` only matter
         for the template fits, the only ones with several candidate starts).
     n_jobs : int, optional
-        Number of joblib workers for the subject fits (numpy engines only).
+        Number of joblib workers for the subject fits (numpy engines only). The
+        results do not depend on it: every subject fit, serial or parallel, runs
+        BLAS on one thread (`htfa._engines.one_blas_thread`), since BLAS rounds
+        differently with different thread counts and the workers get fewer.
     n_threads : int, optional
-        BLAS/OpenMP (and NumPy engine) threads per subject fit. ``None`` uses the
+        OpenMP and NumPy engine threads per subject fit (the engine splits each
+        pass into fixed voxel chunks, so the count does not change results;
+        BLAS runs on one thread, see ``n_jobs``). ``None`` uses the
         lowest thread count the loaded BLAS libraries currently report (the
         OpenMP libraries when no BLAS library is visible to
         ``threadpoolctl.threadpool_info``): a limit set by ``OMP_NUM_THREADS``,

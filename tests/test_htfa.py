@@ -1,5 +1,6 @@
 """Tests for the HTFA estimator."""
 
+import os
 import time
 import warnings
 
@@ -168,6 +169,36 @@ def test_htfa_parallel_equals_serial() -> None:
     for s in range(3):
         np.testing.assert_allclose(a.centers_[s], b.centers_[s], **close)
         np.testing.assert_allclose(a.weights_[s], b.weights_[s], **close)
+
+
+def test_htfa_bitwise_independent_of_n_jobs() -> None:
+    """joblib's loky workers get BLAS thread variables of cpu_count // n_jobs
+    (1 from n_jobs > cpu_count / 2), and BLAS rounds differently with one
+    thread than with several (Accelerate) or with every thread count (OpenBLAS,
+    1e-13 on CI). Measured before every subject fit ran on one BLAS thread (12
+    cores, 7 workers): this case gave different subject centers; on real data
+    at K=100 (8 subjects, n_jobs=8 vs 4) a different template and optima.
+    K=32: at K=20, repeated serial fits in one process already differ on macOS
+    (Accelerate's rounding depends on the alignment of small arrays), which
+    would hide the n_jobs effect; from K=31 on they were identical."""
+    n = max(2, (os.cpu_count() or 1) // 2 + 1)
+    Xs, Rs, _ = make_htfa_data(
+        n_subjects=n, grid_shape=(20, 20, 20), n_samples=60, K=20, random_state=0
+    )
+    kw = {"K": 32, "init": "ncorr", "max_global_iter": 2, "random_state": 0}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        serial = HTFA(n_jobs=1, **kw).fit(Xs, Rs)
+        parallel = HTFA(n_jobs=n, **kw).fit(Xs, Rs)
+    for s in range(n):
+        diff = np.abs(serial.centers_[s] - parallel.centers_[s]).max()
+        print(f"subject {s}: max |center difference| {diff:.3g}")
+    np.testing.assert_array_equal(serial.global_centers_, parallel.global_centers_)
+    np.testing.assert_array_equal(serial.global_widths_, parallel.global_widths_)
+    for s in range(n):
+        np.testing.assert_array_equal(serial.centers_[s], parallel.centers_[s])
+        np.testing.assert_array_equal(serial.widths_[s], parallel.widths_[s])
+        np.testing.assert_array_equal(serial.weights_[s], parallel.weights_[s])
 
 
 def test_htfa_different_voxel_counts_per_subject() -> None:
