@@ -1,10 +1,11 @@
-"""Does OpenBLAS compute the same bits in every fresh process on this machine?
+"""Does every fresh process on this machine pick the same BLAS kernels and
+compute the same bits?
 
-Driver: starts N fresh processes; each records the CPU number it runs on just
-before NumPy (and OpenBLAS) load, then hashes products on one BLAS thread at
-several shapes, including long inner dimensions (GEMM blocking along K) and
-the shapes of an HTFA subject fit. Prints per-process lines and a summary of
-distinct fingerprints.
+Each child records: the CPU number before NumPy loads, NumPy's runtime SIMD
+features, every OpenBLAS library's core name and config (numpy's and
+scipy's), and hashes of NumPy (numpy's OpenBLAS) and SciPy (scipy's OpenBLAS)
+products on one BLAS thread, at the shapes of an HTFA subject fit and at long
+inner dimensions. The driver prints the distinct child records.
 usage: python blas_fingerprint.py N
 """
 
@@ -27,50 +28,73 @@ def cpu_number():
 
 def child():
     cpu_before = cpu_number()
+    import ctypes
     import hashlib
 
     import numpy as np
+    import scipy.linalg
+    from numpy._core._multiarray_umath import __cpu_features__ as feats
     from threadpoolctl import threadpool_info, threadpool_limits
 
     def h(a):
         return hashlib.sha1(np.ascontiguousarray(a).tobytes()).hexdigest()[:6]
 
+    libs = []
+    for p in threadpool_info():
+        if p["internal_api"] != "openblas":
+            continue
+        lib = ctypes.CDLL(p["filepath"])
+        names = [n for n in dir(lib)]  # noqa: F841 (ctypes resolves lazily)
+        cfg = core = "?"
+        for prefix in ("scipy_openblas_", "scipy_openblas64_", "openblas_", ""):
+            try:
+                f = getattr(lib, f"{prefix}openblas_get_config" if prefix else "openblas_get_config")
+                f.restype = ctypes.c_char_p
+                cfg = f().decode()
+                g = getattr(lib, f"{prefix}openblas_get_corename" if prefix else "openblas_get_corename")
+                g.restype = ctypes.c_char_p
+                core = g().decode()
+                break
+            except AttributeError:
+                continue
+        libs.append(f"{os.path.basename(p['filepath'])[:24]}:{core}:{cfg}")
+    simd = ",".join(k for k, v in feats.items() if v and k.startswith("AVX512"))
     rng = np.random.default_rng(0)
-    shapes = {
-        "gemm 64x20000x64": (rng.standard_normal((64, 20000)), rng.standard_normal((20000, 64))),
-        "gemm 300x3000x300": (rng.standard_normal((300, 3000)), rng.standard_normal((3000, 300))),
-        "gemm 8000x60x36": (rng.standard_normal((8000, 60)), rng.standard_normal((60, 36))),
-        "gemm 36x8000x60": (rng.standard_normal((36, 8000)), rng.standard_normal((8000, 60))),
-        "gemm 144x8000x60": (rng.standard_normal((144, 8000)), rng.standard_normal((8000, 60))),
-        "gemm 128x60x36": (rng.standard_normal((128, 60)), rng.standard_normal((60, 36))),
-    }
     S = rng.standard_normal((8000, 144))
+    A = S.T @ S / 8000 + np.eye(144)
+    B = rng.standard_normal((1000, 3000))
+    C = B @ B.T / 3000 + np.eye(1000)
+    M = rng.standard_normal((36, 36))
+    M = M @ M.T + 36 * np.eye(36)
+    g = rng.standard_normal(144)
     out = {}
     with threadpool_limits(1, user_api="blas"):
-        for name, (a, b) in shapes.items():
-            out[name] = h(a @ b)
-        out["syrk 144x8000"] = h(S.T @ S)
-        out["gemv 8000x144"] = h(S @ S[0])
-    arch = sorted({p.get("architecture") for p in threadpool_info() if p["user_api"] == "blas"})
-    print("FP", cpu_before, cpu_number(), arch, " ".join(f"{k}={v}" for k, v in out.items()))
+        out["np 64x20000x64"] = h(rng.standard_normal((64, 20000)) @ rng.standard_normal((20000, 64)))
+        out["np syrk"] = h(S.T @ S)
+        out["np 8000x36x36"] = h(S[:, :36] @ M)
+        out["sp cho144"] = h(scipy.linalg.cho_solve(scipy.linalg.cho_factor(A), g))
+        out["sp cho1000"] = h(scipy.linalg.cho_factor(C)[0])
+        out["sp eigh36"] = h(scipy.linalg.eigh(M)[1])
+        out["np eigh36"] = h(np.linalg.eigh(M)[1])
+        out["sp gemm"] = h(scipy.linalg.blas.dgemm(1.0, B, B.T))
+    print("REC", cpu_before, "|", simd, "|", " ; ".join(libs), "|",
+          " ".join(f"{k}={v}" for k, v in out.items()), flush=True)
 
 
 if len(sys.argv) > 1 and sys.argv[1] == "--child":
     child()
     sys.exit(0)
 n = int(sys.argv[1])
-counts = collections.Counter()
-by_cpu = collections.defaultdict(collections.Counter)
+recs = collections.Counter()
 for i in range(n):
-    line = subprocess.run([sys.executable, __file__, "--child"], capture_output=True,
-                          text=True).stdout.strip()
-    print(i, line, flush=True)
-    if line.startswith("FP"):
-        parts = line.split(" ", 4)
-        fp = line.split("] ", 1)[1]
-        counts[fp] += 1
-        by_cpu[parts[1]][fp[:60]] += 1
-print("\nSUMMARY distinct fingerprints:", len(counts))
-for fp, c in counts.items():
-    print(f"  {c:3d}  {fp}")
-print("by CPU number at load:", {k: dict(v) for k, v in sorted(by_cpu.items())})
+    res = subprocess.run([sys.executable, __file__, "--child"], capture_output=True, text=True)
+    line = next((s for s in res.stdout.splitlines() if s.startswith("REC")), None)
+    if line is None:
+        print(i, "ERROR", res.stderr[-400:], flush=True)
+        continue
+    recs[line.split("|", 1)[1]] += 1
+    if i < 2:
+        print(i, line, flush=True)
+print("\nSUMMARY distinct records (ignoring CPU number):", len(recs))
+for rec, c in recs.items():
+    print(f"  {c:3d} {rec}")
