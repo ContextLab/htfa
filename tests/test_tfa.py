@@ -830,7 +830,13 @@ def test_stopping_objective_subsample_sizes():
     assert TFA(voxel_ratio=0.5)._eval_sizes(1600, 100, (800, 100)) == (1600, 100)
 
 
-def test_ols_fit_with_a_factor_that_vanishes_finishes():
+# (mode, seed) of this setup where a factor vanishes. Measured over seeds
+# 0-299: exact 3, 22, 27, 33, ...; fast 54, 166, 173, 251, 257.
+VANISHING_CASES = [("exact", 3), ("fast", 54)]
+
+
+@pytest.mark.parametrize(("mode", "seed"), VANISHING_CASES)
+def test_ols_fit_with_a_factor_that_vanishes_finishes(mode, seed):
     """With 'ols' and a small lower_ratio a width can shrink until its factor is
     0 at every voxel; the full-data weights then had a singular gram and
     ridge_weights raised LinAlgError (seeds 0, 3, 4, 18 of this setup). Now
@@ -842,12 +848,11 @@ def test_ols_fit_with_a_factor_that_vanishes_finishes():
     eigenvector carries weights of size max|W|; summed over the K - 1 kept
     directions, |w| <= (K - 1) eps cond max|W|. Measured: 8.6e-10 of the
     largest weight (macOS, Accelerate) and 1.2e-8 (macOS runners with Python
-    3.10 and 3.11), with eps cond = 1.4e-8 here. The fit runs in mode 'exact':
-    in mode 'fast' no factor vanished for any of seeds 0-29 of this setup
-    (exact: seeds 3, 22, 27)."""
+    3.10 and 3.11), with eps cond = 1.4e-8 here. Each mode runs on a seed
+    where its fit reaches a vanished factor (VANISHING_CASES)."""
     from htfa._kernels import GRAM_RCOND, gram_solve
 
-    rng = np.random.default_rng(3)
+    rng = np.random.default_rng(seed)
     R, X = rng.uniform(0, 100, (30, 3)), rng.normal(size=(30, 10))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ConvergenceWarning)
@@ -856,8 +861,8 @@ def test_ols_fit_with_a_factor_that_vanishes_finishes():
             weight_method="ols",
             lower_ratio=1e-5,
             max_iter=20,
-            mode="exact",
-            random_state=3,
+            mode=mode,
+            random_state=seed,
         ).fit(X, R)
     F = factors(R, m.centers_, m.widths_)
     vanished = ~F.any(axis=0)

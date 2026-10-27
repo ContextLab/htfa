@@ -17,11 +17,20 @@ Writes ``modes.csv`` (one row per subject, K and mode) and ``modes_<K>_<mode>_
 <subject>.npz`` to the output directory and ``docs/_static/validation/
 modes.csv`` (summary per K and mode).
 
-``--htfa`` instead fits `htfa.HTFA` (defaults, K = 50, ``n_jobs=6``) to the
-twelve adults in both modes and prints the wall time, the summed final local
-objective, the distance between the two templates and validation_decoding's
-accuracy with the local weights and with ridge weights on the template
-factors; writes ``modes_htfa.csv`` to ``docs/_static/validation/``.
+``--htfa [MAX_GLOBAL_ITER]`` instead fits `htfa.HTFA` (defaults, K = 50,
+``n_jobs=6``, ``max_global_iter`` 10 unless given) to the twelve adults in
+each `HTFA_VARIANTS` entry: both modes on the data as is, and on data changed
+by a relative 1e-12 (three seeds in exact mode, one in fast mode), the
+baseline for how far two fits of one mode end apart. For the full runs it
+records the wall time, the summed final local objective and
+validation_decoding's accuracy (local weights, and ridge weights on the
+template factors); for the training segments the held-out R^2 of each
+subject's local factors. Every variant's template and its template subject's
+stage-0 fit are compared with the exact fit's (median and max distance of
+matched centers). With another ``max_global_iter`` only the full runs of
+`HTFA_VARIANTS_LONG` are fitted. Writes ``modes_htfa.csv``
+(``modes_htfa_<N>.csv`` for another ``max_global_iter``) to
+``docs/_static/validation/``.
 """
 
 import itertools
@@ -82,42 +91,119 @@ def decoding(runs: list, factor_sets: list) -> dict[int, float]:
     return {w: float(np.mean([a[w] for a in per_set])) for w in WINDOWS}
 
 
-def htfa_comparison(runs: list) -> None:
-    rows, templates = [], {}
-    for mode in MODES:
-        t0 = time.perf_counter()
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", ConvergenceWarning)
-            model = HTFA(K=50, mode=mode, n_jobs=6, random_state=SEED).fit(
-                [X for X, _ in runs], [R for _, R in runs]
-            )
-        seconds = time.perf_counter() - t0
-        C, w = model.global_centers_, model.global_widths_
-        templates[mode] = C
-        local = decoding_accuracy([zt(W) for W in model.weights_])
-        template = decoding_accuracy(
-            [zt(ridge_weights(X, factors(R, C, w))) for X, R in runs]
+# HTFA variants: (mode, perturbation seed); seed 0 is the data as is, seeds
+# >= 1 multiply every subject's data by (1 + PERTURBATION * N(0, 1)), the
+# rounding-level baseline for how far apart two fits of the same mode end.
+HTFA_VARIANTS = (
+    ("exact", 0),
+    ("fast", 0),
+    ("exact", 1),
+    ("exact", 2),
+    ("exact", 3),
+    ("fast", 1),
+)
+# With another max_global_iter (runs to the stopping rule): fewer variants,
+# full runs only.
+HTFA_VARIANTS_LONG = (("exact", 0), ("exact", 1), ("fast", 0), ("fast", 1))
+PERTURBATION = 1e-12
+
+
+def _perturbed(X: np.ndarray, seed: int, subject: int) -> np.ndarray:
+    if seed == 0:
+        return X
+    rng = np.random.default_rng([seed, subject])
+    return X * (1.0 + PERTURBATION * rng.standard_normal(X.shape))
+
+
+def _matched_distance(A: np.ndarray, B: np.ndarray) -> np.ndarray:
+    """Distances (mm) between the centers of A and the matched centers of B."""
+    return np.linalg.norm(B[match_factors(A, B)] - A, axis=1)
+
+
+def htfa_comparison(runs: list, ids: list, max_global_iter: int) -> None:
+    """HTFA in every HTFA_VARIANTS entry on the full runs (objective, template,
+    decoding) and on the training segments (held-out R^2 of each subject's
+    local factors, scored as in `validation_heldout`)."""
+    segments = [split(sid) for sid in ids]
+    rows, fits = [], {}
+    long = max_global_iter != 10
+    for mode, seed in HTFA_VARIANTS_LONG if long else HTFA_VARIANTS:
+        for segment in ("full",) if long else ("full", "train"):
+            if segment == "full":
+                data = list(runs)
+            else:
+                data = [(Xtr, R) for Xtr, _, R, _ in segments]
+            Xs = [_perturbed(X, seed, s) for s, (X, _) in enumerate(data)]
+            t0 = time.perf_counter()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", ConvergenceWarning)
+                model = HTFA(
+                    K=50,
+                    mode=mode,
+                    max_global_iter=max_global_iter,
+                    n_jobs=6,
+                    random_state=SEED,
+                ).fit(Xs, [R for _, R in data])
+            seconds = time.perf_counter() - t0
+            fits[mode, seed, segment] = model
+            row = {
+                "mode": mode,
+                "perturbation_seed": seed,
+                "segment": segment,
+                "seconds": seconds,
+                "global_iterations": model.n_iter_,
+                "converged_reason": model.converged_reason_,
+                "objective": model.objective_history_[-1],
+            }
+            if segment == "full":
+                C, w = model.global_centers_, model.global_widths_
+                local = decoding_accuracy([zt(W) for W in model.weights_])
+                template = decoding_accuracy(
+                    [zt(ridge_weights(X, factors(R, C, w))) for X, R in runs]
+                )
+                row.update({f"local_window_{k}": v for k, v in local.items()})
+                row.update({f"template_window_{k}": v for k, v in template.items()})
+            else:
+                r2 = [
+                    heldout_r2(
+                        factors(R, model.centers_[s], model.widths_[s]),
+                        Xte,
+                        A,
+                        float(np.var(Xtr)),
+                    )
+                    for s, (Xtr, Xte, R, A) in enumerate(segments)
+                ]
+                row["heldout_r2_mean"] = float(np.mean(r2))
+            rows.append(row)
+            print(row, flush=True)
+    for row in rows:
+        ref = fits["exact", 0, row["segment"]]
+        model = fits[row["mode"], row["perturbation_seed"], row["segment"]]
+        t = ref.template_subject_
+        d = _matched_distance(ref.global_centers_, model.global_centers_)
+        free = _matched_distance(ref.free_fits_[t][0], model.free_fits_[t][0])
+        ref_obj = ref.objective_history_[-1]
+        row.update(
+            {
+                "template_vs_exact_median_mm": float(np.median(d)),
+                "template_vs_exact_max_mm": float(d.max()),
+                "stage0_vs_exact_median_mm": float(np.median(free)),
+                "objective_vs_exact": (row["objective"] - ref_obj) / ref_obj,
+            }
         )
-        row = {
-            "mode": mode,
-            "seconds": seconds,
-            "global_iterations": model.n_iter_,
-            "objective": model.objective_history_[-1],
-            **{f"local_window_{k}": v for k, v in local.items()},
-            **{f"template_window_{k}": v for k, v in template.items()},
-        }
-        rows.append(row)
-        print(row, flush=True)
-    perm = match_factors(templates["exact"], templates["fast"])
-    dist = np.linalg.norm(templates["fast"][perm] - templates["exact"], axis=1)
-    print(
-        f"template centers, fast vs exact: median {np.median(dist):.2f} mm, "
-        f"max {dist.max():.2f} mm"
-    )
+        print(
+            f"{row['mode']} seed {row['perturbation_seed']} {row['segment']}: "
+            f"template vs exact median {np.median(d):.2f} mm, max {d.max():.2f} mm; "
+            f"template subject's stage-0 fit vs exact median {np.median(free):.2f} mm",
+            flush=True,
+        )
     STATIC.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_csv(
-        STATIC / "modes_htfa.csv", index=False, float_format="%.6g"
+    name = (
+        "modes_htfa.csv"
+        if max_global_iter == 10
+        else f"modes_htfa_{max_global_iter}.csv"
     )
+    pd.DataFrame(rows).to_csv(STATIC / name, index=False, float_format="%.6g")
 
 
 def main() -> None:
@@ -128,7 +214,8 @@ def main() -> None:
         X, R, conf = load_subject(sid)
         runs.append((standardize_data(clean(X, conf), "auto"), R))
     if "--htfa" in sys.argv:
-        htfa_comparison(runs)
+        args = sys.argv[sys.argv.index("--htfa") + 1 :]
+        htfa_comparison(runs, ids, int(args[0]) if args else 10)
         return
     rows = []
     for K in KS:

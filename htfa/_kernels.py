@@ -90,6 +90,16 @@ IDENTITY_MIN_FRACTION = 1e-3
 # Initial damping relative to the largest diagonal entry of the scaled Hessian
 # (Madsen, Nielsen & Tingleff 2004, sec. 3.2).
 LM_TAU = 1e-3
+# `bounded_lm` multiplies the damping by FAILED_FACTOR_GROWTH**k at the k-th
+# consecutive failed Cholesky factorization of a step (x2, x4, x8, ...: after
+# n failures 2**(n (n + 1) / 2) times the start), and leaves the step-rejection
+# factor nu alone. Earlier code also doubled nu at each failure, which carried
+# into the rejections of the same step. Doubling only (at most twice the
+# damping that works) let the fast mode's damped Newton step reach another
+# basin on a well-conditioned synthetic problem (tests/test_fast_mode.py, case
+# 52, two-stage loss: +2.9e-3 objective, centers 1.45 lengths from the exact
+# fit), which the growing factor keeps short.
+FAILED_FACTOR_GROWTH = 2.0
 
 # Relative tolerance (atol = btol) of the LSMR trust-region subproblem solve. scipy's
 # default (1e-6) stops the outer solve ~1e-6 away from the minimizer: compressed vs.
@@ -822,6 +832,7 @@ def bounded_lm(
     scale: Array,
     max_nfev: int | None = None,
     mode: str = "exact",
+    trace: list[dict[str, Any]] | None = None,
 ) -> tuple[Array, float, int, int]:
     """Bounded Levenberg-Marquardt (damped Newton) on the structured Hessian.
 
@@ -830,11 +841,12 @@ def bounded_lm(
     Hessian ``H`` (`ResidualProblem.cost_grad_hess`, P = K (D + 1) unknowns),
     fixes the variables at a bound whose gradient points out of the box, and
     solves ``(H_ff + lam diag(1 / scale_f**2)) p = -g_f`` on the free ones by
-    Cholesky (``scale`` plays scipy's ``x_scale`` role; ``lam`` grows until the
-    matrix is positive definite where ``H`` is indefinite). The step
+    Cholesky (``scale`` plays scipy's ``x_scale`` role; where the damped
+    matrix is not positive definite, ``lam`` is multiplied by 2, 4, 8, ...
+    until it is, see `FAILED_FACTOR_GROWTH`). The step
     ``clip(x + p) - x`` is accepted only if it lowers the cost; ``lam`` follows
     Nielsen's rule (divided by up to 3 on success, multiplied by 2, 4, 8, ...
-    on failure).
+    on consecutive rejected steps).
 
     Stopping rules, with scipy's defaults: ``ftol`` (as scipy: an accepted step
     with ratio > 0.25 lowered the cost by less than ``FTOL`` times the cost
@@ -857,6 +869,13 @@ def bounded_lm(
     with ``'fast'``. ``'fast'`` also forms the largest curvature products of
     the linear loss in float32 (`curvature_operand`). Both modes minimize the
     same cost, in float64; they can end at different local minima.
+
+    ``trace`` (a list, for diagnostics) receives one dict per accepted step:
+    ``indefinite`` (the Hessian was not positive definite on the free
+    variables), ``model`` (``'newton'`` or ``'gauss-newton'``), ``lam`` (the
+    damping of the step) and ``cholesky_failures`` (damped factorizations that
+    failed before it). Checking definiteness costs one extra factorization per
+    step in ``'fast'`` mode, so it is done only when ``trace`` is given.
 
     Raises
     ------
@@ -900,6 +919,12 @@ def bounded_lm(
         # basin). 'fast': Newton model wherever the Hessian is finite.
         H = hess
         H_s = d[:, None] * hess[np.ix_(free, free)] * d[None, :]
+        indefinite = False
+        if trace is not None:
+            try:
+                scipy.linalg.cho_factor(H_s)
+            except (np.linalg.LinAlgError, ValueError):
+                indefinite = True
         try:
             if mode == "exact":
                 scipy.linalg.cho_factor(H_s)  # ValueError if not finite
@@ -908,13 +933,17 @@ def bounded_lm(
         except (np.linalg.LinAlgError, ValueError):
             H = gn
             H_s = d[:, None] * gn[np.ix_(free, free)] * d[None, :]
+        failures = 0
         while True:
             if nfev >= max_nfev:
                 return x, cost, 0, nfev
             try:
                 factor = scipy.linalg.cho_factor(H_s + lam * np.eye(d.size))
             except np.linalg.LinAlgError:
-                lam, nu = lam * nu, nu * 2.0
+                # x2, x4, x8, ... per consecutive failure (FAILED_FACTOR_GROWTH),
+                # without touching nu, which counts rejected steps only.
+                failures += 1
+                lam *= FAILED_FACTOR_GROWTH**failures
                 continue
             p = np.zeros_like(x)
             p[free] = -d * scipy.linalg.cho_solve(factor, g_s)
@@ -930,6 +959,15 @@ def bounded_lm(
             ftol_ok = actual < ftol * (cost + problem.cost_offset) and ratio > 0.25
             xtol_ok = np.linalg.norm(step) < XTOL * (XTOL + np.linalg.norm(x))
             accepted = ratio > 0
+            if accepted and trace is not None:
+                trace.append(
+                    {
+                        "indefinite": indefinite,
+                        "model": "newton" if H is hess else "gauss-newton",
+                        "lam": lam,
+                        "cholesky_failures": failures,
+                    }
+                )
             if accepted:
                 x = x_new
                 lam *= max(1.0 / 3.0, 1.0 - (2.0 * ratio - 1.0) ** 3)

@@ -1,12 +1,15 @@
 """``mode='fast'`` against ``mode='exact'``, both computed here (same machine,
 same BLAS), over the scenario families of the equivalence suite.
 
-The two modes minimize the same objective with the same arithmetic and stopping
-rules; they differ only in the step `htfa._kernels.bounded_lm` takes where the
-Hessian is not positive definite on the free variables (exact: Gauss-Newton;
-fast: the Hessian with more damping). Where the Hessian stays positive definite
-the two runs are identical, so the families below differ only where a solve
-meets negative curvature.
+The two modes minimize the same objective, with float64 costs and gradients
+and the same stopping rules. They differ in the step `htfa._kernels.bounded_lm`
+takes where the Hessian is not positive definite on the free variables (exact:
+Gauss-Newton; fast: the Hessian with more damping), and in the precision of
+the curvature: fast mode forms the largest curvature products of the linear
+loss in float32. Where the Hessian stays positive definite the two runs take
+the same kind of step from slightly different (float32-rounded) curvature, so
+they end within the stopping tolerances of each other; where a solve meets
+negative curvature they can end at different local minima.
 
 * Single solves (`FAST_SOLVE_COST_RTOL`): the solver families of
   ``test_kernels.py`` (Gauss-Newton test problems; ``make_tfa_data`` solves
@@ -23,6 +26,12 @@ meets negative curvature.
   and soft_l1 losses; on every well-conditioned case the global template and
   the summed objective are within `HTFA_GLOBAL_LENGTHS` and
   `HTFA_OBJECTIVE_RTOL` of the exact fit.
+* Indefinite families (`INDEFINITE_FAMILIES`): more factors fitted than
+  generated, low SNR, large K and noise-dominated data, where the exact
+  solver meets an indefinite Hessian at most accepted steps (as on real
+  fMRI). There the modes reach different local minima, so the fast fit is
+  compared with the spread of exact fits from other starts
+  (`test_fast_fits_on_indefinite_families`).
 
 Real development_fmri fits (K = 50 and 100, where the modes do differ) are
 checked by the ``network`` test at the end and documented in
@@ -41,7 +50,16 @@ from test_fit_equivalence import (
 )
 from test_kernels import _gn_problem, _tfa_solve_case
 
-from htfa._kernels import Prior, bounded_lm, bounds, max_sigma, solve_centers_widths
+from htfa._engines import EPS
+from htfa._kernels import (
+    FAILED_FACTOR_GROWTH,
+    LM_TAU,
+    Prior,
+    bounded_lm,
+    bounds,
+    max_sigma,
+    solve_centers_widths,
+)
 from htfa._matching import match_factors
 from htfa.htfa import HTFA
 from htfa.synthetic import make_htfa_data, make_tfa_data
@@ -118,6 +136,136 @@ def test_bounded_lm_fast_uses_the_hessian_where_it_is_indefinite():
     assert not np.array_equal(x_e, x_f)
     with pytest.raises(ValueError, match="mode must be one of"):
         bounded_lm(prob, x0, bnds, "linear", scale, 2, "approximate")
+
+
+def test_failed_factorizations_grow_the_damping_per_sequence():
+    """Where the damped Hessian is not positive definite, the k-th consecutive
+    failed factorization of a step multiplies the damping by
+    FAILED_FACTOR_GROWTH**k, so after n failures it is 2**(n (n + 1) / 2)
+    times the start, and the previous value (one factor less) still fails.
+    Checked on the first step of fast solves that meet negative curvature,
+    where the starting damping is known (LM_TAU times the largest scaled
+    Gauss-Newton diagonal entry)."""
+    prob, x0, bnds = _tfa_solve_case("3d", 2, True, "linear")
+    scale = 1.0 / prob.column_norms(x0)
+    x, checked = x0, 0
+    for _ in range(15):
+        _, g, gn, hess = prob.cost_grad_hess(x, "linear", mode="fast")
+        free = ~(((x <= bnds[0]) & (g > 0)) | ((x >= bnds[1]) & (g < 0)))
+        d = scale[free]
+        H_s = d[:, None] * hess[np.ix_(free, free)] * d[None, :]
+        lam0 = LM_TAU * max(float(np.max(scale**2 * np.diag(gn))), EPS)
+        trace: list = []
+        x, *_ = bounded_lm(prob, x, bnds, "linear", scale, 2, "fast", trace)
+        if not trace:
+            break
+        n, lam = trace[0]["cholesky_failures"], trace[0]["lam"]
+        assert trace[0]["model"] == "newton"
+        lowest = float(np.linalg.eigvalsh(H_s).min())
+        print(
+            f"{n} failures: lam {lam:.4g} = {lam / lam0:g} x start, lowest {lowest:.4g}"
+        )
+        assert lam == lam0 * FAILED_FACTOR_GROWTH ** (n * (n + 1) // 2)
+        if n:
+            previous = lam / FAILED_FACTOR_GROWTH**n
+            assert lowest + lam > 0 >= lowest + previous - 1e-12 * abs(lowest)
+            checked += 1
+    assert checked >= 3
+
+
+# (grid, n_samples, K generated, K fitted, noise) of each family.
+INDEFINITE_FAMILIES = {
+    "overfit": ((15, 15, 15), 100, 5, 15, 0.3),
+    "low_snr": ((15, 15, 15), 100, 8, 8, 3.0),
+    "large_k": ((16, 16, 16), 100, 24, 24, 0.5),
+    "noise_dominated": ((16, 16, 16), 100, 16, 24, 4.0),
+    "overfit_2d": ((40, 40), 100, 6, 18, 0.5),
+}
+INDEFINITE_SEEDS = (0, 1, 2)
+# Exact fits from these other random_states (K-means seeds) give the spread of
+# objectives and recoveries that the exact mode itself reaches.
+OTHER_STARTS = (1, 2, 3)
+# Fast objective at most max(SPREAD_FACTOR x the exact start spread,
+# SPREAD_FLOOR) above the exact fit's (relative); fast recovery error of the
+# noiseless signal at most RECOVERY_FACTOR times the worst exact start's.
+# Measured (macOS): fast - exact at most 1.5 times the spread (overfit seed 1:
+# +2.5e-4 against 1.7e-4); fast recovery at most 1.05 times the worst exact
+# start's (overfit_2d seed 0: 0.0231 against 0.0221).
+SPREAD_FACTOR = 2.0
+SPREAD_FLOOR = 1e-6
+RECOVERY_FACTOR = 1.1
+# The families must exercise the fast mode's step: the exact solver met an
+# indefinite Hessian at 47% to 93% of its accepted steps per fit (macOS).
+MIN_INDEFINITE_FRACTION = 0.4
+MIN_MEAN_INDEFINITE_FRACTION = 0.7
+
+
+@pytest.mark.slow
+def test_fast_fits_on_indefinite_families(monkeypatch):
+    """In the INDEFINITE_FAMILIES the exact solver meets negative curvature at
+    most steps, and the two modes reach different local minima. The fast fit
+    must not be worse than the exact mode's own start-to-start variation: its
+    objective at most max(SPREAD_FACTOR x spread, SPREAD_FLOOR) above the exact
+    fit's, where spread is the largest relative objective difference between
+    the exact fit and exact fits from OTHER_STARTS; and its error in
+    reconstructing the noiseless signal at most RECOVERY_FACTOR times the
+    worst of those exact fits'. Lower objectives and better recoveries are
+    allowed."""
+    import htfa._kernels as kernels
+
+    traces: list = []
+    solve = kernels.bounded_lm
+
+    def traced(*args, **kwargs):
+        return solve(*args, **kwargs, trace=traces[-1])
+
+    monkeypatch.setattr(kernels, "bounded_lm", traced)
+
+    def fit(X, R, K, mode, random_state, signal):
+        traces.append([])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m = TFA(K=K, mode=mode, standardize=False, random_state=random_state)
+            m.fit(X, R)
+        F = factors_of(R, m)
+        error = float(np.sum((F @ m.weights_ - signal) ** 2) / np.sum(signal**2))
+        steps = traces[-1]
+        indefinite = float(np.mean([s["indefinite"] for s in steps]))
+        return m.cost_, error, indefinite
+
+    fractions = []
+    for name, (grid, T, K_true, K_fit, noise) in INDEFINITE_FAMILIES.items():
+        for seed in INDEFINITE_SEEDS:
+            X, R, truth = make_tfa_data(
+                grid, T, K=K_true, noise=noise, random_state=seed
+            )
+            signal = (
+                kernels.factors(R, truth["centers"], truth["widths"]) @ truth["weights"]
+            )
+            exact = fit(X, R, K_fit, "exact", 0, signal)
+            others = [fit(X, R, K_fit, "exact", r, signal) for r in OTHER_STARTS]
+            fast = fit(X, R, K_fit, "fast", 0, signal)
+            spread = max(abs(c - exact[0]) / exact[0] for c, _, _ in others)
+            gap = (fast[0] - exact[0]) / exact[0]
+            worst = max(e for _, e, _ in (exact, *others))
+            print(
+                f"{name} seed {seed}: indefinite at {exact[2]:.2f} of exact steps; "
+                f"fast - exact {gap:+.2e} (exact start spread {spread:.2e}); "
+                f"signal error exact {exact[1]:.4f}, worst exact start {worst:.4f}, "
+                f"fast {fast[1]:.4f}"
+            )
+            fractions.append(exact[2])
+            assert exact[2] >= MIN_INDEFINITE_FRACTION, (name, seed)
+            assert gap <= max(SPREAD_FACTOR * spread, SPREAD_FLOOR), (name, seed)
+            assert fast[1] <= RECOVERY_FACTOR * worst, (name, seed)
+    assert np.mean(fractions) >= MIN_MEAN_INDEFINITE_FRACTION
+
+
+def factors_of(R, model):
+    """The fitted factors (V, K) of ``model`` at ``R``."""
+    from htfa._kernels import factors
+
+    return factors(R, model.centers_, model.widths_)
 
 
 def _tfa_cases():
