@@ -71,11 +71,11 @@ Added:
   :class:`htfa.HTFAResults` container with NIfTI export and plots.
 - ``plot_reconstruction`` draws all panels on one symmetric color range (the
   99th percentile of the absolute values), with a diverging colormap, signs
-  kept and no threshold; before, each panel was scaled and thresholded on its
+  kept and one colorbar; before, each panel was scaled and thresholded on its
   own, so a good reconstruction could look unlike the data. 3D data are drawn
-  as a glass brain only when the image spans the MNI152 brain
-  (``view='auto'``; ``'glass'`` and ``'slices'`` force one), and as
-  orthogonal slices otherwise. ``truth=`` adds a reference panel.
+  as orthogonal slices, one panel per row, over the MNI152 template when the
+  image spans the MNI152 brain and without a background otherwise; a glass
+  brain only on request (``view='glass'``). ``truth=`` adds a reference panel.
 - Synthetic data with ground truth for 2D and 3D coordinates.
 - Installation of optional dependencies on first use.
 

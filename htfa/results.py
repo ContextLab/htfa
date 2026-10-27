@@ -47,13 +47,18 @@ def _symmetric_limit(values: list[Array]) -> float:
     return vmax if vmax > 0 else float(a.max())
 
 
+# Over the MNI152 template, |values| below this fraction of the shared color
+# limit are transparent (in every panel) so that the anatomy shows.
+_BG_THRESHOLD = 0.1
+
+
 def _in_mni_space(coords: Array) -> bool:
     """Whether 3D world ``coords`` (mm) span the MNI152 brain.
 
     True when the bounding box of ``coords`` holds at least half of the voxels
     of nilearn's MNI152 brain mask (2 mm). A whole-brain image in MNI space
     passes; a small or shifted grid (such as a synthetic cube at the origin)
-    does not, so drawing it in a glass brain would misplace it.
+    does not, so drawing it over the MNI152 template would misplace it.
     """
     datasets = lazy_import("nilearn.datasets", "plot", "3D plotting")
     mask = datasets.load_mni152_brain_mask(resolution=2)
@@ -537,8 +542,11 @@ class HTFAResults:
         All panels share one symmetric color range, ``[-vmax, vmax]`` with
         ``vmax`` the 99th percentile of the absolute values over all panels
         (so a few extreme noise voxels do not wash out the rest), a diverging
-        colormap with signs kept, and no threshold: zero is white in every
-        panel and equal colors mean equal values.
+        colormap with signs kept, and one colorbar: zero is white in every
+        panel and equal colors mean equal values. Nothing is thresholded,
+        except over the MNI152 template (see ``view``), where values with
+        ``|value|`` below 10% of ``vmax`` are left transparent in every panel
+        so that the anatomy shows.
 
         Parameters
         ----------
@@ -553,14 +561,16 @@ class HTFAResults:
             ``sample`` is taken. It should be on the scale of the data shown
             (standardized if the fit standardized the data).
         view : {'auto', 'glass', 'slices'}
-            For 3D data: ``'glass'`` draws glass-brain projections (nilearn
-            ``plot_glass_brain``), ``'slices'`` orthogonal slices through the
-            image without a background (``plot_stat_map``), all panels cut
-            at the voxel with the largest absolute reconstruction.
-            ``'auto'`` (default) uses the glass brain when the image is in
-            MNI space, meaning the bounding box of the subject's voxels
-            holds at least half of nilearn's MNI152 brain mask, and slices
-            otherwise. Ignored for 2D data.
+            For 3D data. ``'slices'`` and ``'auto'`` (default, the same)
+            draw orthogonal slices (nilearn ``plot_stat_map``), all panels
+            cut at the voxel with the largest absolute reconstruction. When
+            the image is in MNI space, meaning the bounding box of the
+            subject's voxels holds at least half of nilearn's MNI152 brain
+            mask, the slices are drawn over the MNI152 template; otherwise
+            without a background. ``'glass'`` draws glass-brain projections
+            (``plot_glass_brain``); a projection of one noisy sample takes
+            the largest value along each ray and so looks saturated, which is
+            why it is not the default. Ignored for 2D data.
         cmap : str
             Diverging matplotlib colormap. Default ``"RdBu_r"``.
 
@@ -568,9 +578,8 @@ class HTFAResults:
         -------
         matplotlib.figure.Figure
             One panel each for "original", "reconstruction" and (if given)
-            "truth". 3D data need NIfTI input; each panel has its own
-            colorbar, all with the same range. 2D data get one shared
-            colorbar (the figure's last axes).
+            "truth" and one shared colorbar (the figure's last axes). 3D data
+            need NIfTI input and are drawn one panel per row.
 
         Raises
         ------
@@ -617,22 +626,40 @@ class HTFAResults:
         n = len(panels)
         if D == 3:
             plotting = lazy_import("nilearn.plotting", "plot", "3D plotting")
-            glass = view == "glass" or (view == "auto" and _in_mni_space(s.coords))
+            glass = view == "glass"
+            brain = not glass and _in_mni_space(s.coords)
             cut = s.coords[np.argmax(np.abs(recon))]
-            fig, axes = plt.subplots(1, n, figsize=(5.5 * n, 2.6))
-            for ax, (title, v) in zip(axes, panels.items(), strict=True):
+            # one row per panel, each as wide as the figure, and one colorbar
+            fig = plt.figure(figsize=(9, 2.9 * n))
+            for i, (title, v) in enumerate(panels.items()):
+                ax = fig.add_axes((0.0, 1 - (i + 1) / n, 0.9, 0.86 / n))
                 img = s.to_image(v)
                 img = type(img)(np.nan_to_num(np.asarray(img.dataobj)), img.affine)
                 common = dict(
-                    figure=fig, axes=ax, title=title, threshold=None, cmap=cmap,
-                    vmin=-vmax, vmax=vmax, symmetric_cbar=True, black_bg=False,
+                    figure=fig, axes=ax, colorbar=False, cmap=cmap, vmin=-vmax,
+                    vmax=vmax, symmetric_cbar=True, black_bg=False,
                 )  # fmt: skip
                 if glass:
-                    plotting.plot_glass_brain(img, plot_abs=False, **common)
+                    plotting.plot_glass_brain(
+                        img, plot_abs=False, threshold=None, **common
+                    )
+                elif brain:
+                    plotting.plot_stat_map(
+                        img, cut_coords=cut, draw_cross=False,
+                        threshold=_BG_THRESHOLD * vmax, **common,
+                    )  # fmt: skip
                 else:
                     plotting.plot_stat_map(
-                        img, bg_img=None, cut_coords=cut, draw_cross=False, **common
-                    )
+                        img, bg_img=None, cut_coords=cut, draw_cross=False,
+                        threshold=None, **common,
+                    )  # fmt: skip
+                ax.set_title(title, fontsize=13, loc="left")
+            cax = fig.add_axes((0.92, 0.1, 0.02, 0.8))
+            mpl_colors = lazy_import("matplotlib.colors", "plot", "plotting")
+            sm = plt.cm.ScalarMappable(
+                norm=mpl_colors.Normalize(-vmax, vmax), cmap=cmap
+            )
+            fig.colorbar(sm, cax=cax)
             return fig
         fig, axes = plt.subplots(1, n, figsize=(4.5 * n + 1, 4))
         for ax, (title, v) in zip(axes, panels.items(), strict=True):

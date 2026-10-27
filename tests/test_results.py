@@ -172,9 +172,9 @@ def test_plot_reconstruction_3d_shared_symmetric_limits(res3d, view):
     norms = _panel_norms(fig)
     vmax = _expected_vmax(res3d, 3)
     print(view, "norms:", norms, "expected vmax:", vmax)
-    # 2 panels x 3 orthogonal views + 2 colorbars
-    assert len(norms) == 8
-    np.testing.assert_allclose(norms, [(-vmax, vmax)] * 8, rtol=1e-6)
+    # 2 panels x 3 orthogonal views + 1 shared colorbar
+    assert len(norms) == 7
+    np.testing.assert_allclose(norms, [(-vmax, vmax)] * 7, rtol=1e-6)
 
 
 def test_plot_reconstruction_3d_keeps_signs(res3d):
@@ -188,14 +188,32 @@ def test_plot_reconstruction_3d_keeps_signs(res3d):
     assert min(lows) < 0
 
 
+def _has_background(fig):
+    """Slices over a template draw two images (template, data) per slice axes."""
+    return any(len(ax.images) >= 2 for ax in fig.axes)
+
+
 def test_plot_reconstruction_view_auto(res3d, res_mni):
-    """'auto' draws slices for a small grid and a glass brain for MNI data."""
+    """'auto' draws slices; MNI data get the template background, others none."""
     small = res3d.plot_reconstruction(0)
     mni = res_mni.plot_reconstruction(0)
-    print("small grid glass:", _is_glass(small), "| MNI grid glass:", _is_glass(mni))
-    assert not _is_glass(small)
-    assert _is_glass(mni)
-    assert not _is_glass(res_mni.plot_reconstruction(0, view="slices"))
+    print("small grid: glass", _is_glass(small), "background", _has_background(small))
+    print("MNI grid: glass", _is_glass(mni), "background", _has_background(mni))
+    assert not _is_glass(small) and not _has_background(small)
+    assert not _is_glass(mni) and _has_background(mni)
+    glass = res_mni.plot_reconstruction(0, view="glass")
+    assert _is_glass(glass) and not _has_background(glass)
+    assert not _is_glass(res3d.plot_reconstruction(0, view="slices"))
+
+
+def test_plot_reconstruction_one_colorbar_and_titles(res3d):
+    """3D: one row per panel, legible titles and a single colorbar."""
+    fig = res3d.plot_reconstruction(0, truth=res3d.reconstruct(0))
+    titles = [ax.get_title(loc="left") for ax in fig.axes if ax.get_title(loc="left")]
+    bars = [ax for ax in fig.axes if ax.collections and not ax.images]
+    print("titles:", titles, "| colorbars:", len(bars))
+    assert titles == ["original", "reconstruction", "truth"]
+    assert len(bars) == 1
 
 
 def test_plot_reconstruction_bad_view_raises(res3d):
@@ -210,8 +228,8 @@ def test_plot_reconstruction_truth_panel(res3d):
     vmax = _expected_vmax(res3d, 3, [truth[:, 3]])
     norms = _panel_norms(fig)
     print("norms:", norms, "expected vmax:", vmax)
-    assert len(norms) == 12
-    np.testing.assert_allclose(norms, [(-vmax, vmax)] * 12, rtol=1e-6)
+    assert len(norms) == 10
+    np.testing.assert_allclose(norms, [(-vmax, vmax)] * 10, rtol=1e-6)
     with pytest.raises(ValueError, match="truth"):
         res3d.plot_reconstruction(0, truth=truth[:-1])
 
