@@ -18,6 +18,7 @@ that for comparison.
 """
 
 import time
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -45,7 +46,13 @@ print(f"fit time: {elapsed:.1f} s, stopped because: {res.model.converged_reason_
 print(f"correlation between image and reconstruction: {r:.3f}")
 print("factor widths w = 2*sigma^2 (pixels^2):", np.round(res.widths[0], 1))
 
-raw = htfa.fit(gray, K=6, standardize=False, random_state=0)
+# htfa warns about this setting; print the message (the default display would
+# also print the path of the htfa source file that issued it)
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    raw = htfa.fit(gray, K=6, standardize=False, random_state=0)
+for w in caught:
+    print(f"{w.category.__name__}: {w.message}")
 r_raw = np.corrcoef(raw.subjects[0].data[:, 0], raw.reconstruct(0)[:, 0])[0, 1]
 print(f"standardize=False: correlation {r_raw:.3f}, widths", np.round(raw.widths[0], 1))
 upper = 2 * 1.8 * float(raw.subjects[0].coords.std(0).max()) ** 2
