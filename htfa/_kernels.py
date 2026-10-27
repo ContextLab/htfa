@@ -619,6 +619,13 @@ class ProjectedProblem:
         F = factors(self.R, C, w, self._grid)
         W, inv, B = self._weights(F)
         objective = self._x_sq - float(np.sum(B * W))
+        # The form is chosen at the first point only. A solve that starts far
+        # off and ends near an exact fit keeps the identity, whose rounding then
+        # dominates the cost bounded_lm reports (a noiseless 'ols' fit from a
+        # far start: 7.9e-12 against a true 5.8e-23). TFA uses only the solver's
+        # x, not its cost (`htfa.tfa.TFA._iterate_stage`). With 'rr' the ridge
+        # term keeps the fraction away from 0: 1.2e-3 to 4.7e-3 at the true
+        # parameters of noiseless synthetic data (9 cases, V = 900 to 8000).
         if self._identity is None:
             self._identity = objective >= IDENTITY_MIN_FRACTION * self._x_sq > 0
         data = 0.5 * self.s**2 * objective if self._identity else None
