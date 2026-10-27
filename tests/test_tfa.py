@@ -301,6 +301,23 @@ def test_tfa_deterministic_with_random_state():
     assert not np.array_equal(other.centers_, a.centers_)
 
 
+def test_kmeans_start_is_bitwise_reproducible():
+    """The 'kmeans' start runs on a worker thread; an OpenMP thread limit set in
+    the calling thread does not reach it (the OpenMP thread count is per
+    thread), and multithreaded K-means sums in a varying order. Measured before
+    the fix on this case (12 cores): 5 fits gave 5 different starts, which on
+    real data at K=100 led the fit to different optima. (A spacing that floats
+    represent exactly, such as 1 or 4, gave identical starts.)"""
+    X, R, _ = make_tfa_data((20, 20, 20), 3, K=10, spacing=1.7, random_state=0)
+    centers = []
+    for _ in range(5):
+        model = TFA(K=30, init="kmeans", max_iter=0, random_state=0).fit(X, R)
+        centers.append(model.centers_)
+    for c in centers[1:]:
+        print("max |center difference|:", np.abs(c - centers[0]).max())
+        np.testing.assert_array_equal(c, centers[0])
+
+
 def test_standardize_modes():
     X = np.array([[1.0, 2.0, 3.0, 4.0], [5.0, 5.0, 5.0, 5.0], [0.0, 0.0, 2.0, 2.0]])
     for mode in ("auto", True):
