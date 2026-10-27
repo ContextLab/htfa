@@ -912,7 +912,7 @@ default ``max_global_iter=10`` no fit met the global stopping rule.
      - 0.04109
 
 The fast template is a different map from the exact one: its centers are
-15.8 mm from the exact template's (median), 2.8 to 7.9 times the 2.0 to
+15.8 mm from the exact template's (median), 2.8 to 7.8 times the 2.0 to
 5.6 mm by which a 1e-12 change of the data moves the exact template.
 The template subject's stage-0 fit (the fit the template starts from) is
 16.4 mm from the exact one in fast mode and unchanged by the perturbation in

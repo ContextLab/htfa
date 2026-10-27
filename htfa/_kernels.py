@@ -90,15 +90,17 @@ IDENTITY_MIN_FRACTION = 1e-3
 # Initial damping relative to the largest diagonal entry of the scaled Hessian
 # (Madsen, Nielsen & Tingleff 2004, sec. 3.2).
 LM_TAU = 1e-3
-# `bounded_lm` multiplies the damping by FAILED_FACTOR_GROWTH**k at the k-th
-# consecutive failed Cholesky factorization of a step (x2, x4, x8, ...: after
-# n failures 2**(n (n + 1) / 2) times the start), and leaves the step-rejection
-# factor nu alone. Earlier code also doubled nu at each failure, which carried
-# into the rejections of the same step. Doubling only (at most twice the
-# damping that works) let the fast mode's damped Newton step reach another
-# basin on a well-conditioned synthetic problem (tests/test_fast_mode.py, case
-# 52, two-stage loss: +2.9e-3 objective, centers 1.45 lengths from the exact
-# fit), which the growing factor keeps short.
+# In mode 'fast', `bounded_lm` multiplies the damping by FAILED_FACTOR_GROWTH**k
+# at the k-th failed Cholesky factorization within one step (counted from the
+# step's first trial, across its rejected trials: x2, x4, x8, ...; after n
+# failures 2**(n (n + 1) / 2) times the start) and leaves the step-rejection
+# factor nu alone. Mode 'exact' keeps the earlier rule, lam *= nu and nu *= 2
+# at every failure (so that nu stays raised for the step's rejections), and
+# its results. Doubling only (at most twice the damping that works) let the
+# fast mode's damped Newton step reach another basin on a well-conditioned
+# synthetic problem (tests/test_fast_mode.py, case 52, two-stage loss: +2.9e-3
+# objective, centers 1.45 lengths from the exact fit), which the growing
+# factor keeps short.
 FAILED_FACTOR_GROWTH = 2.0
 
 # Relative tolerance (atol = btol) of the LSMR trust-region subproblem solve. scipy's
@@ -842,8 +844,8 @@ def bounded_lm(
     fixes the variables at a bound whose gradient points out of the box, and
     solves ``(H_ff + lam diag(1 / scale_f**2)) p = -g_f`` on the free ones by
     Cholesky (``scale`` plays scipy's ``x_scale`` role; where the damped
-    matrix is not positive definite, ``lam`` is multiplied by 2, 4, 8, ...
-    until it is, see `FAILED_FACTOR_GROWTH`). The step
+    matrix is not positive definite, ``lam`` grows until it is, by the rule
+    of each mode described at `FAILED_FACTOR_GROWTH`). The step
     ``clip(x + p) - x`` is accepted only if it lowers the cost; ``lam`` follows
     Nielsen's rule (divided by up to 3 on success, multiplied by 2, 4, 8, ...
     on consecutive rejected steps).
@@ -875,8 +877,9 @@ def bounded_lm(
     ``indefinite`` (the Hessian was not positive definite on the free
     variables), ``model`` (``'newton'`` or ``'gauss-newton'``), ``lam`` (the
     damping of the step) and ``cholesky_failures`` (damped factorizations that
-    failed before it). Checking definiteness costs one extra factorization per
-    step in ``'fast'`` mode, so it is done only when ``trace`` is given.
+    failed within the step, across its rejected trials). Checking
+    definiteness costs one extra factorization per step in ``'fast'`` mode,
+    so it is done only when ``trace`` is given.
 
     Raises
     ------
@@ -941,10 +944,13 @@ def bounded_lm(
             try:
                 factor = scipy.linalg.cho_factor(H_s + lam * np.eye(d.size))
             except np.linalg.LinAlgError:
-                # x2, x4, x8, ... per consecutive failure (FAILED_FACTOR_GROWTH),
-                # without touching nu, which counts rejected steps only.
+                # See FAILED_FACTOR_GROWTH: 'fast' multiplies by 2**k at the
+                # step's k-th failure; 'exact' keeps the earlier rule.
                 failures += 1
-                lam *= FAILED_FACTOR_GROWTH**failures
+                if mode == "fast":
+                    lam *= FAILED_FACTOR_GROWTH**failures
+                else:
+                    lam, nu = lam * nu, nu * 2.0
                 continue
             p = np.zeros_like(x)
             p[free] = -d * scipy.linalg.cho_solve(factor, g_s)

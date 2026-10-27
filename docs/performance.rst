@@ -255,9 +255,10 @@ results that do not depend on ``n_jobs``. They differ in two places of
 - The step where the Hessian is not positive definite on the free variables.
   ``'exact'`` takes the damped Gauss-Newton step there, as earlier versions
   did. ``'fast'`` keeps the Hessian and raises the damping until the damped
-  matrix is positive definite (a damped Newton step). At the k-th consecutive
-  failed factorization of a step the damping is multiplied by 2**k
-  (`htfa._kernels.FAILED_FACTOR_GROWTH`), in both modes.
+  matrix is positive definite (a damped Newton step). At the k-th failed
+  factorization within a step the fast mode multiplies the damping by 2**k
+  (`htfa._kernels.FAILED_FACTOR_GROWTH`); the exact mode keeps the earlier
+  rule.
 - The precision of the curvature. ``'exact'`` assembles the Gauss-Newton
   matrix and the Hessian in float64. ``'fast'`` forms their three largest
   products for the linear loss (``G G^T``, ``F G^T`` and ``G X``, with ``G``
@@ -280,18 +281,19 @@ different local minimum, lower or higher; :doc:`validation` gives its effect
 on the objective, the held-out reconstruction, the decoding and the HTFA
 template.
 
-**The damping after failed factorizations.** Earlier code multiplied the
-damping by ``nu`` and doubled ``nu`` at each failed factorization, so ``nu``
-stayed raised for the rejections of the same step. Now ``nu`` counts rejected
-steps only. Doubling the damping per failure (at most twice the damping that
+**The damping after failed factorizations.** The exact mode, as earlier
+versions, multiplies the damping by ``nu`` and doubles ``nu`` at each failed
+factorization, so ``nu`` stays raised for the rejections of the same step. In
+the fast mode ``nu`` counts rejected steps only, and the k-th failure within a
+step multiplies the damping by 2**k. Doubling the damping per failure (at most twice the damping that
 works) was tried: on a well-conditioned synthetic problem of the test suite
 (two-stage loss, 12³ grid, K = 8) the fast fit then reached another local
 minimum, 2.9e-3 above the exact fit's objective with centers 1.45 lengths
 away; with the growth by 2**k it ends within the test's tolerances of the
-exact fit (objective within 1e-8). The
-change moves exact-mode fits only where a damped Gauss-Newton factorization
-fails: of six development_fmri adults at K = 50 and 100, two K = 100 fits
-changed (sub-pixar125: objective 1031218.0061 to 1031218.0202).
+exact fit (objective within 1e-8). Exact-mode fits are those of the
+code before ``mode`` existed, bit for bit (checked on six development_fmri
+adults at K = 50 and 100, including fits with failed factorizations, and by
+``tests/test_fast_mode.py``).
 
 **Why float32.** On sub-pixar123 (V = 25079, T = 168, K = 100) ``G G^T``,
 ``F G^T`` and ``G X`` took 4.4, 2.5 and 2.7 ms in float32 against 10.6, 7.5

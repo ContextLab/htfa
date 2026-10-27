@@ -532,3 +532,65 @@ def test_fast_mode_on_development_fmri(K):
         f"({seconds['fast']:.1f} s, init {fits['fast'].init_}), relative {rel:+.2e}"
     )
     assert abs(rel) <= REAL_COST_RTOL
+
+
+def _old_rule_solver(traces: list):
+    """``bounded_lm`` wrapper for ``htfa._kernels``: runs the solver in mode
+    'exact' and the solver of reference_kernels_3298278 (the damping rule of
+    main before mode 'fast': lam *= nu, nu *= 2 at a failed factorization) on
+    the same inputs, requires equal outputs bit for bit, and records the
+    exact solve's trace."""
+    import reference_kernels_3298278 as ref
+
+    import htfa._kernels as kernels
+
+    solve = kernels.bounded_lm
+
+    def both(problem, x0, bnds, loss, scale, max_nfev=None, mode="exact"):
+        assert mode == "exact"
+        trace: list = []
+        new = solve(problem, x0, bnds, loss, scale, max_nfev, mode, trace)
+        old = ref.bounded_lm(problem, x0, bnds, loss, scale, max_nfev)
+        np.testing.assert_array_equal(new[0], old[0])
+        assert new[1:] == old[1:]
+        traces.append(trace)
+        return new
+
+    return both
+
+
+@pytest.mark.parametrize("case", _solve_cases(), ids=str)
+def test_exact_solves_equal_the_earlier_solver(case):
+    """Mode 'exact' is the solver as it was before mode 'fast' (the bounded_lm
+    of reference_kernels_3298278), bit for bit, on the solver families."""
+    kind, loss, spec, use_prior = case
+    if kind == "gn":
+        D, seed = spec
+        prob, x0, _ = _gn_problem(D, use_prior, 600 + seed, V=150, T=20, K=3)
+        bnds = bounds(prob.R, prob.K, 0.02, 4.0)
+        x0 = np.clip(x0, *bnds)
+    else:
+        prob, x0, bnds = _tfa_solve_case(*spec, use_prior, loss)
+    scale = 1.0 / prob.column_norms(x0)
+    _old_rule_solver([])(prob, x0, bnds, loss, scale)
+
+
+@pytest.mark.network
+@pytest.mark.slow
+def test_exact_mode_keeps_the_earlier_damping_rule_on_failed_factorizations(
+    monkeypatch,
+):
+    """Exact fits of development_fmri at K = 100 meet failed damped
+    factorizations (sub-pixar125: 6 in the fit, measured);
+    every solve of the fit must equal the earlier solver's bit for bit, so
+    the fast mode's damping rule cannot leak into mode 'exact'."""
+    import htfa._kernels as kernels
+    from htfa.datasets import fetch_development_fmri
+
+    traces: list = []
+    monkeypatch.setattr(kernels, "bounded_lm", _old_rule_solver(traces))
+    ds = fetch_development_fmri(n_subjects=3)
+    TFA(K=100, mode="exact", random_state=0).fit(ds.data[2], ds.coords[2])
+    failures = sum(s["cholesky_failures"] for t in traces for s in t)
+    print(f"{len(traces)} solves, {failures} failed factorizations, all equal")
+    assert failures > 0

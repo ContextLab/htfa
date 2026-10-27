@@ -76,11 +76,10 @@ Added:
   synthetic problems the two modes agree to 2e-7. Exact mode is the
   reference for the equivalence tests and the BrainIAK cross-checks (see
   :doc:`performance` and :doc:`validation`).
-- After a failed Cholesky factorization the structured solver multiplies the
-  damping by 2, 4, 8, ... for consecutive failures and no longer raises the
-  step-rejection factor ``nu`` as well. Exact-mode fits change only where a
-  damped Gauss-Newton factorization fails (2 of 12 fits: six development_fmri
-  adults at K = 50 and 100).
+- In ``mode='fast'``, the k-th failed Cholesky factorization within a step
+  multiplies the damping by 2**k and leaves the step-rejection factor ``nu``
+  alone. ``mode='exact'`` keeps the earlier rule and gives the same results,
+  bit for bit, as before ``mode`` existed.
 - A stopping rule for subsampled fits: the fit stops when the lowest objective
   so far (on a fixed evaluation subsample) has fallen by less than a relative
   1e-4 per iteration over the last three iterations, after at least five
