@@ -19,11 +19,48 @@ Array = np.ndarray
 __all__ = ["HTFAResults"]
 
 
-def _scatter_field(ax: Any, coords: Array, values: Array) -> None:
-    """Draw ``values`` at 2D ``coords`` (row, column) as squares."""
-    ax.scatter(coords[:, 1], coords[:, 0], c=values, marker="s", s=12, cmap="gray")
+def _scatter_field(ax: Any, coords: Array, values: Array, **kwargs: Any) -> Any:
+    """Draw ``values`` at 2D ``coords`` (row, column) as squares.
+
+    Keyword arguments (``cmap``, default ``"gray"``, ``vmin``, ``vmax``) go to
+    ``ax.scatter``; the scatter collection is returned.
+    """
+    kwargs.setdefault("cmap", "gray")
+    sc = ax.scatter(coords[:, 1], coords[:, 0], c=values, marker="s", s=12, **kwargs)
     ax.set_aspect("equal")
     ax.invert_yaxis()
+    return sc
+
+
+def _symmetric_limit(values: list[Array]) -> float:
+    """Shared color limit: the 99th percentile of ``|values|`` over all panels.
+
+    The percentile keeps a few extreme (noise) voxels from washing out the
+    rest; if it is zero the largest ``|value|`` is used, and 1 for all-zero
+    data.
+    """
+    a = np.abs(np.concatenate([np.ravel(v) for v in values]))
+    a = a[np.isfinite(a)]
+    if a.size == 0 or a.max() == 0:
+        return 1.0
+    vmax = float(np.percentile(a, 99))
+    return vmax if vmax > 0 else float(a.max())
+
+
+def _in_mni_space(coords: Array) -> bool:
+    """Whether 3D world ``coords`` (mm) span the MNI152 brain.
+
+    True when the bounding box of ``coords`` holds at least half of the voxels
+    of nilearn's MNI152 brain mask (2 mm). A whole-brain image in MNI space
+    passes; a small or shifted grid (such as a synthetic cube at the origin)
+    does not, so drawing it in a glass brain would misplace it.
+    """
+    datasets = lazy_import("nilearn.datasets", "plot", "3D plotting")
+    mask = datasets.load_mni152_brain_mask(resolution=2)
+    ijk = np.argwhere(np.asarray(mask.dataobj) > 0)
+    xyz = ijk @ mask.affine[:3, :3].T + mask.affine[:3, 3]
+    inside = np.all((xyz >= coords.min(axis=0)) & (xyz <= coords.max(axis=0)), axis=1)
+    return bool(inside.mean() >= 0.5)
 
 
 class HTFAResults:
@@ -487,8 +524,21 @@ class HTFAResults:
         ax.scatter(centers[:, 1], centers[:, 0], c="k", s=20)
         return fig
 
-    def plot_reconstruction(self, subject: int = 0, sample: int = 0) -> Any:
+    def plot_reconstruction(
+        self,
+        subject: int = 0,
+        sample: int = 0,
+        truth: Any = None,
+        view: str = "auto",
+        cmap: str = "RdBu_r",
+    ) -> Any:
         """Original (standardized) data next to the reconstruction of one sample.
+
+        All panels share one symmetric color range, ``[-vmax, vmax]`` with
+        ``vmax`` the 99th percentile of the absolute values over all panels
+        (so a few extreme noise voxels do not wash out the rest), a diverging
+        colormap with signs kept, and no threshold: zero is white in every
+        panel and equal colors mean equal values.
 
         Parameters
         ----------
@@ -496,17 +546,37 @@ class HTFAResults:
             Index into ``subjects``.
         sample : int
             Index of the time point or image to show.
+        truth : array, optional
+            A reference on the subject's voxels, such as the noiseless signal
+            of simulated data, shown as a third panel ("truth") on the same
+            scale: ``(V,)`` for this sample or ``(V, T)``, from which column
+            ``sample`` is taken. It should be on the scale of the data shown
+            (standardized if the fit standardized the data).
+        view : {'auto', 'glass', 'slices'}
+            For 3D data: ``'glass'`` draws glass-brain projections (nilearn
+            ``plot_glass_brain``), ``'slices'`` orthogonal slices through the
+            image without a background (``plot_stat_map``), all panels cut
+            at the voxel with the largest absolute reconstruction.
+            ``'auto'`` (default) uses the glass brain when the image is in
+            MNI space, meaning the bounding box of the subject's voxels
+            holds at least half of nilearn's MNI152 brain mask, and slices
+            otherwise. Ignored for 2D data.
+        cmap : str
+            Diverging matplotlib colormap. Default ``"RdBu_r"``.
 
         Returns
         -------
         matplotlib.figure.Figure
-            Two panels, "original" and "reconstruction". 3D data are drawn as
-            glass-brain images and need NIfTI input.
+            One panel each for "original", "reconstruction" and (if given)
+            "truth". 3D data need NIfTI input; each panel has its own
+            colorbar, all with the same range. 2D data get one shared
+            colorbar (the figure's last axes).
 
         Raises
         ------
         ValueError
-            If the coordinates are not 2D or 3D, or 3D data have no affine.
+            If the coordinates are not 2D or 3D, 3D data have no affine,
+            ``view`` is unknown, or ``truth`` does not have one value per voxel.
 
         Notes
         -----
@@ -521,31 +591,59 @@ class HTFAResults:
         >>> X, R, _ = htfa.make_tfa_data((6, 6), 8, K=2, random_state=0)
         >>> res = htfa.fit(X, K=2, coords=R, standardize=False, init="power",
         ...                max_iter=5, random_state=0)
-        >>> len(res.plot_reconstruction().axes)
-        2
+        >>> fig = res.plot_reconstruction()
+        >>> [ax.get_title() for ax in fig.axes[:2]]
+        ['original', 'reconstruction']
         """
+        if view not in ("auto", "glass", "slices"):
+            raise ValueError(f"view must be 'auto', 'glass' or 'slices'; got {view!r}")
         D = self._dim()
         s = self.subjects[subject]
         if D == 3 and s.affine is None:
             raise ValueError("3D plot_reconstruction needs NIfTI input (affine)")
-        plt = lazy_import("matplotlib.pyplot", "plot", "plotting")
         orig = standardize_data(s.data, self.model.standardize)[:, sample]
         recon = self.reconstruct(subject)[:, sample]
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-        titles = ("original", "reconstruction")
+        panels = {"original": orig, "reconstruction": recon}
+        if truth is not None:
+            truth = np.asarray(truth, dtype=np.float64)
+            if truth.shape[0] != len(orig) or truth.ndim not in (1, 2):
+                raise ValueError(
+                    f"truth must be (V,) or (V, T) with V = {len(orig)}; "
+                    f"got {truth.shape}"
+                )
+            panels["truth"] = truth if truth.ndim == 1 else truth[:, sample]
+        vmax = _symmetric_limit(list(panels.values()))
+        plt = lazy_import("matplotlib.pyplot", "plot", "plotting")
+        n = len(panels)
         if D == 3:
             plotting = lazy_import("nilearn.plotting", "plot", "3D plotting")
-            for ax, v, t in zip(axes, (orig, recon), titles, strict=True):
+            glass = view == "glass" or (view == "auto" and _in_mni_space(s.coords))
+            cut = s.coords[np.argmax(np.abs(recon))]
+            fig, axes = plt.subplots(1, n, figsize=(5.5 * n, 2.6))
+            for ax, (title, v) in zip(axes, panels.items(), strict=True):
                 img = s.to_image(v)
                 img = type(img)(np.nan_to_num(np.asarray(img.dataobj)), img.affine)
-                plotting.plot_glass_brain(img, figure=fig, axes=ax, title=t)
+                common = dict(
+                    figure=fig, axes=ax, title=title, threshold=None, cmap=cmap,
+                    vmin=-vmax, vmax=vmax, symmetric_cbar=True, black_bg=False,
+                )  # fmt: skip
+                if glass:
+                    plotting.plot_glass_brain(img, plot_abs=False, **common)
+                else:
+                    plotting.plot_stat_map(
+                        img, bg_img=None, cut_coords=cut, draw_cross=False, **common
+                    )
             return fig
-        for ax, v, t in zip(axes, (orig, recon), titles, strict=True):
+        fig, axes = plt.subplots(1, n, figsize=(4.5 * n + 1, 4))
+        for ax, (title, v) in zip(axes, panels.items(), strict=True):
             if s.image_shape is not None:
-                ax.imshow(np.asarray(s.to_image(v)), cmap="gray")
+                im = ax.imshow(
+                    np.asarray(s.to_image(v)), cmap=cmap, vmin=-vmax, vmax=vmax
+                )
             else:
-                _scatter_field(ax, s.coords, v)
-            ax.set_title(t)
+                im = _scatter_field(ax, s.coords, v, cmap=cmap, vmin=-vmax, vmax=vmax)
+            ax.set_title(title)
+        fig.colorbar(im, ax=list(axes), shrink=0.8)
         return fig
 
     def _network_inputs(

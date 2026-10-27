@@ -15,6 +15,7 @@ from sklearn.exceptions import ConvergenceWarning  # noqa: E402
 
 from htfa import fit  # noqa: E402
 from htfa.synthetic import make_htfa_data, make_tfa_data  # noqa: E402
+from htfa.tfa import standardize_data  # noqa: E402
 
 PNG_MIN_BYTES = 5 * 1024
 AFFINE = np.array([[2.0, 0, 0, -10], [0, 2.0, 0, -12], [0, 0, 2.0, -8], [0, 0, 0, 1]])
@@ -124,6 +125,120 @@ def test_plot_reconstruction_3d_without_affine_leaves_no_figure():
         res.plot_reconstruction(0)
     print("open figures before/after:", before, plt.get_fignums())
     assert plt.get_fignums() == before
+
+
+@pytest.fixture(scope="module")
+def res_mni(tmp_path_factory):
+    """One subject on a 10 mm grid that spans the MNI152 brain."""
+    d = tmp_path_factory.mktemp("mni")
+    grid = (20, 24, 19)  # x -98..92, y -134..96, z -72..108 mm
+    aff = np.array(
+        [[10.0, 0, 0, -98], [0, 10.0, 0, -134], [0, 0, 10.0, -72], [0, 0, 0, 1]]
+    )
+    X, _, _ = make_tfa_data(grid, n_samples=8, K=3, random_state=2)
+    nib.save(nib.Nifti1Image(X.reshape(*grid, -1), aff), d / "mni.nii.gz")
+    return _fit_quiet(
+        d / "mni.nii.gz", K=3, standardize=False, max_iter=5, random_state=0
+    )
+
+
+def _panel_norms(fig):
+    """(vmin, vmax) of every image and colorbar mesh in the figure."""
+    norms = []
+    for ax in fig.axes:
+        for art in list(ax.images) + [
+            c for c in ax.collections if type(c).__name__ == "QuadMesh"
+        ]:
+            norms.append((art.norm.vmin, art.norm.vmax))
+    return norms
+
+
+def _is_glass(fig):
+    """Glass-brain panels draw the brain outline as PathPatches."""
+    return any(type(a).__name__ == "PathPatch" for a in fig.findobj())
+
+
+def _expected_vmax(res, sample, extra=()):
+    s = res.subjects[0]
+    orig = standardize_data(s.data, res.model.standardize)[:, sample]
+    vals = [orig, res.reconstruct(0)[:, sample], *extra]
+    return float(np.percentile(np.abs(np.concatenate(vals)), 99))
+
+
+@pytest.mark.parametrize("view", ["glass", "slices"])
+def test_plot_reconstruction_3d_shared_symmetric_limits(res3d, view):
+    """Every image and colorbar of both panels uses [-vmax, vmax], vmax = p99."""
+    fig = res3d.plot_reconstruction(0, sample=3, view=view)
+    norms = _panel_norms(fig)
+    vmax = _expected_vmax(res3d, 3)
+    print(view, "norms:", norms, "expected vmax:", vmax)
+    # 2 panels x 3 orthogonal views + 2 colorbars
+    assert len(norms) == 8
+    np.testing.assert_allclose(norms, [(-vmax, vmax)] * 8, rtol=1e-6)
+
+
+def test_plot_reconstruction_3d_keeps_signs(res3d):
+    """Slices show negative and positive values of the reconstruction."""
+    recon = res3d.reconstruct(0)[:, 3]
+    print("reconstruction range:", recon.min(), recon.max())
+    assert recon.min() < 0 < recon.max()
+    fig = res3d.plot_reconstruction(0, sample=3, view="slices")
+    lows = [np.nanmin(im.get_array()) for ax in fig.axes for im in ax.images]
+    print("per-slice minima:", lows)
+    assert min(lows) < 0
+
+
+def test_plot_reconstruction_view_auto(res3d, res_mni):
+    """'auto' draws slices for a small grid and a glass brain for MNI data."""
+    small = res3d.plot_reconstruction(0)
+    mni = res_mni.plot_reconstruction(0)
+    print("small grid glass:", _is_glass(small), "| MNI grid glass:", _is_glass(mni))
+    assert not _is_glass(small)
+    assert _is_glass(mni)
+    assert not _is_glass(res_mni.plot_reconstruction(0, view="slices"))
+
+
+def test_plot_reconstruction_bad_view_raises(res3d):
+    with pytest.raises(ValueError, match="view"):
+        res3d.plot_reconstruction(0, view="surface")
+
+
+def test_plot_reconstruction_truth_panel(res3d):
+    """A (V, T) truth adds a third panel on the same scale; bad shapes raise."""
+    truth = res3d.reconstruct(0) * 2
+    fig = res3d.plot_reconstruction(0, sample=3, truth=truth, view="slices")
+    vmax = _expected_vmax(res3d, 3, [truth[:, 3]])
+    norms = _panel_norms(fig)
+    print("norms:", norms, "expected vmax:", vmax)
+    assert len(norms) == 12
+    np.testing.assert_allclose(norms, [(-vmax, vmax)] * 12, rtol=1e-6)
+    with pytest.raises(ValueError, match="truth"):
+        res3d.plot_reconstruction(0, truth=truth[:-1])
+
+
+@pytest.mark.parametrize("dim", ["2D", "2Dimage"])
+def test_plot_reconstruction_2d_shared_limits_and_signs(dim, res2d, res2d_img):
+    res = {"2D": res2d, "2Dimage": res2d_img}[dim]
+    s = res.subjects[0]
+    fig = res.plot_reconstruction(0, sample=2)
+    orig = standardize_data(s.data, res.model.standardize)[:, 2]
+    vmax = _expected_vmax(res, 2)
+    panels = [a for a in fig.axes if a.get_title()]
+    print(dim, "titles:", [a.get_title() for a in panels], "vmax:", vmax)
+    assert [a.get_title() for a in panels] == ["original", "reconstruction"]
+    assert len(fig.axes) == 3  # two panels and one shared colorbar
+    mappables = [a.images[0] if a.images else a.collections[0] for a in panels]
+    for m in mappables:
+        print("norm:", m.norm.vmin, m.norm.vmax)
+        assert (m.norm.vmin, m.norm.vmax) == pytest.approx((-vmax, vmax))
+    shown = np.ravel(mappables[1].get_array())
+    recon = res.reconstruct(0)[:, 2]
+    # the values drawn are the signed reconstruction, not its absolute value
+    np.testing.assert_allclose(np.sort(shown), np.sort(recon))
+    np.testing.assert_allclose(
+        np.sort(np.ravel(mappables[0].get_array())), np.sort(orig)
+    )
+    assert fig.axes[2].get_ylim() == pytest.approx((-vmax, vmax))
 
 
 def _lr_fontsizes(fig):

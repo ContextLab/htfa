@@ -4,7 +4,9 @@ Original data and reconstruction
 
 Fit a single-subject TFA to a simulated 24 x 24 grid with 6 samples (time points)
 and compare one sample with the model's reconstruction
-(:meth:`htfa.HTFAResults.plot_reconstruction`). The reconstruction is
+(:meth:`htfa.HTFAResults.plot_reconstruction`), with the simulation's
+noiseless signal as a third panel (``truth=``) on the same color scale. The
+reconstruction is
 ``factors @ weights`` in the space the model was fitted in (here the raw values,
 because ``standardize=False``). The example also prints the fraction of variance
 explained, shows what :func:`htfa.tfa.standardize_data` does to the data, and
@@ -38,9 +40,15 @@ print("factor images:", res.factors(0).shape, "(V, K)")
 print("reconstruction in image space:", res.to_image(0).shape)
 print("one sample as an image:", res.subjects[0].to_image(recon[:, 0]).shape)
 
-fig = res.plot_reconstruction(subject=0, sample=0)
+# the noiseless signal F W of the simulation, shown as a third panel
+d2 = ((R[:, None, :] - truth["centers"][None]) ** 2).sum(axis=2)
+signal = np.exp(-d2 / truth["widths"]) @ truth["weights"]
+r_recon = np.corrcoef(recon.ravel(), signal.ravel())[0, 1]
+print(f"correlation of the reconstruction with the noiseless signal: {r_recon:.3f}")
+
+fig = res.plot_reconstruction(subject=0, sample=0, truth=signal)
 fig.suptitle(f"Sample 0: data vs. reconstruction (R$^2$ = {r2:.2f} over all samples)")
-for ax in fig.axes:
+for ax in fig.axes[:3]:  # the three panels; the last axes is the colorbar
     ax.set_xlabel("column")
     ax.set_ylabel("row")
 plt.show()
