@@ -44,6 +44,170 @@ noise 0.1):
   true subject centers: 0.051/0.058/0.061 (this package) and 4.79/3.81/4.45
   (BrainIAK).
 
+Faster evaluations, same answers
+--------------------------------
+
+The cost evaluations of the center/width solver were made cheaper
+(per-axis factors on grid coordinates, reuse of a cost evaluation in the
+Hessian assembly, the projected objective from ``||X||**2 - <F^T X, W>``; see
+:doc:`performance`). Three checks compare the new code with commit
+``3298278``, the code before those changes.
+
+**Kernels over generated scenarios** (``tests/test_equivalence.py``). The
+oracle is ``tests/reference_kernels_3298278.py``, the kernel module of
+``3298278`` unchanged. Each scenario draws one value from every family below,
+with seeded random sizes and parameters; 480 scenarios, plus 12 large ones
+(marked ``slow``), each at three points (the scenario's centers and widths and
+two perturbations of them):
+
+.. list-table:: Scenario families
+   :header-rows: 1
+
+   * - family
+     - values
+   * - D
+     - 2, 3 (TFA accepts only these)
+   * - coordinates
+     - regular grids with offset origins and anisotropic voxels (1 to 4 mm per
+       axis), MNI-like 2 mm ellipsoid masks, rotated (oblique) grids, jittered
+       grids, grids offset by 1e6 mm, uniform random clouds; 152 of the 480 use
+       the per-axis path, the rest the direct one
+   * - sizes
+     - V from 1 (fewer voxels than factors) to 2000, T 1 to 40, K 1 to 30;
+       large: V = 20000, T 1 to 300, K 50 and 100
+   * - widths
+     - tiny (factors 0 or subnormal at almost every voxel), small, typical,
+       huge (factors about 1 everywhere), mixed over ten decades
+   * - centers
+     - inside, at the edge of, and 2 to 5 extents outside the voxel cloud
+   * - weights
+     - ``'rr'``, ``'ols'``; near-duplicate factors (1e-6 apart), a vanishing
+       factor, a near-singular gram
+   * - loss
+     - varpro (linear), linear (compressed residual problem), ``soft_l1``,
+       ``huber``, ``linear+soft_l1``
+   * - prior
+     - none, a random HTFA prior
+   * - data
+     - noiseless, noise for R² about 0.04, t-distributed (2 dof) noise, 30%
+       constant voxels, per-voxel mean offsets of about 100
+
+Compared: factors (per entry, normal numbers, 1e-12; subnormal entries within
+the smallest normal number), factor derivatives, cost, gradient, Gauss-Newton
+matrix, Hessian and weights (relative to the largest entry, 1e-10). Where the
+problem amplifies rounding (the gram's condition number, or cancellation in
+``X - F W``), the tolerance is that amplification times 100 times the measured
+factor difference; this applied to 910 of the 12445 comparisons. A
+comparison is skipped where a gram eigenvalue ratio is within a factor 100 of
+the truncation cutoff, where keeping it depends on rounding. Results
+(``scripts/equivalence_summary.py --slow``):
+
+.. list-table:: Kernel differences, tolerance 1e-10 (median / max)
+   :header-rows: 1
+
+   * - quantity
+     - varpro
+     - linear
+     - soft_l1
+     - huber
+   * - cost
+     - 1.2e-16 / 2.4e-12
+     - 0 / 2.3e-16
+     - 0 / 4.9e-16
+     - 0 / 2.3e-16
+   * - gradient
+     - 0 / 6.9e-14
+     - 0 / 5.4e-16
+     - 0 / 3.6e-15
+     - 0 / 5.7e-14
+   * - Gauss-Newton matrix
+     - 0 / 3.9e-13
+     - 0 / 4.4e-15
+     - 0 / 1.4e-14
+     - 0 / 5.7e-14
+   * - Hessian
+     - 0 / 4.4e-12
+     - 0 / 1.0e-13
+     - 0 / 2.5e-14
+     - 0 / 8.5e-14
+   * - weights
+     - 0 / 7.8e-13
+     -
+     -
+     -
+
+Factors differed by at most 2.0e-13 per entry over all points, and their
+derivatives by 7.9e-14. All 45 scenarios that needed a raised tolerance above
+1e-6 had fewer voxels than factors; there the differences were at most 0.11 of
+it. The gradient is compared relative to its scale ``sqrt(2 cost
+lambda_max)`` and the projected matrices relative to the fixed-weight ones,
+since near an optimum or with vanishing factors they are cancellations of
+terms of that size. A third test interleaves cost and Hessian calls at
+changing points, repeats a point after another one and changes the prior in
+place: every result equals a fresh problem's bit for bit.
+
+**Whole fits, well-conditioned synthetic problems**
+(``tests/test_fit_equivalence.py``). 36 fits with the defaults (2D grids 20 x
+20, 30 x 30, 25 x 15 and 3D grids 10³, 12³, 14 x 10 x 8; K = 2, 4, 6; noise 0.1
+and 0.5) against the saved fits of ``3298278``
+(``tests/data/fits_3298278.npz``, written by ``scripts/make_fit_references.py``).
+35 reference fits recover the true centers to 0.2 lengths; one ends at a local
+optimum in both versions. Tolerances are those of the stopping rule
+(``threshold`` = 1e-3: centers in lengths ``sqrt(max_sigma / 2)``, widths and
+weights relative) and 1e-8 for the cost.
+
+.. list-table:: Whole-fit differences, 36 fits
+   :header-rows: 1
+
+   * - quantity
+     - median
+     - max
+   * - centers (lengths)
+     - 3.2e-16
+     - 1.2e-8
+   * - widths (relative)
+     - 1.9e-15
+     - 1.4e-7
+   * - weights (relative to the largest)
+     - 1.2e-15
+     - 9.5e-8
+   * - cost (relative)
+     - 0
+     - 1.1e-10
+
+**Whole fits, real data at K = 100.** Six development_fmri adults, training
+segment of the held-out protocol above (all voxels, 80 samples, ``init='ncorr'``,
+``standardize=False``), held-out R² scored as above:
+
+.. list-table:: K = 100, 3298278 / new code
+   :header-rows: 1
+
+   * - subject
+     - objective (relative difference, new - old)
+     - held-out R² (ridge)
+   * - sub-pixar123
+     - +5.2e-9
+     - 0.0394750 / 0.0394750
+   * - sub-pixar124
+     - +4.2e-15
+     - 0.1023571 / 0.1023571
+   * - sub-pixar125
+     - -1.4e-5
+     - 0.0514058 / 0.0514142
+   * - sub-pixar126
+     - -3.4e-10
+     - 0.0351641 / 0.0351642
+   * - sub-pixar127
+     - +1.7e-13
+     - 0.0762920 / 0.0762920
+   * - sub-pixar128
+     - -7.6e-13
+     - 0.0499928 / 0.0499928
+
+Objectives are equal within the solver's ``ftol`` (1e-8) or lower, and the
+held-out R² values differ by at most 8.3e-6 (sub-pixar125, which stopped after
+2 instead of 9 outer iterations at a 1.4e-5 lower objective).
+
 Real fMRI: data
 ---------------
 

@@ -25,6 +25,7 @@ for i in indices:
 if "--slow" in sys.argv:
     for i in range(eq.N_SLOW):
         eq.compare(eq._large_scenario(i))
+        indices.append(10_000 + i)
 plain: dict[str, list[float]] = defaultdict(list)
 raised: dict[str, list[tuple[float, float, int]]] = defaultdict(list)
 for index, name, rel, tol in eq.RECORDS:

@@ -7,7 +7,8 @@ Backends
 The centers and widths are found by a bounded Levenberg-Marquardt solve
 (``nlss_method='bounded-lm'``) on the explicit ``K (D + 1)``-square
 Gauss-Newton system; with the default linear loss the same solver runs on the
-variable-projection objective (``'varpro'``, see `Solver and outer loop`_). Assembling that system is dominated by products between the
+variable-projection objective (``'varpro'``, see `Solver and outer loop`_).
+Assembling that system is dominated by products between the
 ``(V, T)`` data, the ``(V, K)`` factor images and the ``(K, T)`` weights; with the
 ``'linear'`` loss the data term is compressed exactly and its products do not
 depend on ``T``. An engine computes these products. The ``backend`` argument of
@@ -398,17 +399,24 @@ results (fits of 12 synthetic and 6 real cases). The per-axis factors agree
 with the direct ones to 8.7e-14 (relative, per entry) and the identity with
 the residual form to 3e-15 on real data and 3.2e-13 on unstandardized
 synthetic data with noise 0.003. At fixed points (the fitted optima and two
-perturbations of them) cost, gradient, Gauss-Newton matrix and Hessian agree
-with the earlier code to 1.6e-11 or better (relative to the largest entry;
-gradients at an optimum, which are rounding noise, excepted). Whole fits are determined only to
-the precision of the stopping rules, and move under any rounding change: a
-relative 1e-14 change of the data moves the earlier code's results by up to
-1e-8 (K = 50) and 2.5e-3 (K = 100; one subject reached another optimum, its
-objective 8e-5 lower). The new code's results differ from the earlier code's
-by up to 1.1e-7 (K = 50) and 1.5e-3 (K = 100), with objectives within 1.1e-7
-(at K = 100 equal or lower), and on the synthetic fits by up to 1.8e-10, except
-one high-SNR fit where another start won with a 1.1e-7 lower objective (the
-same factors, 7e-8 apart).
+perturbations of them, real subjects 0 to 2), cost, Gauss-Newton matrix,
+Hessian and weights agree with the earlier code to 6.3e-13, and gradients at
+the perturbed points to 1.4e-11 (relative to the largest entry); at the optima
+themselves the gradient is rounding noise around 0 and its relative difference
+(up to 1.6e-11 here, 1e-2 on synthetic data) is not meaningful. A sweep over
+480 generated scenarios is in :doc:`validation`.
+
+Whole fits are determined only to the precision of the stopping rules, and
+move under any rounding change. Changing the data by a relative 1e-14, 1e-13
+or 1e-12 moves the earlier code's results by up to 1.0e-8, 2.6e-8 and 4.4e-8
+(K = 50) and by up to 2.5e-3, 8.4e-4 and 2.1e-3 (K = 100; one more subject
+reached another optimum under the 1e-14 and the 1e-12 change, its objective
+8e-5 lower). The new code's
+results differ from the earlier code's by up to 1.1e-7 (K = 50), 2.5 times
+the largest of these, and 1.5e-3 (K = 100), with objectives within 1.1e-7 (at
+K = 100 equal or lower). On the synthetic fits they differ by up to 1.8e-10,
+except one high-SNR fit where another start won with a 1.1e-7 lower objective
+(the same factors, 7e-8 apart).
 
 **Not adopted.** Three approximate Hessians, with the exact cost and gradient
 (so the same stationary points), were tried on single varpro solves from the
@@ -416,8 +424,9 @@ same factors, 7e-8 apart).
 of the voxels, from float32 products, and reused for up to 2 or 5 accepted
 steps while the gain ratio stays above 0.5. Only the float32 Hessian at
 K = 50 reached the same point (costs within 1.2e-11, centers within 4.3e-3
-mm), and it was no faster (0.95 to 1.03 times the time). All other runs ended at other
-points of the long flat valleys these solves end in: final costs differed from
+mm), and it was no faster (0.95 to 1.03 times the time). All other runs
+ended at other points of the long flat valleys these solves end in: final
+costs differed from
 the exact solver's by -3.5e-4 to +2.3e-4 (relative), in both directions, and
 centers by up to tens of mm. Their times ranged from 0.3 to 2.0 times the
 exact solver's.

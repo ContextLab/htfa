@@ -36,6 +36,8 @@ Added:
   ``||X||**2 - <F^T X, W>``. A cost evaluation is about 3 times and an
   accepted solver step 1.4 times faster on development_fmri (K = 50 and 100);
   whole fits 1.1 to 1.5 times (see :doc:`performance`).
+  Checked against the earlier formulas over 492 generated scenarios and 36
+  saved synthetic fits (see :doc:`validation`).
 - HTFA: a global stopping rule that also stops on a plateau of the template
   change or on a stalled summed local objective (``converged_reason_``), and
   ``template_update='fixed'`` and ``'empirical'`` next to BrainIAK's update
