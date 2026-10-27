@@ -1,6 +1,8 @@
 htfa
 ====
 
+.. include:: _cover.inc
+
 htfa is a Python implementation of topographic factor analysis (TFA) and
 hierarchical topographic factor analysis (HTFA), written from scratch after the
 algorithm in `BrainIAK <https://brainiak.org>`_. It does not import BrainIAK.

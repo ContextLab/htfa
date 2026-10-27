@@ -1,6 +1,8 @@
 Tutorials
 =========
 
+.. include:: _cover.inc
+
 Each tutorial opens in Google Colab from the "Open in Colab" badge at its top.
 Its first code cell installs htfa from GitHub when htfa is not installed. The
 other packages a tutorial uses (for example matplotlib, nilearn, PyVista and

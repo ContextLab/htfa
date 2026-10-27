@@ -1,5 +1,12 @@
 # htfa
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/_static/cover_dark.png">
+  <img alt="HTFA factor network: 50 template factors drawn as spheres inside a translucent brain, with the strongest inter-subject correlations as edges" src="docs/_static/cover_light.png" width="100%">
+</picture>
+
+<sub>HTFA template (K = 50) fitted to 12 adults watching a movie (nilearn's <code>development_fmri</code>), from the left, above and right. Edges: the strongest 5% of factor pairs by inter-subject functional correlation (|ISFC| &ge; 0.137; red positive, blue negative). Node size: factor width; colour: ISFC community. Made with <code>scripts/make_cover.py</code>.</sub>
+
 [![tests](https://github.com/ContextLab/htfa/actions/workflows/tests.yml/badge.svg)](https://github.com/ContextLab/htfa/actions/workflows/tests.yml)
 [![Documentation Status](https://readthedocs.org/projects/htfa/badge/?version=latest)](https://htfa.readthedocs.io/en/latest/?badge=latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
