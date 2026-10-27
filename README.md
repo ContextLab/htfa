@@ -22,6 +22,7 @@ htfa is a from-scratch Python implementation of these algorithms, ported from th
 - No MPI and no compiler: the core dependencies are pure Python wheels (numpy, scipy, scikit-learn, nibabel, joblib).
 - Analytic Jacobian for the center/width least-squares problem (`htfa/_kernels.py`).
 - A NumPy engine and a torch engine (CUDA, Apple Metal, CPU), chosen with the estimators' `backend` argument; `auto` uses a GPU only for large problems when torch is already installed.
+- Two solver modes: `mode='fast'` (the default) and `mode='exact'`, the reference that the equivalence tests and the BrainIAK cross-checks use. On real fMRI the fast mode fitted 2.8 (K = 50) to 5.1 (K = 100) times faster and can end at a different local minimum of the same objective (see the Performance and Validation pages of the docs).
 - Inputs: NIfTI files and folders, nilearn/nibabel objects, numpy arrays and 2D images.
 - Synthetic data with ground truth (`htfa.synthetic`), factor-level connectivity, a results object, and BrainNet Viewer-style 3D network plots (`htfa.brainnet`).
 

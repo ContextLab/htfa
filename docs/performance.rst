@@ -243,11 +243,134 @@ assemblies (62 instead of 129, 140 instead of 379 at K = 100) at costs within
 1.5e-4 (relative) of the current solver, sometimes lower and sometimes higher;
 it is not adopted.
 
+Fast and exact modes
+~~~~~~~~~~~~~~~~~~~~
+
+`htfa.TFA` and `htfa.HTFA` take ``mode='fast'`` (the default) or
+``mode='exact'``. Both modes minimize the same objective, with costs and
+gradients in float64 on NumPy and the same stopping rules, and both give
+results that do not depend on ``n_jobs``. They differ in two places of
+`htfa._kernels.bounded_lm`, the solver of ``'bounded-lm'`` and ``'varpro'``:
+
+- The step where the Hessian is not positive definite on the free variables.
+  ``'exact'`` takes the damped Gauss-Newton step there, as earlier versions
+  did. ``'fast'`` keeps the Hessian and raises the damping until the damped
+  matrix is positive definite (a damped Newton step).
+- The precision of the curvature. ``'exact'`` assembles the Gauss-Newton
+  matrix and the Hessian in float64. ``'fast'`` forms their three largest
+  products for the linear loss (``G G^T``, ``F G^T`` and ``G X``, with ``G``
+  the factor derivatives) in float32 and sums them in float64
+  (`htfa._kernels.curvature_operand`). Costs and gradients are not affected.
+
+The equivalence tests against commit ``3298278`` and the BrainIAK cross-checks
+run in ``'exact'`` mode (the cross-checks in both).
+
+**Why the step model matters.** On development_fmri the Hessian is indefinite
+at nearly every point of a solve. In six logged solves (sub-pixar123 and
+sub-pixar124, K = 50 and 100, 'ncorr' and 'kmeans' starts) the exact mode
+took the Newton step in 0 to 11 of 85 to 523 accepted steps; the others were
+Gauss-Newton steps, which converge linearly on this large-residual problem.
+The 'kmeans' solve of sub-pixar123 at K = 100 took 466 steps to a cost of
+990024.95 in exact mode and 155 steps to 988678.64 with the damped Newton
+step; its 'ncorr' solve at K = 50 took 258 steps (1003580.12) and 98 steps
+(1003673.70). The fast mode can therefore end at a different local minimum,
+lower or higher; :doc:`validation` gives its effect on the objective, the
+held-out reconstruction and the decoding. On the synthetic problems of the
+test suite the two modes agree to 2e-7 or better in whole fits, and single
+solves agree to 1e-11 except where the first step meets negative curvature.
+
+**Why float32.** On sub-pixar123 (V = 25079, T = 168, K = 100) ``G G^T``,
+``F G^T`` and ``G X`` took 4.4, 2.5 and 2.7 ms in float32 against 10.6, 7.5
+and 7.1 ms in float64 (Accelerate), and a Hessian assembly 9% to 17% less
+(K = 50 and 100), with relative errors of 5e-6 to 1e-5 in the Gauss-Newton
+matrix and the Hessian.
+
+.. list-table:: Whole TFA fits, 12 development_fmri adults, defaults
+   (``init='auto'``, all voxels), 12 threads, mean seconds per fit
+   :header-rows: 1
+
+   * - fit
+     - exact
+     - damped Newton only
+     - fast (damped Newton and float32)
+   * - K = 50, full run (T = 168)
+     - 25.5
+     - 11.2
+     - 10.3
+   * - K = 50, training segment (T = 80)
+     - 24.9
+     - 9.7
+     - 8.7
+   * - K = 100, full run
+     - 116.2
+     - 27.4
+     - 22.8
+   * - K = 100, training segment
+     - 94.1
+     - 25.6
+     - 22.4
+
+Measured 2026-10-27 with prototypes of the two changes that give the same
+results as the released code bit for bit (checked on two subjects), one
+configuration after the other, at load averages of 3 to 10 (test runs
+overlapped some of the K = 50 fits). Per subject, the fast full-run fit took
+1.4 to 4.0 times less time than the exact one at K = 50 and 1.9 to 8.6 times
+less at K = 100: the number of steps depends on which local minimum a fit
+reaches.
+
+Timed again with the released code on the first six adults (full runs,
+defaults, 12 threads), the exact and the fast fit of each subject one after
+the other, at load averages of 1.7 to 2.9 (K = 50) and 2.4 to 6.2 (K = 100):
+
+.. list-table:: Whole TFA fits, 6 development_fmri adults, 2026-10-27
+   :header-rows: 1
+
+   * - K
+     - exact, mean
+     - fast, mean
+     - ratio of total times (per subject)
+     - Hessian assemblies per fit, exact / fast
+   * - 50
+     - 24.5 s
+     - 8.9 s
+     - 2.8 (1.9 to 4.5)
+     - 241 to 693 / 105 to 215
+   * - 100
+     - 111.9 s
+     - 21.8 s
+     - 5.1 (3.2 to 8.7)
+     - 695 to 1881 / 205 to 261
+
+HTFA with its defaults on the twelve adults (K = 50, ``n_jobs=6``, 10
+global iterations in both modes) took 634 s in exact mode and 232 s in fast
+mode (2.7 times) at load averages of 4.7 to 7.8 from other jobs; a rerun with
+``scripts/validation_modes.py --htfa`` gave the same fits in 680 s and 251 s
+at a load average of about 9.
+
+**Options measured and not adopted** (development_fmri, same machine):
+
+- Gauss-Newton steps only (skipping the second-order terms, which the exact
+  mode computes and then rarely uses). The few Newton steps matter near the
+  end: on sub-pixar123 at K = 50 the outer loop ran 30 iterations instead of
+  2, and the fit took 19.8 s against 22.8 s for the exact mode, with the
+  'ncorr' candidate 3.4e-4 above the exact one's objective. With float32
+  curvature products as well it ran 7 iterations in 22.9 s.
+- The same Gauss-Newton-only, float32 variant with a looser ``ftol`` (1e-7,
+  1e-6): each solve stops earlier and the outer loop runs more iterations (18
+  and 54), for 22.8 s and 19.5 s.
+- float32 curvature products with the exact step model: 20.4, 20.9 and
+  20.8 s against 22.8, 20.8 and 24.9 s (sub-pixar123 to 125, K = 50).
+- The approximate Hessians of "Cost of one evaluation" below (from a voxel
+  subsample, or reused across steps): 0.3 to 2.0 times the exact solver's
+  time on single solves.
+
 Fitting a real dataset: where the time goes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Measured 2026-10-26 on the M2 Max below while other jobs kept the load average
-at the value given (12 cores), so these are upper bounds.
+at the value given (12 cores), so these are upper bounds. They predate
+``mode='fast'``: every row is an exact-mode fit (see "Fast and exact modes"
+above for fast-mode times).
 
 .. list-table:: One subject's stage-0 fit, development_fmri (V = 25079, T = 168)
    :header-rows: 1

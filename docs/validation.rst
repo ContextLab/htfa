@@ -772,3 +772,124 @@ are not independent; the minimum over splits is in ``decoding.csv``.
 .. image:: _static/validation/decoding.png
    :alt: Decoding accuracy per feature set for 1- and 6-sample windows, with chance
          and the shift null.
+
+Fast and exact modes
+--------------------
+
+`htfa.TFA` and `htfa.HTFA` fit in ``mode='fast'`` by default. It differs from
+``mode='exact'`` (the reference, and the behavior of earlier versions) in the
+solver's step where the Hessian is indefinite and in the precision of the
+curvature (:doc:`performance`, "Fast and exact modes"). Both minimize the same
+objective, so on a well-conditioned problem they should reach the same fit,
+and on a problem with several local minima they can reach different ones. The
+checks below compare the two modes computed on the same machine.
+
+**Synthetic data** (``tests/test_fast_mode.py``, on macOS with Accelerate and
+on Linux with OpenBLAS):
+
+- Single solves, the solver families of ``tests/test_kernels.py`` (44
+  solves: test problems in 2D and 3D, with and without a prior, and
+  `htfa.make_tfa_data` solves; linear and ``soft_l1`` losses): 42 agree with
+  the exact solve within 1e-11 (relative cost). The other two, a 3D solve
+  started from a prior where the first step meets negative curvature, end
+  4.2e-4 (linear) and 3.8e-4 (``soft_l1``) higher, with centers 6.4 and 6.8 grid units
+  apart; the exact mode takes the Gauss-Newton step there to avoid that jump
+  (``test_bounded_lm_does_not_jump_basins_on_indefinite_hessian``). The test
+  allows at most 1e-3 and only in these two cases.
+- Whole TFA fits, the 36 problems of the fit equivalence test above plus 20
+  more (``soft_l1``, the two-stage loss, ``'ols'`` weights, a prior and
+  ``nlss_method='bounded-lm'``; 2D and 3D, K = 4 and 8), with the same
+  well-conditioning criterion: 54 qualified on macOS and 55 on Linux, and on
+  each the fast fit is within the stopping tolerances of the exact fit. The
+  largest differences were 5.2e-8 lengths (centers), 1.9e-7 (widths), 1.2e-7
+  (weights) and 2.0e-10 (cost).
+- Whole HTFA fits (3 subjects; 2D and 3D, K = 3 and 6, the three template
+  updates, linear and ``soft_l1``; 24 problems). A problem qualifies when the
+  exact template recovers the truth, is stable under a 1e-12 change of the
+  data, and ends within 0.1 lengths of the exact fit started from the true
+  parameters (18 qualified on each platform). The fast templates are within
+  2.9e-5 lengths of the exact ones, the summed objectives within 7.6e-8, and
+  the test allows 1e-3 and 1e-6. One excluded problem shows the other side:
+  on Linux the exact fit stopped 0.17 lengths from the truth and the fast fit
+  0.028.
+- BrainIAK cross-check: the recovery errors of the cross-check above are the
+  same in both modes, to the printed 4 digits.
+- The HTFA fits are independent of ``n_jobs`` bit for bit in both modes, and
+  repeated fits are identical (``tests/test_htfa.py``,
+  ``tests/test_fast_mode.py``).
+
+**Real fMRI** (``scripts/validation_modes.py``): the twelve adults, TFA with
+its defaults (``init='auto'``, all voxels) on the cleaned, z-scored runs, in
+both modes. Objectives are of the full-run fits; held-out R² uses fits to the
+training segment and the A/B scoring of the held-out section above (all
+voxels and default stopping here, unlike that section's capped fits);
+decoding uses the procedure of the previous section with each subject's
+full-run factors in turn as the shared factor set (ridge weights of every
+subject's run on them), averaged over the twelve factor sets.
+
+.. list-table:: Fast against exact, 12 adults (``modes.csv``)
+   :header-rows: 1
+
+   * - quantity
+     - K = 50
+     - K = 100
+   * - objective, fast - exact (relative): range, subjects lower
+     - -4.5e-4 to +2.3e-4, 10 of 12
+     - -5.1e-4 to +3.3e-4, 5 of 12
+   * - held-out R² (ridge), mean exact / fast
+     - 0.0427 / 0.0429
+     - 0.0506 / 0.0506
+   * - held-out R², fast - exact per subject
+     - -0.0008 to +0.0010
+     - -0.0016 to +0.0011
+   * - decoding, 1-sample windows, exact / fast
+     - 0.139 / 0.130
+     - 0.178 / 0.180
+   * - decoding, 6-sample windows, exact / fast
+     - 0.513 / 0.503
+     - 0.611 / 0.604
+   * - seconds per full-run fit, exact / fast (:doc:`performance`)
+     - 24.5 / 8.9
+     - 111.9 / 21.8
+
+The fast fits end at other local minima, below the exact ones for 10 of 12
+subjects at K = 50 and 5 of 12 at K = 100. The objectives are no further
+apart than the optima that rounding alone reached on this data: on the
+training segment of sub-pixar123 at K = 100, six 'kmeans' starts that
+differed only by rounding (before the K-means start was made reproducible)
+ended at costs 7.1e-4 apart (relative), with held-out R² from 0.0394 to
+0.0397. Held-out reconstruction is the same on average; per subject it
+differs by up to 0.0016 in R², in both directions. Fast-mode decoding is
+lower by 0.009 (1-sample windows) and 0.010 (6-sample windows) at K = 50, and
+differs by +0.001 and -0.007 at K = 100. Between the twelve factor sets of
+the exact mode, the accuracy ranges from 0.105 to 0.165 (K = 50, 1-sample
+windows), so these differences are small against the variation between
+subjects' factor sets; the splits and factor sets are not independent, so no
+significance test is given.
+
+**HTFA on real fMRI** (``scripts/validation_modes.py --htfa``): `htfa.HTFA`
+with its defaults on the twelve adults (K = 50, ``n_jobs=6``; both modes ran
+the 10 global iterations of ``max_global_iter``). The summed final local
+objective was 4.2e-4 lower in fast mode (12847400.5 against 12852845.9). The
+templates differ as maps: matched template centers are 12.9 mm apart
+(median; 44.5 mm at most), because the stage-0 fits, the template subject's
+included, reach other local minima. Decoding as in the previous section:
+
+.. list-table:: HTFA decoding accuracy, mean over 462 splits (``modes_htfa.csv``)
+   :header-rows: 1
+
+   * - features
+     - exact, 1 / 6-sample windows
+     - fast, 1 / 6-sample windows
+   * - HTFA template factors
+     - 0.146 / 0.510
+     - 0.136 / 0.558
+   * - HTFA local weights
+     - 0.082 / 0.345
+     - 0.082 / 0.400
+
+So the fast template decodes slightly worse with single samples and better
+with 6-sample windows, and the fast local weights about as well with single
+samples (0.0819 against 0.0824) and better with 6-sample windows;
+none of these differences is large against the differences between feature
+sets in the previous section.

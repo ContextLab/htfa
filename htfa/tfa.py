@@ -407,19 +407,22 @@ class TFA(BaseEstimator):
         Compute engine for the data-term products; see
         `htfa._engines.select_engine`.
     mode : {'fast', 'exact'}, default='fast'
-        Step model of the ``'bounded-lm'`` and ``'varpro'`` solvers (no effect
-        on ``'trf'`` and ``'dogbox'``; see `htfa._kernels.bounded_lm`). Both
-        modes minimize the same objective with the same arithmetic (the
-        engine's) and the same stopping rules. ``'exact'`` takes a Gauss-Newton
-        step wherever the Hessian is not positive definite on the free
-        variables. It is the reference
-        behavior: the equivalence tests and the BrainIAK cross-checks run in
-        it. ``'fast'`` keeps the Hessian and raises the damping instead. On
-        real fMRI the Hessian is indefinite at most points of a solve, so
-        ``'fast'`` takes fewer, larger steps and can end at a different local
-        minimum. See docs/performance.rst for the measured speedup and
-        docs/validation.rst for its effect on the objective, held-out
-        reconstruction and decoding.
+        How the ``'bounded-lm'`` and ``'varpro'`` solvers form their steps (no
+        effect on ``'trf'`` and ``'dogbox'``; see `htfa._kernels.bounded_lm`).
+        Both modes minimize the same objective, with float64 costs and
+        gradients (on NumPy) and the same stopping rules. ``'exact'`` takes a
+        Gauss-Newton step wherever the Hessian is not positive definite on the
+        free variables and assembles the curvature in float64; it is the
+        reference behavior, in which the equivalence tests and the BrainIAK
+        cross-checks run. ``'fast'`` keeps the Hessian there and raises the
+        damping instead, and forms the largest curvature products of the
+        linear loss in float32. On real fMRI the Hessian is indefinite at most
+        points of a solve, so ``'fast'`` takes fewer steps and can end at a
+        different local minimum: on 12 development_fmri adults it fitted 2.5
+        (K = 50) and 5.1 (K = 100) times faster, with objectives within
+        -5.1e-4 to +3.3e-4 (relative) of the exact fits, and mean held-out
+        R^2 0.0429 and 0.0506 against 0.0427 and 0.0506 (see
+        docs/performance.rst and docs/validation.rst).
     random_state : None, int or numpy.random.Generator, default=None
         Seeds the K-means initializations and the subsampling.
     verbose : bool, default=False

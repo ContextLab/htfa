@@ -57,7 +57,8 @@ SAME_CENTER_ATOL = 1e-3
 BASIN_JUMPS = {("tfa", "linear", ("3d", 2), True), ("tfa", "soft_l1", ("3d", 2), True)}
 # HTFA: template (lengths sqrt(max_sigma / 2)) and summed final local objective
 # of the fast fit against the exact one. Measured over the 18 well-conditioned
-# cases below (macOS): 2.9e-5 lengths and 7.0e-8 relative.
+# cases below: 2.9e-5 lengths and 7.0e-8 relative (macOS), 2.9e-5 and 7.6e-8 (Linux,
+# OpenBLAS).
 HTFA_GLOBAL_LENGTHS = 1e-3
 HTFA_OBJECTIVE_RTOL = 1e-6
 TRUTH_START_LENGTHS = 0.1
@@ -211,8 +212,10 @@ def test_fast_tfa_fits_match_exact_on_well_conditioned_problems():
     exact fit recovers the truth to RECOVERY_LENGTHS and is stable under a
     PERTURBATION of the data, the fast fit recovers the truth as well and is
     within THRESHOLD (centers, widths, weights) and COST_RTOL of the exact fit.
-    Measured: max differences 5.2e-8 lengths (centers), 1.7e-7 (widths),
-    1.4e-10 (cost)."""
+    Measured: 54 cases qualified on macOS (Accelerate) and 55 on Linux
+    (OpenBLAS), with max differences of 5.2e-8 and 3.5e-8 lengths (centers),
+    1.7e-7 and 1.9e-7 (widths), 9.5e-8 and 1.2e-7 (weights), 1.4e-10 and
+    2.0e-10 (cost)."""
     rows, excluded = [], []
     for i, (family, data) in enumerate(_tfa_cases()):
         exact = _tfa_fit(family, data, "exact")
@@ -349,7 +352,7 @@ def test_tfa_rejects_unknown_mode():
 
 # Real data: full-run fit of the first adult, defaults otherwise. Measured over
 # the 12 adults (docs/validation.rst): fast - exact objective from -4.5e-4 to
-# +3.6e-4 at K = 50 and from -4.9e-4 to +3.0e-4 at K = 100.
+# +2.3e-4 at K = 50 and from -5.1e-4 to +3.3e-4 at K = 100.
 REAL_COST_RTOL = 1e-3
 
 

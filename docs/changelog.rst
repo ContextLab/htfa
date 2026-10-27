@@ -59,6 +59,20 @@ Added:
 - HTFA's results do not depend on ``n_jobs``: every subject fit runs BLAS on
   one thread, serial or parallel (before, 8 subjects at K=100 with n_jobs=8
   and n_jobs=4 gave different templates).
+- ``mode='fast'`` (the default of `htfa.TFA`, `htfa.HTFA` and
+  :func:`htfa.fit`) and ``mode='exact'`` (the earlier behavior). Where the
+  Hessian is not positive definite on the free variables, the fast solver
+  keeps it and raises the damping instead of taking a Gauss-Newton step, and
+  it forms the largest curvature products of the linear loss in float32;
+  costs and gradients are unchanged. On six development_fmri adults a
+  full-run TFA fit took 8.9 s instead of 24.5 s at K = 50 and 21.8 s instead
+  of 111.9 s at K = 100. The fast fits reach other local minima of the same
+  objective: on twelve adults their objectives were within -5.1e-4 to
+  +3.3e-4 (relative) of the exact fits, with mean held-out R² 0.0429 and
+  0.0506 against 0.0427 and 0.0506. On well-conditioned synthetic problems
+  the two modes agree to 2e-7. Exact mode is the reference for the
+  equivalence tests and the BrainIAK cross-checks (see :doc:`performance`
+  and :doc:`validation`).
 - A stopping rule for subsampled fits: the fit stops when the lowest objective
   so far (on a fixed evaluation subsample) has fallen by less than a relative
   1e-4 per iteration over the last three iterations, after at least five
@@ -83,8 +97,9 @@ BrainIAK behavior that differs from BrainIAK's code (each has a regression test)
 
 1. ``tfa_extension.cpp::factor`` shares the temporaries ``tmp1`` to ``tmp3`` across
    OpenMP threads, a data race. There is no C++ here.
-2. ``recon`` accumulates in a ``float``. Everything is float64, unless float32 is
-   chosen on the GPU.
+2. ``recon`` accumulates in a ``float``. Costs, gradients and weights are float64
+   here, unless float32 is chosen on the GPU (``mode='fast'`` forms only
+   curvature products in float32).
 3. The data residual is multiplied by sigma instead of divided.
 4. ``HTFA._assign_posterior`` computes the Hungarian permutation but writes the
    centers and widths back unpermuted, so they fall out of step with their
