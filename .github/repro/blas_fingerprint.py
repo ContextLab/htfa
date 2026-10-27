@@ -86,15 +86,20 @@ if len(sys.argv) > 1 and sys.argv[1] == "--child":
     sys.exit(0)
 n = int(sys.argv[1])
 recs = collections.Counter()
+cpus = collections.defaultdict(collections.Counter)
+print("OPENBLAS_CORETYPE =", os.environ.get("OPENBLAS_CORETYPE"), flush=True)
 for i in range(n):
     res = subprocess.run([sys.executable, __file__, "--child"], capture_output=True, text=True)
     line = next((s for s in res.stdout.splitlines() if s.startswith("REC")), None)
     if line is None:
         print(i, "ERROR", res.stderr[-400:], flush=True)
         continue
-    recs[line.split("|", 1)[1]] += 1
+    key = line.split("|", 1)[1]
+    recs[key] += 1
+    cpus[key][line.split()[1]] += 1
     if i < 2:
         print(i, line, flush=True)
 print("\nSUMMARY distinct records (ignoring CPU number):", len(recs))
 for rec, c in recs.items():
     print(f"  {c:3d} {rec}")
+    print(f"      CPU number at load: {dict(cpus[rec])}")
