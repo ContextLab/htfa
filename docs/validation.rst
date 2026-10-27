@@ -185,16 +185,22 @@ keyed on the widths only failed 32 of its 40 cases, one keyed on the centers
 only 32, and a cost cached on the point alone (ignoring prior changes) 27.
 
 **Whole fits, well-conditioned synthetic problems**
-(``tests/test_fit_equivalence.py``). 36 fits with the defaults (2D grids 20 x
-20, 30 x 30, 25 x 15 and 3D grids 10³, 12³, 14 x 10 x 8; K = 2, 4, 6; noise 0.1
-and 0.5) against the saved fits of ``3298278``
-(``tests/data/fits_3298278.npz``, written by ``scripts/make_fit_references.py``).
-35 reference fits recover the true centers to 0.2 lengths; one ends at a local
-optimum in both versions. Tolerances are those of the stopping rule
-(``threshold`` = 1e-3: centers in lengths ``sqrt(max_sigma / 2)``, widths and
-weights relative) and 1e-8 for the cost.
+(``tests/test_fit_equivalence.py``). 36 candidate problems (2D grids 20 x 20,
+30 x 30, 25 x 15 and 3D grids 10³, 12³, 14 x 10 x 8; K = 2, 4, 6; noise 0.1
+and 0.5), fitted with the defaults by the current code and by the same
+``TFA`` running on the 3298278 kernels, both on the machine that runs the test
+(saved outputs would carry one platform's BLAS rounding). A problem counts as
+well-conditioned when the 3298278 fit recovers the true centers to 0.2
+lengths ``sqrt(max_sigma / 2)`` and is stable: its fit on the data changed by
+a relative 1e-12 agrees with it within the tolerances below. Only those are
+compared; at least 30 must qualify. Tolerances are those of the stopping rule
+(``threshold`` = 1e-3: centers in lengths, widths and weights relative) and
+1e-8 for the cost. On macOS (Accelerate) 35 qualified (the one excluded
+ends at a local optimum, centers 1.75 lengths from the truth); on Linux
+(OpenBLAS, Python 3.10) all 36, with differences of at most 1.5e-9 (centers),
+6.2e-8 (widths), 2.8e-8 (weights) and 6.3e-11 (cost).
 
-.. list-table:: Whole-fit differences, 36 fits
+.. list-table:: Whole-fit differences, 35 well-conditioned fits (macOS)
    :header-rows: 1
 
    * - quantity

@@ -816,10 +816,16 @@ def test_ols_fit_with_a_factor_that_vanishes_finishes():
     """With 'ols' and a small lower_ratio a width can shrink until its factor is
     0 at every voxel; the full-data weights then had a singular gram and
     ridge_weights raised LinAlgError (seeds 0, 3, 4, 18 of this setup). Now
-    the fit finishes, the vanished factor gets a weight of about 0 (the minimum-norm
-    weights the varpro objective uses; measured 8.6e-10 of the largest weight)
-    and cost_ is finite."""
-    from htfa._kernels import gram_solve
+    the fit finishes with the minimum-norm weights the varpro objective uses
+    and a finite cost_. The vanished factor's weight is 0 only up to rounding:
+    the eigensolver mixes the zero column's direction into the eigenvector of
+    the smallest kept eigenvalue by about eps times the kept condition number
+    (eigenvector perturbation with that eigenvalue as the gap), and that
+    eigenvector carries weights of size max|W|; summed over the K - 1 kept
+    directions, |w| <= (K - 1) eps cond max|W|. Measured: 8.6e-10 of the
+    largest weight (macOS, Accelerate) and 1.2e-8 (macOS runners with Python
+    3.10 and 3.11), with eps cond = 1.4e-8 here."""
+    from htfa._kernels import GRAM_RCOND, gram_solve
 
     rng = np.random.default_rng(3)
     R, X = rng.uniform(0, 100, (30, 3)), rng.normal(size=(30, 10))
@@ -835,7 +841,13 @@ def test_ols_fit_with_a_factor_that_vanishes_finishes():
         f"vanished factors {np.flatnonzero(vanished)}, widths {m.widths_}, "
         f"cost {m.cost_:.6g}, weight rows max {np.abs(m.weights_).max(1)}"
     )
+    vals = np.linalg.eigvalsh(F.T @ F)
+    kept = vals[vals > GRAM_RCOND * vals[-1]]
+    cond = float(vals[-1] / kept.min())
+    bound = (len(kept) - 1) * np.finfo(np.float64).eps * cond
+    ratio = np.abs(m.weights_[vanished]).max() / np.abs(m.weights_).max()
+    print(f"vanished weight / max weight {ratio:.2e}, bound {bound:.2e}")
     assert vanished.any()
-    assert np.abs(m.weights_[vanished]).max() <= 1e-8 * np.abs(m.weights_).max()
+    assert ratio <= bound
     np.testing.assert_allclose(m.weights_, W, rtol=1e-12, atol=0)
     assert np.isfinite(m.cost_)

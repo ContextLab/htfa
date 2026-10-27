@@ -36,8 +36,8 @@ Added:
   ``||X||**2 - <F^T X, W>``. A cost evaluation is about 3 times and an
   accepted solver step 1.4 times faster on development_fmri (K = 50 and 100);
   whole fits 1.1 to 1.5 times (see :doc:`performance`).
-  Checked against the earlier formulas over 492 generated scenarios and 36
-  saved synthetic fits (see :doc:`validation`).
+  Checked against the earlier formulas over 492 generated scenarios and 35
+  well-conditioned synthetic fits (see :doc:`validation`).
 - An ``'ols'`` fit whose width shrank (with a small ``lower_ratio``) until a
   factor was 0 at every voxel raised ``LinAlgError`` in its final weights;
   ``ridge_weights`` now falls back to the minimum-norm weights the varpro
