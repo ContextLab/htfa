@@ -188,7 +188,8 @@ def _scramble_small_allocations(seed: int) -> list:
     return [np.empty(int(n)) for n in sizes]
 
 
-def test_htfa_bitwise_independent_of_n_jobs() -> None:
+@pytest.mark.parametrize("mode", ["fast", "exact"])
+def test_htfa_bitwise_independent_of_n_jobs(mode: str) -> None:
     """joblib's loky workers get BLAS thread variables of cpu_count // n_jobs
     (1 from n_jobs > cpu_count / 2), and BLAS rounds differently with one
     thread than with several (Accelerate) or with every thread count (OpenBLAS,
@@ -198,13 +199,15 @@ def test_htfa_bitwise_independent_of_n_jobs() -> None:
 
     The comparison is meaningful only where repeated serial fits agree bit for
     bit whatever the memory layout, so that is checked first, with the small
-    allocations scrambled between fits (see N_JOBS_TEST_K)."""
+    allocations scrambled between fits (see N_JOBS_TEST_K). Both modes."""
     n = max(2, (os.cpu_count() or 1) // 2 + 1)
     K = N_JOBS_TEST_K
     Xs, Rs, _ = make_htfa_data(
         n_subjects=n, grid_shape=(20, 20, 20), n_samples=60, K=20, random_state=0
     )
-    kw = {"K": K, "init": "ncorr", "max_global_iter": 2, "random_state": 0}
+    kw = {
+        "K": K, "init": "ncorr", "max_global_iter": 2, "mode": mode, "random_state": 0
+    }  # fmt: skip
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ConvergenceWarning)
         layouts = set()

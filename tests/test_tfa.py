@@ -445,11 +445,12 @@ def test_tfa_sklearn_params():
     assert params["random_state"] == 4 and params["standardize"] == "auto"
     assert params["init"] == "auto" and params["n_screen_iter"] == 0
     assert params["max_iter"] == 100 and params["threshold"] == 1e-3
+    assert params["mode"] == "fast"
     assert set(params) == {
         "K", "max_iter", "threshold", "nlss_method", "nlss_loss", "x_scale",
         "weight_method", "upper_ratio", "lower_ratio", "voxel_ratio", "tr_ratio",
         "max_voxels", "max_trs", "standardize", "init", "n_screen_iter", "backend",
-        "random_state", "verbose",
+        "mode", "random_state", "verbose",
     }  # fmt: skip
     assert clone(model).get_params() == params
 
@@ -841,7 +842,9 @@ def test_ols_fit_with_a_factor_that_vanishes_finishes():
     eigenvector carries weights of size max|W|; summed over the K - 1 kept
     directions, |w| <= (K - 1) eps cond max|W|. Measured: 8.6e-10 of the
     largest weight (macOS, Accelerate) and 1.2e-8 (macOS runners with Python
-    3.10 and 3.11), with eps cond = 1.4e-8 here."""
+    3.10 and 3.11), with eps cond = 1.4e-8 here. The fit runs in mode 'exact':
+    in mode 'fast' no factor vanished for any of seeds 0-29 of this setup
+    (exact: seeds 3, 22, 27)."""
     from htfa._kernels import GRAM_RCOND, gram_solve
 
     rng = np.random.default_rng(3)
@@ -849,7 +852,12 @@ def test_ols_fit_with_a_factor_that_vanishes_finishes():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ConvergenceWarning)
         m = TFA(
-            K=4, weight_method="ols", lower_ratio=1e-5, max_iter=20, random_state=3
+            K=4,
+            weight_method="ols",
+            lower_ratio=1e-5,
+            max_iter=20,
+            mode="exact",
+            random_state=3,
         ).fit(X, R)
     F = factors(R, m.centers_, m.widths_)
     vanished = ~F.any(axis=0)

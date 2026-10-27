@@ -17,6 +17,7 @@ from sklearn.utils.validation import check_is_fitted
 from htfa._engines import LOSS_NAMES, loss_terms, select_engine
 from htfa._kernels import (
     NLSS_METHODS,
+    SOLVER_MODES,
     Prior,
     ProjectedProblem,
     ResidualProblem,
@@ -405,6 +406,20 @@ class TFA(BaseEstimator):
     backend : {'auto', 'numpy', 'cpu', 'torch', 'cuda', 'mps'}, default='auto'
         Compute engine for the data-term products; see
         `htfa._engines.select_engine`.
+    mode : {'fast', 'exact'}, default='fast'
+        Step model of the ``'bounded-lm'`` and ``'varpro'`` solvers (no effect
+        on ``'trf'`` and ``'dogbox'``; see `htfa._kernels.bounded_lm`). Both
+        modes minimize the same objective with the same arithmetic (the
+        engine's) and the same stopping rules. ``'exact'`` takes a Gauss-Newton
+        step wherever the Hessian is not positive definite on the free
+        variables. It is the reference
+        behavior: the equivalence tests and the BrainIAK cross-checks run in
+        it. ``'fast'`` keeps the Hessian and raises the damping instead. On
+        real fMRI the Hessian is indefinite at most points of a solve, so
+        ``'fast'`` takes fewer, larger steps and can end at a different local
+        minimum. See docs/performance.rst for the measured speedup and
+        docs/validation.rst for its effect on the objective, held-out
+        reconstruction and decoding.
     random_state : None, int or numpy.random.Generator, default=None
         Seeds the K-means initializations and the subsampling.
     verbose : bool, default=False
@@ -490,6 +505,7 @@ class TFA(BaseEstimator):
         init: str | Sequence[str] = "auto",
         n_screen_iter: int = 0,
         backend: str = "auto",
+        mode: str = "fast",
         random_state: int | np.random.Generator | None = None,
         verbose: bool = False,
     ) -> None:
@@ -510,6 +526,7 @@ class TFA(BaseEstimator):
         self.init = init
         self.n_screen_iter = n_screen_iter
         self.backend = backend
+        self.mode = mode
         self.random_state = random_state
         self.verbose = verbose
 
@@ -533,6 +550,8 @@ class TFA(BaseEstimator):
             raise ValueError(
                 f"n_screen_iter must be an integer >= 0, got {self.n_screen_iter!r}"
             )
+        if self.mode not in SOLVER_MODES:
+            raise ValueError(f"mode must be one of {SOLVER_MODES}, got {self.mode!r}")
         if self.weight_method not in ("rr", "ols"):
             raise ValueError(
                 f"weight method must be 'rr' or 'ols', got {self.weight_method!r}"
@@ -698,6 +717,7 @@ class TFA(BaseEstimator):
                 method=method,
                 loss=loss,
                 x_scale=self.x_scale,
+                mode=self.mode,
             )
             C_new = x_new[: K * D].reshape(K, D)
             perm = match_factors(C, C_new)

@@ -56,6 +56,12 @@ KERNEL_NAMES = (
 )
 
 
+def _oracle_solve(*args, mode: str, **kwargs):
+    """The 3298278 solver, which has only the 'exact' step model."""
+    assert mode == "exact", mode
+    return ref.solve_centers_widths(*args, **kwargs)
+
+
 @contextmanager
 def oracle_kernels():
     """``htfa.tfa`` with the 3298278 kernels in place of the current ones."""
@@ -63,6 +69,7 @@ def oracle_kernels():
     try:
         for name in KERNEL_NAMES:
             setattr(tfa_module, name, getattr(ref, name))
+        tfa_module.solve_centers_widths = _oracle_solve
         yield
     finally:
         for name, value in saved.items():
@@ -70,12 +77,13 @@ def oracle_kernels():
 
 
 def fit_case(case: dict, perturbation: float = 0.0) -> dict[str, np.ndarray]:
-    """TFA with its defaults on the synthetic problem of ``case``."""
+    """TFA with its defaults, in mode 'exact' (the 3298278 solver's), on the
+    synthetic problem of ``case``."""
     X, R, truth = make_tfa_data(**case)
     if perturbation:
         rng = np.random.default_rng(case["random_state"] + 1)
         X = X * (1 + perturbation * rng.standard_normal(X.shape))
-    m = TFA(K=case["K"], random_state=case["random_state"]).fit(X, R)
+    m = TFA(K=case["K"], mode="exact", random_state=case["random_state"]).fit(X, R)
     return dict(
         centers=m.centers_,
         widths=m.widths_,

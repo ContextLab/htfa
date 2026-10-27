@@ -32,6 +32,10 @@ Array = NDArray[np.float64]
 # the same solver on the variable-projection objective (linear loss only; see
 # `ProjectedProblem`) and the scipy least_squares methods kept for cross-checking.
 NLSS_METHODS = ("bounded-lm", "varpro", "trf", "dogbox")
+# Step models of the structured solver (`bounded_lm`): 'exact' falls back to the
+# Gauss-Newton matrix wherever the Hessian is not positive definite on the free
+# variables; 'fast' keeps the Hessian there and raises the damping instead.
+SOLVER_MODES = ("fast", "exact")
 # scipy.optimize.least_squares' default tolerances, used by the structured solver
 # with the same meaning (see `bounded_lm`).
 FTOL = XTOL = GTOL = 1e-8
@@ -784,6 +788,7 @@ def bounded_lm(
     loss: str,
     scale: Array,
     max_nfev: int | None = None,
+    mode: str = "exact",
 ) -> tuple[Array, float, int, int]:
     """Bounded Levenberg-Marquardt (damped Newton) on the structured Hessian.
 
@@ -808,11 +813,24 @@ def bounded_lm(
     Finite-precision engines (float32 on MPS) use ``ftol`` no smaller than
     `ftol_for` of their dtype.
 
+    ``mode`` (see `SOLVER_MODES`) chooses the step model where the Hessian is
+    not positive definite on the free variables. ``'exact'`` then takes the
+    Gauss-Newton step, damped by ``lam``. ``'fast'`` keeps the Hessian and
+    raises ``lam`` until the damped matrix is positive definite. On
+    development_fmri the Hessian was indefinite at 96% to 100% of the accepted
+    points of a solve (6 solves, K = 50 and 100), where Gauss-Newton steps
+    converge linearly: one solve from the K-means start (K = 100) took 466
+    steps to a cost of 990024.95 with ``'exact'`` and 155 steps to 988678.64
+    with ``'fast'``. Both modes minimize the same cost; they can end at
+    different local minima.
+
     Raises
     ------
     FloatingPointError
         When the cost, gradient or Gauss-Newton matrix is not finite (a
         non-finite Hessian alone falls back to the Gauss-Newton model).
+    ValueError
+        For a ``mode`` not in `SOLVER_MODES`.
 
     Returns
     -------
@@ -826,6 +844,8 @@ def bounded_lm(
     nfev : int
         Cost evaluations, Hessian assemblies included.
     """
+    if mode not in SOLVER_MODES:
+        raise ValueError(f"mode must be one of {SOLVER_MODES}, got {mode!r}")
     lb, ub = bounds
     x = np.clip(np.asarray(x0, dtype=np.float64), lb, ub)
     max_nfev = 100 * x.size if max_nfev is None else max_nfev
@@ -840,13 +860,17 @@ def bounded_lm(
             return x, cost, 1, nfev
         d = scale[free]
         g_s = d * g[free]
-        # Newton model where the Hessian is positive definite on the free
-        # variables, else the Gauss-Newton model (damping alone does not bound a
-        # step along negative curvature, which can jump to another basin).
+        # 'exact': Newton model where the Hessian is positive definite on the
+        # free variables, else the Gauss-Newton model (damping alone does not
+        # bound a step along negative curvature, which can jump to another
+        # basin). 'fast': Newton model wherever the Hessian is finite.
         H = hess
         H_s = d[:, None] * hess[np.ix_(free, free)] * d[None, :]
         try:
-            scipy.linalg.cho_factor(H_s)  # ValueError if not finite
+            if mode == "exact":
+                scipy.linalg.cho_factor(H_s)  # ValueError if not finite
+            elif not np.all(np.isfinite(H_s)):
+                raise ValueError("non-finite Hessian")
         except (np.linalg.LinAlgError, ValueError):
             H = gn
             H_s = d[:, None] * gn[np.ix_(free, free)] * d[None, :]
@@ -895,6 +919,7 @@ def solve_centers_widths(
     loss: str = "soft_l1",
     x_scale: str | Array = "jac",
     max_nfev: int | None = None,
+    mode: str = "exact",
 ) -> tuple[Array, float]:
     """Bounded nonlinear least squares for ``x = [centers.ravel(), widths]``.
 
@@ -902,8 +927,9 @@ def solve_centers_widths(
     ``scipy.optimize.least_squares`` with the matrix-free Jacobian and LSMR. Both
     minimize the same objective. ``x_scale="jac"`` uses
     ``1 / problem.column_norms(x0)`` (1 where a norm is 0), since scipy cannot
-    compute it for a matrix-free Jacobian. Returns the solution and its cost plus
-    ``problem.cost_offset``.
+    compute it for a matrix-free Jacobian. ``mode`` is `bounded_lm`'s (no
+    effect on ``'trf'`` and ``'dogbox'``). Returns the solution and its cost
+    plus ``problem.cost_offset``.
     """
     if method not in NLSS_METHODS:
         raise ValueError(f"method must be one of {NLSS_METHODS}, got {method!r}")
@@ -922,6 +948,7 @@ def solve_centers_widths(
             loss,
             np.asarray(x_scale, dtype=np.float64),
             max_nfev,
+            mode,
         )
         return x, cost + problem.cost_offset
     assert isinstance(problem, ResidualProblem)

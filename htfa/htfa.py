@@ -240,10 +240,11 @@ class HTFA(BaseEstimator):
         matched stage-0 fits (`empirical_dispersion`, floored at 1% of the
         initial values).
     nlss_method, nlss_loss, x_scale, weight_method, upper_ratio, lower_ratio,
-    voxel_ratio, tr_ratio, max_voxels, max_trs, standardize, backend, init,
-    n_screen_iter
+    voxel_ratio, tr_ratio, max_voxels, max_trs, standardize, backend, mode,
+    init, n_screen_iter
         Passed to each subject's `TFA` (``init`` and ``n_screen_iter`` only matter
         for the template fits, the only ones with several candidate starts).
+        ``mode`` defaults to ``'fast'``, as in `TFA`.
     n_jobs : int, optional
         Number of joblib workers for the subject fits (numpy engines only). The
         results do not depend on it: every subject fit, serial or parallel, runs
@@ -342,6 +343,7 @@ class HTFA(BaseEstimator):
         init: str | Sequence[str] = "auto",
         n_screen_iter: int = 0,
         backend: str = "auto",
+        mode: str = "fast",
         n_jobs: int | None = None,
         n_threads: int | None = None,
         random_state: int | None = None,
@@ -367,6 +369,7 @@ class HTFA(BaseEstimator):
         self.init = init
         self.n_screen_iter = n_screen_iter
         self.backend = backend
+        self.mode = mode
         self.n_jobs = n_jobs
         self.n_threads = n_threads
         self.random_state = random_state
@@ -375,7 +378,7 @@ class HTFA(BaseEstimator):
     def _tfa_params(self, max_iter: int) -> dict[str, Any]:
         names = (
             "K nlss_method nlss_loss x_scale weight_method upper_ratio lower_ratio "
-            "voxel_ratio tr_ratio max_voxels max_trs standardize backend init "
+            "voxel_ratio tr_ratio max_voxels max_trs standardize backend mode init "
             "n_screen_iter verbose"
         ).split()
         params = {n: getattr(self, n) for n in names}
