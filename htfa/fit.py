@@ -20,6 +20,8 @@ def fit(
     stack: bool = False,
     channels: str = "gray",
     spacing: Any = None,
+    groups: Any = None,
+    subject_ids: Any = None,
     **model_kwargs: Any,
 ) -> HTFAResults:
     """Load ``data`` and fit TFA (one subject) or HTFA (several).
@@ -30,6 +32,10 @@ def fit(
         As in `htfa.io.load`.
     K : int
         Number of factors.
+    groups, subject_ids : optional
+        Nested groups of subjects and subject identifiers, passed to
+        `htfa.HTFA.fit` (several subjects only); ``groups`` needs
+        ``template_update='fixed'`` or ``'empirical'``.
     **model_kwargs
         Passed to `htfa.TFA` or `htfa.HTFA`; an unknown key raises ``TypeError``.
         One subject fits a TFA and several fit an HTFA, so HTFA-only kwargs
@@ -52,9 +58,14 @@ def fit(
         data, coords=coords, mask=mask, stack=stack, channels=channels, spacing=spacing
     )
     if len(subjects) == 1:
+        if groups is not None or subject_ids is not None:
+            raise ValueError("groups and subject_ids need several subjects")
         tfa = TFA(K=K, **model_kwargs).fit(subjects[0].data, subjects[0].coords)
         return HTFAResults(tfa, subjects)
     htfa = HTFA(K=K, **model_kwargs).fit(
-        [s.data for s in subjects], [s.coords for s in subjects]
+        [s.data for s in subjects],
+        [s.coords for s in subjects],
+        groups=groups,
+        subject_ids=subject_ids,
     )
     return HTFAResults(htfa, subjects)

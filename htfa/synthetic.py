@@ -193,7 +193,8 @@ def make_htfa_data(
     rng = np.random.default_rng(random_state)
     R, extent = _grid(grid_shape, spacing)
     g_centers, g_widths = _draw_centers_widths(rng, extent, K, min_separation)
-    Xs, Rs = [], []
+    Xs: list[Array] = []
+    Rs: list[Array] = []
     truth: dict[str, Any] = {
         "global_centers": g_centers,
         "global_widths": g_widths,
@@ -202,16 +203,141 @@ def make_htfa_data(
         "weights": [],
     }
     for _ in range(n_subjects):
-        centers = np.clip(
-            g_centers + center_jitter * rng.standard_normal(g_centers.shape), 0, extent
-        )
-        widths = g_widths * np.exp(width_jitter * rng.standard_normal(K))
-        weights = rng.standard_normal((K, n_samples))
-        X = factors(R, centers, widths) @ weights
-        X += noise * rng.standard_normal(X.shape)
-        Xs.append(X)
-        Rs.append(R.copy())
-        truth["centers"].append(centers)
-        truth["widths"].append(widths)
-        truth["weights"].append(weights)
+        _add_subject(
+            rng, R, extent, g_centers, g_widths, n_samples, noise, center_jitter,
+            width_jitter, Xs, Rs, truth,
+        )  # fmt: skip
     return Xs, Rs, truth
+
+
+def _add_subject(
+    rng: np.random.Generator,
+    R: Array,
+    extent: Array,
+    centers: Array,
+    widths: Array,
+    n_samples: int,
+    noise: float,
+    center_jitter: float,
+    width_jitter: float,
+    Xs: list[Array],
+    Rs: list[Array],
+    truth: dict[str, Any],
+) -> None:
+    """Draw one subject around template ``centers``/``widths`` (see
+    `make_htfa_data`) and append it to ``Xs``, ``Rs`` and ``truth``."""
+    K = len(widths)
+    c = np.clip(centers + center_jitter * rng.standard_normal(centers.shape), 0, extent)
+    w = widths * np.exp(width_jitter * rng.standard_normal(K))
+    weights = rng.standard_normal((K, n_samples))
+    X = factors(R, c, w) @ weights
+    X += noise * rng.standard_normal(X.shape)
+    Xs.append(X)
+    Rs.append(R.copy())
+    truth["centers"].append(c)
+    truth["widths"].append(w)
+    truth["weights"].append(weights)
+
+
+def make_group_data(
+    group_sizes: Sequence[int] = (4, 4),
+    grid_shape: Sequence[int] = (20, 20, 20),
+    n_samples: int = 100,
+    K: int = 10,
+    center_shift: Any = None,
+    width_scale: Any = None,
+    noise: float = 0.1,
+    center_jitter: float = 1.0,
+    width_jitter: float = 0.05,
+    spacing: float = 1.0,
+    min_separation: float = 2.0,
+    random_state: int | None = None,
+) -> tuple[list[Array], list[Array], list[int], dict[str, Any]]:
+    """Simulate groups of subjects whose templates differ from a global one.
+
+    Group ``g``'s centers are the global centers plus ``center_shift[g]`` and
+    its widths the global widths times ``width_scale[g]``; its subjects are
+    drawn around the group template as in `make_htfa_data`. Global centers and
+    widths are drawn as in `make_tfa_data`.
+
+    Parameters
+    ----------
+    group_sizes : sequence of int
+        Number of subjects per group (G groups).
+    grid_shape, n_samples, K, noise, spacing, min_separation, random_state
+        As in `make_tfa_data`.
+    center_shift : array_like, shape (G, K, D), optional
+        Offsets of the group centers from the global centers (default 0). Group
+        centers are not clipped or re-checked for separation.
+    width_scale : array_like, shape (G, K), optional
+        Group width over global width (default 1).
+    center_jitter, width_jitter
+        As in `make_htfa_data`, around each subject's group template.
+
+    Returns
+    -------
+    Xs, Rs : list of ndarray
+        Data (V, T) and coordinates (V, D) per subject, group by group.
+    groups : list of int
+        Each subject's group index, for ``HTFA.fit(..., groups=groups)``.
+    truth : dict
+        ``global_centers`` (K, D), ``global_widths`` (K,), ``group_centers``
+        (G, K, D), ``group_widths`` (G, K), and per-subject lists ``centers``,
+        ``widths``, ``weights``.
+
+    Raises
+    ------
+    ValueError
+        On an empty or non-positive ``group_sizes``, shifts or scales of the
+        wrong shape, a non-positive ``width_scale``, or as `make_tfa_data`.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from htfa.synthetic import make_group_data
+    >>> shift = np.zeros((2, 3, 2))
+    >>> shift[1, 0] = [2.0, 0.0]  # group 1 moves factor 0
+    >>> Xs, Rs, groups, truth = make_group_data(
+    ...     (2, 3), grid_shape=(10, 10), n_samples=20, K=3, center_shift=shift,
+    ...     random_state=0,
+    ... )
+    >>> len(Xs), groups, truth["group_centers"].shape
+    (5, [0, 0, 1, 1, 1], (2, 3, 2))
+    """
+    sizes = [int(n) for n in group_sizes]
+    if not sizes or min(sizes) < 1:
+        raise ValueError(f"group_sizes must be positive integers, got {group_sizes}")
+    _validate(grid_shape, n_samples, K, noise, spacing)
+    rng = np.random.default_rng(random_state)
+    R, extent = _grid(grid_shape, spacing)
+    g_centers, g_widths = _draw_centers_widths(rng, extent, K, min_separation)
+    G, D = len(sizes), len(grid_shape)
+    shift = np.zeros((G, K, D)) if center_shift is None else np.asarray(center_shift)
+    scale = np.ones((G, K)) if width_scale is None else np.asarray(width_scale)
+    if shift.shape != (G, K, D) or scale.shape != (G, K):
+        raise ValueError(
+            f"center_shift must be ({G}, {K}, {D}) and width_scale ({G}, {K}); "
+            f"got {shift.shape} and {scale.shape}"
+        )
+    if np.any(scale <= 0):
+        raise ValueError("width_scale must be positive")
+    truth: dict[str, Any] = {
+        "global_centers": g_centers,
+        "global_widths": g_widths,
+        "group_centers": g_centers + shift,
+        "group_widths": g_widths * scale,
+        "centers": [],
+        "widths": [],
+        "weights": [],
+    }
+    Xs: list[Array] = []
+    Rs: list[Array] = []
+    groups: list[int] = []
+    for g, n in enumerate(sizes):
+        for _ in range(n):
+            _add_subject(
+                rng, R, extent, truth["group_centers"][g], truth["group_widths"][g],
+                n_samples, noise, center_jitter, width_jitter, Xs, Rs, truth,
+            )  # fmt: skip
+            groups.append(g)
+    return Xs, Rs, groups, truth

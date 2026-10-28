@@ -22,6 +22,7 @@ from htfa._engines import (
 )
 from htfa._kernels import Prior, max_sigma
 from htfa._matching import match_factors
+from htfa.groups import group_key, group_tree
 from htfa.tfa import TFA
 
 Array = NDArray[np.float64]
@@ -306,9 +307,24 @@ class HTFA(BaseEstimator):
     global_centers_cov_ : ndarray, shape (K, D, D)
         Posterior covariance of the global centers (``'fixed'`` and
         ``'empirical'``: ``Sigma / n_subjects``, that of a mean of
-        ``n_subjects`` draws).
+        ``n_subjects`` draws; with ``groups``, ``(A^-1)_00 Sigma``, see
+        `htfa.groups`).
     global_widths_var_ : ndarray, shape (K,)
         Posterior variance of the global widths (likewise).
+    group_tree_ : htfa.groups.GroupTree or None
+        The template tree of a fit with ``groups`` (labels, label paths,
+        parents, each subject's innermost group); ``None`` without groups.
+    group_keys_ : list
+        With ``groups``: the key of each group template, in tree order (level
+        by level, in order of first appearance): the label for a top-level
+        group, the label path (a tuple) for a deeper one.
+    group_centers_, group_widths_ : ndarray, shapes (G, K, D) and (G, K)
+        With ``groups``: the group templates, in global template order (factor
+        ``k`` of every group is global factor ``k``).
+    group_centers_cov_, group_widths_var_ : ndarray, shapes (G, K, D, D), (G, K)
+        With ``groups``: their posterior (co)variances given the local
+        estimates, ``(A^-1)_vv Sigma`` and ``(A^-1)_vv`` times the width
+        variance.
     prior_centers_cov_ : ndarray, shape (D, D)
         Subject-level center covariance of the last local fits' prior
         (``'brainiak'``: that of factor 0).
@@ -431,14 +447,15 @@ class HTFA(BaseEstimator):
         Xs: list[Array],
         Rs: list[Array],
         max_iter: int,
-        prior: Prior | None,
+        priors: Sequence[Prior | None],
         starts: Sequence[tuple[Array, Array] | None],
         seeds: NDArray[np.int64],
         parallel: bool,
     ) -> list[TFA]:
         """Fit every subject's TFA; seeds are fixed per subject, not per worker.
 
-        Local (penalized) fits (``prior`` given) have their per-fit
+        ``priors`` has one entry per subject (``None`` for the unpenalized
+        stage-0 fits). Local (penalized) fits have their per-fit
         ConvergenceWarnings suppressed in favour of one HTFA-level warning.
         """
         params = self._tfa_params(max_iter)
@@ -446,7 +463,7 @@ class HTFA(BaseEstimator):
         n_workers = min(n, effective_n_jobs(self.n_jobs)) if parallel else 1
         n_threads = self._subject_threads(n_workers)
         jobs = [
-            (params, Xs[s], Rs[s], prior, starts[s], int(seeds[s]), n_threads)
+            (params, Xs[s], Rs[s], priors[s], starts[s], int(seeds[s]), n_threads)
             for s in range(n)
         ]
         # Worker threads in this process, not worker processes: every fit then
@@ -458,7 +475,7 @@ class HTFA(BaseEstimator):
             one_blas_thread(),
             warnings.catch_warnings(),
         ):
-            if prior is not None:
+            if any(p is not None for p in priors):
                 warnings.simplefilter("ignore", ConvergenceWarning)
             if n_workers == 1:
                 return [_fit_subject(*job) for job in jobs]
@@ -478,6 +495,8 @@ class HTFA(BaseEstimator):
         coords: list,
         starts: Sequence[tuple[ArrayLike, ArrayLike]] | None = None,
         init_template: tuple[ArrayLike, ArrayLike] | None = None,
+        groups: Any = None,
+        subject_ids: Sequence[Any] | None = None,
     ) -> "HTFA":
         """Fit the global template and per-subject factors.
 
@@ -500,6 +519,22 @@ class HTFA(BaseEstimator):
             the template (co)variances restart from their initial values and
             the first global iteration's two-start step (from the template and
             from each subject's own start) is run again.
+        groups : sequence, optional
+            Nested groups of subjects: one label (``str`` or ``int``) per
+            subject, or a list of such sequences, one per level, top level
+            first (for example ``[site, diagnosis]``; a label must belong to one
+            label of the level above). Each subject's prior is then centred on
+            its innermost group's template, each group's prior on its parent's
+            template (with the same covariance), and the global template is at
+            the top; the templates jointly minimize the summed penalties given
+            the local estimates (`htfa.groups`). Needs
+            ``template_update='fixed'`` or ``'empirical'`` (``'empirical'``
+            estimates the dispersion from deviations from each innermost
+            group's median). Without ``groups`` the fit is unchanged.
+        subject_ids : sequence, optional
+            One identifier per entry of ``X``, to check that no subject is in
+            two groups (crossed designs, such as pre/post on the same people,
+            are not supported).
 
         Returns
         -------
@@ -510,8 +545,9 @@ class HTFA(BaseEstimator):
         ------
         ValueError
             On empty or mismatched lists, mixed dimensionalities,
-            ``max_global_iter < 1`` or ``starts``/``init_template`` of the wrong
-            length or shapes.
+            ``max_global_iter < 1``, ``starts``/``init_template`` of the wrong
+            length or shapes, ``groups`` with ``template_update='brainiak'``, or
+            invalid ``groups`` (see `htfa.groups.group_tree`).
 
         Warns
         -----
@@ -551,6 +587,15 @@ class HTFA(BaseEstimator):
         if len({R.shape[1] for R in Rs}) != 1:
             raise ValueError("all subjects' coords must have the same dimension D")
         n_subj, K, D = len(Xs), self.K, Rs[0].shape[1]
+        if groups is None and subject_ids is not None:
+            raise ValueError("subject_ids is only used with groups")
+        tree = None if groups is None else group_tree(groups, n_subj, subject_ids)
+        if tree is not None and self.template_update == "brainiak":
+            raise ValueError(
+                "groups need template_update='fixed' or 'empirical': BrainIAK's "
+                "update takes its prior from the template's own previous "
+                "posterior, not from a parent template"
+            )
 
         def checked(
             pair: tuple[ArrayLike, ArrayLike], name: str
@@ -580,6 +625,7 @@ class HTFA(BaseEstimator):
         )
         parallel = engine.name == "numpy" and self.n_jobs not in (None, 1)
         none: list[tuple[Array, Array] | None] = [None] * n_subj
+        no_priors: list[Prior | None] = [None] * n_subj
 
         # Unpenalized multi-start TFA per subject; the template is the fit of a
         # random subject among those with the most samples.
@@ -588,7 +634,7 @@ class HTFA(BaseEstimator):
         free_seeds = rng.integers(seed_max, size=n_subj)  # drawn either way
         if given is None:
             fitted = self._fit_subjects(
-                Xs, Rs, self.template_max_iter, None, none, free_seeds, parallel
+                Xs, Rs, self.template_max_iter, no_priors, none, free_seeds, parallel
             )
             given = [(f.centers_, f.widths_) for f in fitted]
         self.free_fits_, self.template_subject_ = given, t
@@ -603,11 +649,13 @@ class HTFA(BaseEstimator):
         brainiak = self.template_update == "brainiak"
         if self.template_update == "empirical":
             matched = [match_factors(C, g[0]) for g in given]
+            matched_C = np.stack([g[0][p] for g, p in zip(given, matched, strict=True)])
+            matched_w = np.stack([g[1][p] for g, p in zip(given, matched, strict=True)])
+            if tree is not None:
+                matched_C = tree.within_groups(matched_C)
+                matched_w = tree.within_groups(matched_w)
             centers_cov, widths_var = empirical_dispersion(
-                np.stack([g[0][p] for g, p in zip(given, matched, strict=True)]),
-                np.stack([g[1][p] for g, p in zip(given, matched, strict=True)]),
-                0.01 * centers_cov,
-                0.01 * widths_var,
+                matched_C, matched_w, 0.01 * centers_cov, 0.01 * widths_var
             )
         C_cov = np.tile(centers_cov, (K, 1, 1))
         w_var = np.full(K, widths_var)
@@ -617,16 +665,28 @@ class HTFA(BaseEstimator):
         fits: list[TFA] = []
         objectives: list[float] = []
         best, stale, n_iter = np.inf, 0, 0
+        # Every group template starts at the initial global template.
+        n_nodes = 1 if tree is None else tree.n_nodes
+        nodes_C = np.repeat(C[None], n_nodes, axis=0)
+        nodes_w = np.repeat(w[None], n_nodes, axis=0)
+        new_nodes_C, new_nodes_w = nodes_C, nodes_w
         while n_iter < self.max_global_iter:
             n_iter += 1
-            prior = Prior(C, w, C_cov, w_var, 1.0)
+            if tree is None:
+                priors = [Prior(C, w, C_cov, w_var, 1.0)] * n_subj
+            else:
+                node_priors = [
+                    Prior(nodes_C[v], nodes_w[v], C_cov, w_var, 1.0)
+                    for v in range(tree.n_nodes)
+                ]
+                priors = [node_priors[v] for v in tree.subject_node]
             seeds = rng.integers(seed_max, size=n_subj)
             fit_local = self.max_local_iter
             if n_iter == 1:
                 # From the template and from each subject's own solution; keep the
                 # lower penalized objective.
                 from_template = self._fit_subjects(
-                    Xs, Rs, fit_local, prior, none, seeds, parallel
+                    Xs, Rs, fit_local, priors, none, seeds, parallel
                 )
                 # The template subject's own start is the template: skip it
                 # (unless an init_template replaced it).
@@ -637,7 +697,7 @@ class HTFA(BaseEstimator):
                     [Xs[s] for s in others],
                     [Rs[s] for s in others],
                     fit_local,
-                    prior,
+                    [priors[s] for s in others],
                     [given[s] for s in others],
                     seeds[others],
                     parallel,
@@ -649,12 +709,14 @@ class HTFA(BaseEstimator):
             else:
                 warm = [(f.centers_, f.widths_) for f in fits]
                 fits = self._fit_subjects(
-                    Xs, Rs, fit_local, prior, warm, seeds, parallel
+                    Xs, Rs, fit_local, priors, warm, seeds, parallel
                 )
             local_C = np.empty((n_subj, K, C.shape[1]))
             local_w = np.empty((n_subj, K))
             for s, f in enumerate(fits):
-                perm = match_factors(C, f.centers_)
+                # Each subject is matched to the template its prior is centred on.
+                ref = C if tree is None else nodes_C[tree.subject_node[s]]
+                perm = match_factors(ref, f.centers_)
                 local_C[s], local_w[s] = f.centers_[perm], f.widths_[perm]
                 f.centers_, f.widths_ = local_C[s], local_w[s]
                 f.weights_ = f.weights_[perm]
@@ -672,17 +734,29 @@ class HTFA(BaseEstimator):
                 new_C, new_w, new_C_cov, new_w_var = assign_posterior(
                     C, new_C, new_w, new_C_cov, new_w_var
                 )
-            else:
+            elif tree is None:
                 # Fixed subject-level prior: the template minimizing the summed
                 # penalized objectives is the mean of the local estimates.
                 new_C, new_w = local_C.mean(axis=0), local_w.mean(axis=0)
                 new_C_cov, new_w_var = C_cov, w_var
+            else:
+                # The templates of the tree minimizing the summed penalties.
+                new_nodes_C, new_nodes_w = tree.solve(local_C), tree.solve(local_w)
+                new_C, new_w = new_nodes_C[0], new_nodes_w[0]
+                new_C_cov, new_w_var = C_cov, w_var
+            old_C, old_w, cur_C, cur_w = (
+                (C, w, new_C, new_w)
+                if tree is None
+                else (nodes_C, nodes_w, new_nodes_C, new_nodes_w)
+            )
             change = max(
-                float(np.max(np.abs(new_C - C))) / length,
-                float(np.max(np.abs(new_w - w) / w)),
+                float(np.max(np.abs(cur_C - old_C))) / length,
+                float(np.max(np.abs(cur_w - old_w) / old_w)),
             )
             self.prior_centers_cov_, self.prior_widths_var_ = C_cov[0], float(w_var[0])
             C, w, C_cov, w_var = new_C, new_w, new_C_cov, new_w_var
+            if tree is not None:
+                nodes_C, nodes_w = new_nodes_C, new_nodes_w
             self.template_history_.append((C, w))
             objectives.append(float(sum(f.cost_ for f in fits)))
             rel = [
@@ -714,7 +788,15 @@ class HTFA(BaseEstimator):
         self.converged_reason_ = reason
         self.converged_ = reason != "max_iter"
         self.objective_history_ = objectives
-        if not brainiak:
+        self.group_tree_ = tree
+        if tree is not None:
+            self.group_keys_ = [group_key(p) for p in tree.paths[1:]]
+            self.group_centers_, self.group_widths_ = nodes_C[1:], nodes_w[1:]
+            var = tree.variance[1:, None]
+            self.group_centers_cov_ = C_cov[None] * var[:, :, None, None]
+            self.group_widths_var_ = w_var[None] * var
+            C_cov, w_var = C_cov * tree.variance[0], w_var * tree.variance[0]
+        elif not brainiak:
             C_cov, w_var = C_cov / n_subj, w_var / n_subj
         if not self.converged_:
             warnings.warn(
