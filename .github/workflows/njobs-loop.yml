@@ -1,0 +1,25 @@
+name: njobs-loop
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [njobs-threads-ci]
+    paths: ["htfa/**", "tests/**", ".github/repro/njobs_loop.py", ".github/workflows/njobs-loop.yml"]
+
+jobs:
+  windows-loop:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+                21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - name: serial vs n_jobs in 36 fresh processes, both modes
+        run: python .github/repro/njobs_loop.py 36

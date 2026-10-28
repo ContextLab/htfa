@@ -2,7 +2,7 @@ name: brainiak
 
 on:
   push:
-    branches: [main]
+    branches: [main, njobs-threads-ci]
   pull_request:
   workflow_dispatch:
 
