@@ -25,16 +25,27 @@ Intent: let a factor's spatial profile be something other than a Gaussian, so th
 with heavy tails, multi-scale blobs, and centre-surround structure can be represented, and let
 users compare shapes on equal terms.
 
+Later user decision (2026-10-28, relayed through the Task 16 agent's thread): "for the mixture
+approach: we could have *every* kernel shape support a 'mixture' mode, where n_components=1 by
+default (no mixture), but setting n_components > 1 enables each factor to comprise multiple
+components, each with their own parameters. note that for each component in a mixture we also need
+to fit the relative weights of the mixture components-- and then the full mixture gets fit over
+all via the weights inference. so we'll need machinery for that." This supersedes the separate
+'mixture' kernel below.
+
 Behaviour
-- One option on TFA, HTFA and htfa.fit: `kernel` = 'rbf' (default; current behaviour bit for bit
-  in both modes), 'laplace', 'mixture', 'mexican_hat'. Plus `n_components` (default 2) for
-  'mixture' (user decision: the number of RBFs per mixture is a parameter).
+- Options on TFA, HTFA and htfa.fit: `kernel` = 'rbf' (default; current behaviour bit for bit
+  in both modes), 'laplace', 'mexican_hat'; and `n_components` (default 1 = no mixture) for every
+  kernel. With n_components > 1 each factor is a mixture of n_components components of that shape,
+  each with its own centre and shape parameters, plus per-factor mixing weights over the
+  components fitted in the nonlinear solve (constrained so they are identifiable against the
+  factor's time-series weights W, e.g. softmax/simplex). W is then fitted for the whole mixture
+  factor as now (ridge / varpro). The Jacobian/Hessian machinery covers component parameters and
+  mixing weights.
 - Every factor keeps a centre; the shape adds parameters per factor:
   - rbf: width w (unchanged). F = exp(-d^2 / w).
   - laplace: scale; F = exp(-sqrt(d^2 + eps^2) / lambda) (controller's call: smoothed at d = 0 by a
     small eps relative to the voxel size so derivatives exist; document eps and its effect).
-  - mixture: n_components widths and mixing weights sharing one centre; weights constrained
-    (e.g. softmax or simplex) so the factor's scale is identifiable against the ridge weights.
   - mexican_hat: difference of Gaussians or Ricker with a positive centre and a negative surround;
     parameters chosen so the shape is identifiable (builder's call, justified).
 - All of it works in fast and exact modes and in the varpro solver; derivatives (gradient,
