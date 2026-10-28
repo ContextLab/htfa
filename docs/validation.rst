@@ -962,3 +962,64 @@ need the reference template should pass ``mode='exact'``.
    * - fast, perturbed
      - 0.135 / 0.553
      - 0.080 / 0.393
+
+Groups of subjects
+------------------
+
+``HTFA.fit(..., groups=...)`` fits a template per group under the global
+template (see :mod:`htfa.groups` and :doc:`api`). Three checks, all from
+``scripts/validation_groups.py``:
+
+**No groups: unchanged.** ``scripts/validation_groups.py nogroups`` fits 15
+synthetic problems without groups (``template_update`` 'brainiak', 'fixed'
+and 'empirical', each in fast and exact mode, in 3D (4 subjects, K = 5) and
+2D (3 subjects, K = 4, noise 0.5); two fits with ``n_jobs=3``; one resumed
+fit with ``starts`` and ``init_template``) and saves every fitted array
+(templates, their (co)variances, per-subject centers, widths and weights,
+objective and template histories). Run with the code before groups existed
+(commit 0948c13) and with the grouped code, ``compare`` found all 150 arrays
+identical bit for bit. Fits without groups take the same code path as before:
+one prior shared by all subjects, the template update unchanged.
+
+**Recovery and power.** ``make_group_data`` with two groups of 4 and 5
+subjects on a 16 x 16 grid (T = 40, K = 5, subject jitter 0.5 grid units),
+group 1 with factor 0 moved by 3 grid units and factor 1 twice as wide;
+``template_update='fixed'``, 39 permutations; 100 seeds
+(``groups_power.csv``):
+
+- The estimated center difference of factor 0 was 2.43 (mean; SD 0.27)
+  grid units. The tree pulls each group template toward its parent as if by
+  one extra subject there, so for groups of 4 and 5 the expected estimate is
+  0.816 x 3 = 2.45. The width ratio of factor 1 was 1.73 (SD 0.05).
+- The test gave p <= 0.05 for factor 0's center in 96 of 100 datasets, and
+  for factor 1's width in 96; family-wise (max-statistic over the 5 factors),
+  at least one center and at least one width difference was found in 96.
+  For the factors without that difference, center p <= 0.05 occurred in 10
+  of 400 cases (factors 1 to 4) and width p <= 0.05 in 28 of 400 (factors 0
+  and 2 to 4).
+
+**False positives.** The same data with no difference, 200 seeds
+(``groups_fpr.csv``), 1000 factor tests per statistic:
+
+.. list-table:: Rejections at p <= 0.05 with no true difference
+   :header-rows: 1
+
+   * - statistic
+     - per factor (of 1000)
+     - family-wise, any factor (of 200)
+   * - center
+     - 34 (3.4%)
+     - 6 (3.0%)
+   * - width
+     - 56 (5.6%)
+     - 11 (5.5%)
+   * - connectivity
+     - 54 (5.4%)
+     - 12 (6.0%)
+
+A binomial count of 1000 tests at 5% falls between 37 and 64 with 95%
+probability, and of 200 between 4 and 16. The tests in
+``tests/test_groups.py`` repeat smaller versions of these checks (20 seeds,
+19 permutations), and check the tree solution, nested levels and restricted
+permutations, and that grouped fits and tests do not depend on ``n_jobs``,
+in both modes.

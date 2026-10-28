@@ -103,6 +103,20 @@ Added:
   brain only on request (``view='glass'``). ``truth=`` adds a reference panel.
 - Synthetic data with ground truth for 2D and 3D coordinates.
 - Installation of optional dependencies on first use.
+- Groups of subjects: ``HTFA.fit(..., groups=..., subject_ids=...)`` and
+  ``htfa.fit(..., groups=...)`` fit a template per group (and per nested
+  subgroup) under the global template, each with a prior centred on its
+  parent's template and a posterior covariance; group factors are in global
+  factor order (:mod:`htfa.groups`). It needs ``template_update='fixed'`` or
+  ``'empirical'``; crossed designs raise ``ValueError``. Without ``groups``,
+  fits are identical bit for bit to those before (150 arrays of 15 fits
+  compared). :func:`htfa.group_permutation_test` refits with shuffled labels
+  and gives per-factor p-values for center, width and connectivity
+  differences, uncorrected or family-wise; on synthetic data with no
+  difference, 3.4%, 5.6% and 5.4% of 1000 factor tests had p <= 0.05
+  (:doc:`validation`). :class:`htfa.HTFAResults` gains ``group_centers``,
+  ``group_widths``, ``group_subjects`` and ``group=`` on its node and network
+  plots; :func:`htfa.make_group_data` simulates groups; tutorial 13.
 
 BrainIAK behavior that differs from BrainIAK's code (each has a regression test):
 
