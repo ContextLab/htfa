@@ -390,6 +390,7 @@ Reconstruction statistics
    :toctree: generated/
    :nosignatures:
 
+   htfa.stats
    htfa.stats.FitStatistics
    htfa.stats.gaussian_fit_statistics
    htfa.stats.parameter_count
