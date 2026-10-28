@@ -272,17 +272,31 @@ def test_htfa_no_local_warning_spam(n_jobs: int) -> None:
 def test_htfa_worker_exception_reaches_caller() -> None:
     """An error inside one subject's fit on a worker thread reaches the caller
     as itself, with the worker's frames (_fit_subject, TFA.fit) in the
-    formatted traceback."""
+    formatted traceback, and only after the other running fits have finished:
+    no worker thread outlives the call, and the process-wide BLAS limits are
+    restored. Measured with joblib's threading backend, which returned at once:
+    fits still running afterwards left OpenBLAS limited to one thread (a later
+    test saw 1 instead of 2 on CI)."""
+    import threading
     import traceback
 
+    from threadpoolctl import threadpool_info
+
     Xs, Rs, _ = make_htfa_data(
-        n_subjects=3, grid_shape=(10, 10), n_samples=20, K=3, random_state=0
+        n_subjects=4, grid_shape=(20, 20), n_samples=40, K=3, random_state=0
     )
     Xs[1], Rs[1] = Xs[1][:4], Rs[1][:4]  # 4 voxels: K=5 is too many for TFA
+    before = [p["num_threads"] for p in threadpool_info()]
+    threads_before = threading.active_count()
     with pytest.raises(
         ValueError, match="must be smaller than the number of voxels"
     ) as err:
         HTFA(K=5, n_jobs=3, random_state=0).fit(Xs, Rs)
+    after = [p["num_threads"] for p in threadpool_info()]
+    print("threads before/after:", threads_before, threading.active_count())
+    print("threadpool sizes before/after:", before, after)
+    assert threading.active_count() == threads_before
+    assert after == before
     text = "".join(traceback.format_exception(err.value))
     print(text[-1200:])
     assert "in _fit_subject" in text and "in _validate" in text

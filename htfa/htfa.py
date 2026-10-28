@@ -3,10 +3,11 @@
 import os
 import warnings
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
-from joblib import Parallel, delayed, effective_n_jobs
+from joblib import effective_n_jobs
 from numpy.typing import ArrayLike, NDArray
 from scipy.stats import chi2
 from sklearn.base import BaseEstimator
@@ -270,15 +271,16 @@ class HTFA(BaseEstimator):
         template.
     n_jobs : int, optional
         Number of subject fits run at once (numpy engines only), as threads of
-        this process (joblib's threading backend). The results do not depend
-        on it: all fits share one process, and so one BLAS library state, and
-        every subject fit, serial or parallel, runs BLAS on one thread
+        this process (values as in joblib, e.g. -1 for all CPUs). The results
+        do not depend on it: all fits share one process, and so one BLAS
+        library state, and every subject fit, serial or parallel, runs BLAS on
+        one thread
         (`htfa._engines.one_blas_thread`), since BLAS rounds differently with
         different thread counts. On macOS, a standalone `htfa.TFA` fit and the
         stage-0 fit of the same subject can therefore differ at rounding level.
-        After a ``KeyboardInterrupt`` during the parallel fits, control returns
-        at once, but worker threads cannot be stopped: they finish the subject
-        fits they are running in the background.
+        Threads cannot be stopped from outside: after an error in one subject's
+        fit or a ``KeyboardInterrupt`` (Ctrl-C), the fits not yet started are
+        cancelled and those already running finish before control returns.
     n_threads : int, optional
         NumPy engine threads per subject fit (the engine splits each pass into
         fixed voxel chunks, so the count does not change results; BLAS runs on
@@ -460,10 +462,15 @@ class HTFA(BaseEstimator):
                 warnings.simplefilter("ignore", ConvergenceWarning)
             if n_workers == 1:
                 return [_fit_subject(*job) for job in jobs]
-            fits: list[TFA] = Parallel(n_jobs=n_workers, backend="threading")(
-                delayed(_fit_subject)(*job) for job in jobs
-            )
-        return fits
+            # On an error or interrupt, queued fits are cancelled and the running
+            # ones finish before the limits and filters above are restored:
+            # a fit still running afterwards would leave its BLAS limits behind.
+            pool = ThreadPoolExecutor(n_workers)
+            try:
+                futures = [pool.submit(_fit_subject, *job) for job in jobs]
+                return [future.result() for future in futures]
+            finally:
+                pool.shutdown(wait=True, cancel_futures=True)
 
     def fit(
         self,

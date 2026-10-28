@@ -59,7 +59,7 @@ Added:
 - HTFA's results do not depend on ``n_jobs``: every subject fit runs BLAS on
   one thread, serial or parallel (before, 8 subjects at K=100 with n_jobs=8
   and n_jobs=4 gave different templates), and the subject fits run as threads
-  of the calling process (joblib's threading backend) instead of worker
+  of the calling process instead of worker
   processes, so that all of them use the same BLAS state (on Windows with some
   AMD EPYC CPUs, OpenBLAS rounds differently in about 0.5 to 2.5% of freshly
   started processes).

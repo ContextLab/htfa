@@ -165,7 +165,7 @@ Other settings that change the cost of a fit
   to 8.0 s per start at ``V = 69585``, ``K = 100`` at a load average of 7; 55 to 83 s
   under a load average of 100 to 190).
 - ``n_jobs`` runs the per-subject fits of an HTFA in parallel (NumPy backend),
-  as threads of the calling process (joblib's threading backend), so that every
+  as threads of the calling process, so that every
   fit uses the same BLAS library state. Every subject fit also runs BLAS on one
   thread, serial or parallel, since BLAS rounds differently with one thread
   than with several. The results therefore do not depend on ``n_jobs``.
@@ -195,9 +195,9 @@ Other settings that change the cost of a fit
   runs of the same fit in different processes are not guaranteed to agree bit
   for bit there; within one run the results do not depend on ``n_jobs``.
   Threads cannot be stopped from outside: after a ``KeyboardInterrupt``
-  (Ctrl-C) during the parallel fits, control returns at once, but the worker
-  threads finish the subject fits they are running in the background before
-  they end.
+  (Ctrl-C) or an error during the parallel fits, the subject fits not yet
+  started are cancelled, and those already running finish before control
+  returns.
 - ``nlss_loss='soft_l1'`` costs ``O(V T K^2)`` per Gauss-Newton assembly and
   needs the slow alternation (below); the default ``'linear'`` with
   ``'varpro'`` costs ``O(V T K (D + 1))`` per assembly.
