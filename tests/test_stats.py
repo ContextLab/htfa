@@ -88,3 +88,24 @@ def test_pooling_uses_voxel_baselines_and_unequal_subject_lengths():
     assert score.rss == 30
     assert score.tss == 10
     assert score.r2 == -2
+
+
+@pytest.mark.parametrize("scale", [1e200, 1e-200])
+def test_unrepresentable_error_scales_are_not_misreported(scale):
+    x = np.array([[1.0, -1.0]]) * scale
+    with pytest.raises(ValueError, match="rescale"):
+        gaussian_fit_statistics(x, np.zeros_like(x), n_parameters=1)
+
+
+def test_complex_inputs_are_not_silently_truncated():
+    x = np.ones((2, 3))
+    with pytest.raises(ValueError, match="real-valued"):
+        gaussian_fit_statistics(x, x + 1j, n_parameters=1)
+
+
+def test_log_variance_does_not_underflow_after_dividing_by_n():
+    x = np.zeros((1, 10000))
+    x[0, 0] = 1e-160
+    score = gaussian_fit_statistics(x, np.zeros_like(x), n_parameters=1)
+    assert score.rss > 0
+    assert np.isfinite(score.log_likelihood)

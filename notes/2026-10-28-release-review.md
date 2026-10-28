@@ -31,3 +31,15 @@ Outstanding gates: full independent review; finalize regenerated fit hashes and
 matching tutorial 09 nulls (never reuse against changed factors/weights), verify
 13 assets via fresh-cache downloads, execute all tutorials against installed
 package, final cross-platform CI, sdist install, final release review packet.
+
+Further review findings:
+- Tutorial 09 now checks saved-null fit and embedding hashes before using it.
+- Statistics reject complex arrays instead of silently dropping imaginary parts;
+  unrepresentable squared-error scales fail with rescaling guidance. Computing
+  log(RSS)-log(n) avoids underflow in the variance division. Added regression
+  cases; 17 API/statistics tests pass (/private/tmp/htfa-review-stats-tests.log).
+- Draft PR https://github.com/ContextLab/htfa/pull/184 starts existing CI and the
+  installed-wheel matrix. No publishing step exists in the new workflow.
+- scripts/check_tutorials.py verifies a site-packages import in each kernel and
+  retains executed notebooks outside the checkout. Initial installed-wheel
+  tutorial run: /private/tmp/htfa-installed-tutorials.log.

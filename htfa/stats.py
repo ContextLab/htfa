@@ -51,6 +51,8 @@ def gaussian_fit_statistics(observed, predicted, *, n_parameters: int) -> FitSta
     variance. Likelihood uses sigma² = RSS/n and independent Gaussian residuals.
     Compare only the identical observations, masks, scaling and preprocessing.
     No intercept is fitted here; the temporal mean is only the R² baseline.
+    Complex inputs and unrepresentable squared-error scales raise ValueError
+    rather than silently discarding imaginary parts or reporting a perfect fit.
     """
     if (
         isinstance(n_parameters, (bool, np.bool_))
@@ -65,6 +67,8 @@ def gaussian_fit_statistics(observed, predicted, *, n_parameters: int) -> FitSta
     rss = tss = 0.0
     n = 0
     for x, y in zip(xs, ys, strict=True):
+        if np.iscomplexobj(x) or np.iscomplexobj(y):
+            raise ValueError("observations and predictions must be real-valued")
         x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
         if x.ndim != 2 or x.size == 0 or x.shape != y.shape:
             raise ValueError(
@@ -72,11 +76,29 @@ def gaussian_fit_statistics(observed, predicted, *, n_parameters: int) -> FitSta
             )
         if not np.isfinite(x).all() or not np.isfinite(y).all():
             raise ValueError("observations and predictions must be finite")
-        rss += float(np.sum((x - y) ** 2))
-        tss += float(np.sum((x - x.mean(axis=1, keepdims=True)) ** 2))
+        try:
+            with np.errstate(over="raise", invalid="raise"):
+                residual = x - y
+                centered = x - x.mean(axis=1, keepdims=True)
+                residual_sum = float(np.sum(residual**2))
+                centered_sum = float(np.sum(centered**2))
+        except FloatingPointError as exc:
+            raise ValueError("squared errors overflow; rescale the data") from exc
+        if (residual_sum == 0 and np.any(residual)) or (
+            centered_sum == 0 and np.any(centered)
+        ):
+            raise ValueError("squared errors underflow; rescale the data")
+        rss += residual_sum
+        tss += centered_sum
+        if not np.isfinite(rss) or not np.isfinite(tss):
+            raise ValueError("pooled squared errors overflow; rescale the data")
         n += x.size
     p = int(n_parameters)
-    ll = float(-0.5 * n * (np.log(2 * np.pi) + 1 + np.log(rss / n))) if rss else np.inf
+    ll = (
+        float(-0.5 * n * (np.log(2 * np.pi) + 1 + (np.log(rss) - np.log(n))))
+        if rss
+        else np.inf
+    )
     aic = 2 * p - 2 * ll
     return FitStatistics(
         n,
