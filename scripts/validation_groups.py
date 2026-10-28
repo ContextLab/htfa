@@ -115,7 +115,10 @@ def _fit_and_test(
     K = 5
     center_shift = np.zeros((len(sizes), K, 2))
     width_scale = np.ones((len(sizes), K))
-    center_shift[1, 0, 0] = shift
+    # toward the middle of the grid (the global centers do not depend on it)
+    g = htfa.make_group_data(sizes, (16, 16), 2, K=K, random_state=seed)[3]
+    toward = -np.sign(g["global_centers"][0, 0] - 7.5)
+    center_shift[1, 0, 0] = toward * shift
     width_scale[1, 1] = scale
     Xs, Rs, groups, truth = htfa.make_group_data(
         sizes, grid_shape=(16, 16), n_samples=40, K=K, center_shift=center_shift,
@@ -133,11 +136,11 @@ def _fit_and_test(
     row: dict[str, float] = {"seed": seed}
     for stat in ("center", "width", "connectivity"):
         p = test.pvalues(stat)[perm]  # in truth order
-        row[f"{stat}_p0"], row[f"{stat}_p1"] = p[0], p[1]
+        row[f"{stat}_p0"], row[f"{stat}_p1"] = float(p[0]), float(p[1])
         row[f"{stat}_rejections"] = float((p <= ALPHA).sum())
         row[f"{stat}_fwe_rejections"] = float((test.pvalues(stat, True) <= ALPHA).sum())
     est = model.group_centers_[:, perm]
-    row["center_shift_est"] = float(est[1, 0, 0] - est[0, 0, 0])
+    row["center_shift_est"] = float(toward * (est[1, 0, 0] - est[0, 0, 0]))
     row["width_ratio_est"] = float(
         model.group_widths_[1, perm[1]] / model.group_widths_[0, perm[1]]
     )

@@ -99,6 +99,52 @@ Common model parameters
 
 .. minigallery:: htfa.fit htfa.TFA htfa.HTFA htfa.HTFAResults
 
+Groups of subjects
+------------------
+
+``HTFA.fit(X, coords, groups=...)`` (and ``htfa.fit(..., groups=...)``) fits
+one template per group of subjects under the global template, for example
+children and adults under a template of people in general. ``groups`` is one
+label (``str`` or ``int``) per subject, or a list of label sequences for deeper
+nesting, top level first (``[site, diagnosis]``). Each subject's prior is
+centred on its group's template, each group's prior on its parent's, with the
+subject-level covariance of the fit at every level; the templates jointly
+minimize the summed penalties given the subjects' local estimates
+(:mod:`htfa.groups`). Group templates are in global factor order, and come with
+posterior covariances. Groups need ``template_update='fixed'`` or
+``'empirical'``. Only nested designs are supported: a label under two parents,
+or (with ``subject_ids``) a subject in two groups, raises ``ValueError``.
+
+.. code-block:: python
+
+   import htfa
+
+   model = htfa.HTFA(K=30, template_update="fixed", random_state=0)
+   model.fit(Xs, Rs, groups=["child"] * 10 + ["adult"] * 10)
+   model.group_keys_          # ['child', 'adult']
+   model.group_centers_       # (2, K, D), factor k = global factor k
+   model.group_centers_cov_   # (2, K, D, D)
+
+   test = htfa.group_permutation_test(model, Xs, Rs, n_permutations=100,
+                                      random_state=0)
+   test.pvalues("center")     # per factor; also "width", "connectivity"
+   test.pvalues("center", fwe=True)  # family-wise over the K factors
+
+:class:`htfa.HTFAResults` exposes the group templates as ``group_centers`` and
+``group_widths`` (dicts keyed by group), ``group_subjects(group)`` and
+``group_permutation_test(...)``, and its ``display_nodes``, ``plot_nodes``,
+``plot_network`` and ``animate_network`` take ``group=`` to draw a group
+template (with the group's subjects, or the ISFC of the group's subjects).
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+
+   htfa.group_permutation_test
+   htfa.groups.GroupTest
+   htfa.groups.group_tree
+   htfa.groups.GroupTree
+
 Loading
 -------
 
@@ -238,11 +284,12 @@ The synthetic generators return data already on a z-scored scale, so fit them wi
 
    htfa.make_tfa_data
    htfa.make_htfa_data
+   htfa.make_group_data
    htfa.synthetic.match_factors
 
 .. rubric:: Examples
 
-.. minigallery:: htfa.make_tfa_data htfa.make_htfa_data htfa.synthetic.match_factors
+.. minigallery:: htfa.make_tfa_data htfa.make_htfa_data htfa.make_group_data htfa.synthetic.match_factors
 
 Utilities
 ---------

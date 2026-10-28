@@ -267,8 +267,8 @@ def make_group_data(
     grid_shape, n_samples, K, noise, spacing, min_separation, random_state
         As in `make_tfa_data`.
     center_shift : array_like, shape (G, K, D), optional
-        Offsets of the group centers from the global centers (default 0). Group
-        centers are not clipped or re-checked for separation.
+        Offsets of the group centers from the global centers (default 0); group
+        centers are clipped to the grid and not re-checked for separation.
     width_scale : array_like, shape (G, K), optional
         Group width over global width (default 1).
     center_jitter, width_jitter
@@ -324,7 +324,7 @@ def make_group_data(
     truth: dict[str, Any] = {
         "global_centers": g_centers,
         "global_widths": g_widths,
-        "group_centers": g_centers + shift,
+        "group_centers": np.clip(g_centers + shift, 0, extent),
         "group_widths": g_widths * scale,
         "centers": [],
         "widths": [],
