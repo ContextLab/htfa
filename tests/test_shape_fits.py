@@ -371,28 +371,30 @@ def test_fit_passes_kernel_and_n_components():
     np.testing.assert_array_equal(res.factors(0), F)
 
 
-def test_component_matching_keeps_logits_in_the_box():
-    """Reordering three components makes another one the logits' reference:
-    weights (1e-3, 1, 1e3) / sum reordered to put the smallest first would
-    give a logit of log(1e6); the matched logits stay within the bounds,
-    and in-box mixtures keep their weights exactly."""
-    from htfa._kernels import MIXING_LOGIT_BOUND
+@pytest.mark.parametrize("name", ["rbf", "laplace", "mexican_hat"])
+def test_component_matching_preserves_the_represented_factor(name):
+    """Changing the reference component must never change the fitted field."""
     from htfa.htfa import _match_params
+    from htfa.tfa import component_factors
 
-    kernel = Kernel("rbf", 3)
+    kernel = Kernel(name, 3)
     C = np.array([[[0.0, 0.0], [5.0, 0.0], [10.0, 0.0]]])
     pi = np.array([[1e-3, 1.0, 1e3]]) / 1001.001
     tmpl = (C.reshape(3, 2), np.ones(3), Kernel.logits(np.array([[1 / 3] * 3])))
-    est = (C[:, ::-1].copy(), np.ones((1, 3)), pi[:, ::-1].copy())
-    _, comp, (Cc, _, pi_m) = _match_params(*tmpl, est, kernel)
-    np.testing.assert_array_equal(comp, [[2, 1, 0]])
-    np.testing.assert_array_equal(Cc, C)
-    a = Kernel.logits(pi_m)
-    assert np.all(np.abs(a) <= MIXING_LOGIT_BOUND * (1 + 1e-12))
-    pi2 = np.array([[0.2, 0.3, 0.5]])
-    est2 = (C[:, ::-1].copy(), np.ones((1, 3)), pi2[:, ::-1].copy())
-    _, _, (_, _, kept) = _match_params(*tmpl, est2, kernel)
-    np.testing.assert_array_equal(kept, pi2)
+    # The original reference is the middle-weight component, so both original
+    # logits are within the former box. Spatial matching moves the tiny one first.
+    order = [1, 2, 0]
+    est = (C[:, order].copy(), np.ones((1, 3)), pi[:, order].copy())
+    _, _, matched = _match_params(*tmpl, est, kernel)
+    np.testing.assert_array_equal(matched[0], C)
+    np.testing.assert_array_equal(matched[2], pi)
+    R = np.column_stack([np.linspace(0, 10, 101), np.zeros(101)])
+    np.testing.assert_allclose(
+        component_factors(R, *matched, kernel),
+        component_factors(R, *est, kernel),
+        rtol=1e-14,
+        atol=1e-15,
+    )
 
 
 def test_generated_components_lie_on_the_grid():

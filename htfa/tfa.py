@@ -550,7 +550,7 @@ class TFA(BaseEstimator):
         Components per factor. With ``n_components = M > 1`` each factor is
         ``sum_m pi_m phi(||r - c_m||**2 / w_m)``: M components of the kernel's
         shape, each with its own center and width, and mixing weights ``pi =
-        softmax(0, a_2, ..., a_M)`` (logits ``a`` in ``[-log(1e3), log(1e3)]``)
+        softmax(0, a_2, ..., a_M)`` (unbounded logits ``a``)
         fitted in the nonlinear solve with them. The weights sum to 1 and the
         first logit is fixed, so the factor's amplitude stays in its
         time-series weights. Each factor starts with its components at its

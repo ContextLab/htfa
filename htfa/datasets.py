@@ -49,6 +49,14 @@ TUTORIAL_DATA_URL = (
 # permutation nulls): name -> (file in the tutorial-data-v1 pre-release of the
 # htfa repository, SHA-256).
 TUTORIAL_FITS = {
+    "development_fmri_10children_10adults_K30": (
+        "htfa_development_fmri_10children_10adults_K30.npz",
+        "01a094f618466ae4400c4d3583342f64496e84a4733028a95399131b1bd9b468",
+    ),
+    "development_fmri_children_adults_null_100": (
+        "htfa_development_fmri_children_adults_null_100.npz",
+        "d7c05c55f4a90e6e8fb0cf528afb7a490ecaed3327703a3139364daf8214fac1",
+    ),
     "mitchell2008_K100": (
         "htfa_mitchell2008_K100.npz",
         "635d821194ee1d4a37932a1f4a1ed03592f18838a6453200b1bda0570fa895c4",
@@ -354,8 +362,8 @@ def fetch_tutorial_fit(
 ) -> dict[str, Array]:
     """A saved result of one of the tutorials, downloaded on first use.
 
-    The results (HTFA fits, and tutorial 09's word embeddings and permutation
-    nulls) are files of the ``tutorial-data-v1`` pre-release of the htfa
+    The results (HTFA fits, and tutorials 09/13's permutation nulls and tutorial 09's
+    word embeddings) are files of the ``tutorial-data-v1`` pre-release of the htfa
     repository (see ``htfa.datasets.TUTORIAL_FITS``). The file is downloaded
     once, its SHA-256 is checked before it is loaded, and it is loaded with
     ``allow_pickle=False``. Each file records how it was made (for a fit:
@@ -369,7 +377,9 @@ def fetch_tutorial_fit(
         ``"mitchell2008_embeddings"``, ``"mitchell2008_null_20"`` and
         ``"mitchell2008_null_100"`` (tutorial 09),
         ``"development_fmri_12adults_K50"`` (tutorial 10) or
-        ``"development_fmri_6adults_K30"`` (tutorial 11).
+        ``"development_fmri_6adults_K30"`` (tutorial 11),
+        ``"development_fmri_10children_10adults_K30"`` and
+        ``"development_fmri_children_adults_null_100"`` (tutorial 13).
     cache_dir : path, optional
         Where the file is kept (default: ``tutorial_fits`` in htfa's data
         folder, ``$HTFA_DATA_DIR`` or ``~/.cache/htfa``).

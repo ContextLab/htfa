@@ -9,6 +9,12 @@ in BrainIAK. It does not import BrainIAK and has no C++ or MPI code.
 
 Added:
 
+- Component matching preserves the fitted mixture exactly. Reference-relative
+  logit boxes were not invariant under relabeling: for three components,
+  merely swapping their order could change a 99.9% weight to about 50%.
+  Logits are now unbounded with stable softmax and finite warm-start conversion;
+  regression tests compare the represented fields before and after matching.
+
 - Component-aware network plots: separate spatial lobes for mixture components,
   signed kernel profiles, identical factor edges repeated between component
   pairs, and ``node_mode='summary'`` for one sphere/centroid per factor.

@@ -247,6 +247,19 @@ def test_every_registered_tutorial_file_downloads_and_matches(name, tmp_path):
         E = datasets.fetch_tutorial_fit("mitchell2008_embeddings", cache_dir=tmp_path)
         digest = hashlib.sha256(E["E"].tobytes()).hexdigest()
         assert str(data["embeddings_sha256_of_E"]) == digest
+    elif name == "development_fmri_children_adults_null_100":
+        from htfa.groups import GroupTest
+
+        test = GroupTest.from_arrays(data)
+        assert test.center_null.shape == (100, 30)
+        assert test.permuted_labels.shape == (100, 20)
+        assert (
+            str(data["fit_sha256"])
+            == datasets.TUTORIAL_FITS["development_fmri_10children_10adults_K30"][1]
+        )
+        for stat in ("center", "width", "connectivity"):
+            assert np.all(np.isfinite(getattr(test, stat + "_null")))
+            assert np.all((test.pvalues(stat) > 0) & (test.pvalues(stat) <= 1))
     elif name == "mitchell2008_embeddings":
         assert data["E"].shape == (60, 1024) and data["vocab"].shape == (60,)
     else:

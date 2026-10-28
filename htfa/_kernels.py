@@ -168,9 +168,6 @@ KERNELS = ("rbf", "laplace", "mexican_hat")
 # the RBF's is, and a fit stores no extra constant.
 LAPLACE_EPS = 0.1
 # Mixing weights pi = softmax(0, a_2, ..., a_M) of a mixture factor, with the
-# logits a_m bounded to +-MIXING_LOGIT_BOUND (a weight ratio of at most 1e3
-# between two components).
-MIXING_LOGIT_BOUND = float(np.log(1e3))
 # Start of a mixture: every component at its factor's start center, component
 # m (from 0) with MIXTURE_WIDTH_START**m times the start width, equal weights.
 # Equal widths would be a symmetric start that the solver never leaves.
@@ -249,7 +246,14 @@ class Kernel:
     def mixing(logits: Array) -> Array:
         """Mixing weights (K, M) ``softmax(0, logits)`` of logits (K, M - 1)."""
         a = np.column_stack([np.zeros(len(logits)), logits])
-        e = np.exp(a - a.max(axis=1, keepdims=True))
+        # A finite box on reference-relative logits is not invariant to
+        # component relabeling. Use stable, unbounded softmax; retain positive
+        # representable weights even when exponentials underflow, so the
+        # fitted mixture can always be converted back to a warm start.
+        with np.errstate(over="ignore", under="ignore"):
+            e = np.maximum(
+                np.exp(a - a.max(axis=1, keepdims=True)), np.finfo(float).tiny
+            )
         result: Array = e / e.sum(axis=1, keepdims=True)
         return result
 
@@ -257,9 +261,9 @@ class Kernel:
     def logits(mixing_weights: ArrayLike) -> Array:
         """Logits (K, M - 1) ``log(pi_m / pi_1)`` of mixing weights (K, M)."""
         pi = np.asarray(mixing_weights, dtype=np.float64)
-        if pi.ndim != 2 or np.any(pi <= 0):
+        if pi.ndim != 2 or not np.all(np.isfinite(pi)) or np.any(pi <= 0):
             raise ValueError("mixing weights must be a positive (K, M) array")
-        result: Array = np.log(pi[:, 1:] / pi[:, :1])
+        result: Array = np.log(pi[:, 1:]) - np.log(pi[:, :1])
         return result
 
     def start(self, centers: ArrayLike, widths: ArrayLike) -> Array:
@@ -505,8 +509,9 @@ def bounds(
     widths]`` for one component).
 
     Centers lie within the per-dimension coordinate range of ``R``; widths lie in
-    ``[lower_ratio, upper_ratio] * max_sigma(R)``; mixing logits in
-    ``[-MIXING_LOGIT_BOUND, MIXING_LOGIT_BOUND]``.
+    ``[lower_ratio, upper_ratio] * max_sigma(R)``. Mixing logits are unbounded:
+    fixing their reference component must not restrict which mixtures can
+    be represented or change a mixture when its components are reordered.
     """
     sigma = max_sigma(R)
     n, M = K * kernel.n_components, kernel.n_components
@@ -514,14 +519,14 @@ def bounds(
         [
             np.tile(np.nanmin(R, axis=0), n),
             np.full(n, lower_ratio * sigma),
-            np.full(K * (M - 1), -MIXING_LOGIT_BOUND),
+            np.full(K * (M - 1), -np.inf),
         ]
     )
     ub = np.concatenate(
         [
             np.tile(np.nanmax(R, axis=0), n),
             np.full(n, upper_ratio * sigma),
-            np.full(K * (M - 1), MIXING_LOGIT_BOUND),
+            np.full(K * (M - 1), np.inf),
         ]
     )
     return lb, ub

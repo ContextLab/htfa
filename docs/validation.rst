@@ -1155,3 +1155,21 @@ fitted kernel:
 Each single-component kernel fits its own data best; on the mixture data the
 two-component fit is within 0.001 of the true factors. Its 16 fits took 2.4 s
 and the whole notebook 21 s (Apple M2 Max).
+
+Tutorial 13: children and adults
+--------------------------------
+
+The cached grouped fit uses 10 children and 10 adults from ``development_fmri``,
+K = 30, fixed template priors, fast mode, ``max_voxels=3000``, and seed 0
+(commit ``4c358d4``). It ran for 86 s and stopped at a plateau after 10 global
+iterations. The 100-permutation test, including its true-label refit, took
+6758 s on the 12-CPU Apple M2 Max. The cache files record the complete commit,
+settings, participant IDs, timing and fit checksum.
+
+No center, width, or connectivity differences survived the max-statistic
+correction across the 30 factors. Uncorrected p <= 0.05 occurred for two
+centers, one width, and two connectivity rows; minimum p-values were 3/101,
+5/101 and 2/101, respectively. These results do not establish an age-group
+difference after correction. The sample is small, the p-values have resolution
+1/101, and registration/motion can affect template differences. See
+:doc:`tutorials/13_group_hierarchy` for the figures and cached/recompute paths.

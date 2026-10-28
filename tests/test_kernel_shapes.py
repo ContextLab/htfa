@@ -10,7 +10,6 @@ from htfa._engines import EPS, NumpyEngine, loss_terms
 from htfa._kernels import (
     KERNELS,
     LAPLACE_EPS,
-    MIXING_LOGIT_BOUND,
     RBF,
     Kernel,
     Prior,
@@ -156,8 +155,8 @@ def test_start_and_bounds_per_kernel():
     lb1, ub1 = bounds(R, 4, 0.1, 2.0)
     np.testing.assert_array_equal(lb[:12], lb1)
     np.testing.assert_array_equal(ub[:12], ub1)
-    np.testing.assert_array_equal(lb[12:], -MIXING_LOGIT_BOUND)
-    np.testing.assert_array_equal(ub[12:], MIXING_LOGIT_BOUND)
+    np.testing.assert_array_equal(lb[12:], -np.inf)
+    np.testing.assert_array_equal(ub[12:], np.inf)
 
 
 @pytest.mark.parametrize("name,M", SHAPES, ids=SHAPE_IDS)
@@ -332,3 +331,15 @@ def test_bounded_lm_recovers_true_parameters_given_true_weights(name, M):
     print(f"{name} M={M}: status {status}, nfev {nfev}, cost {cost:.3e}, max err "
           f"{err.max():.2e}")  # fmt: skip
     assert err.max() < 1e-5
+
+
+def test_extreme_mixing_weights_remain_finite_positive_and_resumable():
+    logits = np.array([[1000.0, -1000.0], [-1000.0, 1000.0]])
+    pi = Kernel.mixing(logits)
+    assert np.all(np.isfinite(pi)) and np.all(pi > 0)
+    np.testing.assert_allclose(pi.sum(axis=1), 1)
+    for order in ([0, 1, 2], [1, 2, 0], [2, 0, 1]):
+        reordered = pi[:, order]
+        back = Kernel.mixing(Kernel.logits(reordered))
+        assert np.all(np.isfinite(back)) and np.all(back > 0)
+        np.testing.assert_allclose(back, reordered, rtol=1e-12, atol=0)

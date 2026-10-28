@@ -20,7 +20,7 @@ from htfa._engines import (
     select_engine,
     thread_limit,
 )
-from htfa._kernels import MIXING_LOGIT_BOUND, Kernel, Prior, max_sigma
+from htfa._kernels import Kernel, Prior, max_sigma
 from htfa._matching import match_components, match_factors
 from htfa.groups import group_key, group_tree
 from htfa.tfa import TFA
@@ -235,12 +235,7 @@ def _match_params(
     comp = match_components(C.reshape(K, M, -1), Cc)
     rows = np.arange(K)[:, None]
     pi = pi[rows, comp]
-    # Reordering changes the reference (first) component of the logits; with
-    # M >= 3 they can then leave the solver's box, where TFA would clip its
-    # start. Clip them here, so that template and starts stay feasible.
-    a_new = Kernel.logits(pi)
-    if np.any(np.abs(a_new) > MIXING_LOGIT_BOUND):
-        pi = Kernel.mixing(np.clip(a_new, -MIXING_LOGIT_BOUND, MIXING_LOGIT_BOUND))
+    # Relabeling is a permutation only: never clip or re-fit mixing weights.
     return perm, comp, (Cc[rows, comp], wc[rows, comp], pi)
 
 

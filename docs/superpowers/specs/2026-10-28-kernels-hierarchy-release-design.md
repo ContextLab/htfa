@@ -129,3 +129,8 @@ parameters, the group-permutation statistic, API names consistent with the exist
   mixing weights and their uncertainty through every hierarchy level.
 - Repeated participant IDs are rejected, including within a group: permutation
   inference requires independent subjects, not repeated runs counted as people.
+
+- Mixture logits are unbounded: a finite box relative to one component is not
+  invariant to changing that reference. Matching only permutes component values;
+  stable softmax floors exponentials only at the float64 normal minimum to keep
+  positive representable weights and finite warm-start logits.

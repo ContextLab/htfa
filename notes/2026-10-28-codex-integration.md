@@ -50,11 +50,46 @@ Base: Task 20 `b85d7b9`, merging Task 19 `22ea028` (includes main `f02ebe3`).
 ## Still to finish
 
 - Full suite, BrainIAK, lint/types, documentation and tutorial 12 passed.
-- Tutorial 13: copy is in this worktree, formatted but still unexecuted/untracked.
-  Finish real-data assets, register hashes, execute full notebook, inspect figures.
-  The original 100-permutation run was stopped at 35 without checkpoints. Rerun
-  scripts/make_group_tutorial_data.py with 100 permutations after source commit.
+- Tutorial 13 assets have been generated and registered locally; see below.
 - Assets need user approval before upload (notes/2026-10-28-resume.md in main).
 - Then regenerate tutorial fits 09-11 and proceed to the independent red-team,
   cross-platform clean-room install/tutorial checks, and v0.1.0 release gates.
 - No feature push, asset upload, or release publication performed here.
+
+## Follow-up review after 4c358d4
+
+Recovered the earlier reviewer report from Claude session 0d44797c's subagent
+`a5e71bd875dfd9954` (original notes had only a partial pointer). The synthetic
+clipping, mixing-argument rejection and prior-shape findings were already fixed.
+Its logit-clipping workaround still changed mixture weights after component
+matching: reproduced 99.9% -> 49.975% for a valid 3-component fit, for all kernels.
+Replaced finite reference-relative boxes with unbounded logits, stable softmax
+and finite log-weight differences; matching now only permutes. New invariance
+tests failed before the fix and pass after it. Shape/fit/oracle tests: 256 passed.
+
+Additional pre-follow-up verification: grouped RBF original Task 20 vs integrated
+matched 72/72 arrays exactly (fixed/empirical, fast/exact, n_jobs 1/3). Linux
+Python 3.12 installed-wheel validation: 293 passed, 1 slow test deselected;
+includes real headless EGL component renders and animations. Artifacts and
+runner in /private/tmp/htfa-linux; wheel/sdist in /private/tmp/htfa-release-candidate.
+
+The 100-permutation tutorial 13 run completed from 4c358d4 (6758 s), log
+/private/tmp/htfa-tutorial13.log, output /private/tmp/htfa-tutorial13-assets.
+It uses single RBFs; mixture-logit fixes do not affect that run. No center,
+width, or connectivity differences survive familywise correction; the notebook
+and validation docs state this. Both assets are registered with verified SHA-256s
+in htfa/datasets.py, but are not uploaded. HTFA_TUTORIAL_FITS selects the local
+cache for prerelease notebook execution.
+
+After the logit fix: full suite **990 passed, 16 skipped, 26 deselected**
+(/private/tmp/htfa-integration-final-tests.log); 341/341 RBF arrays remain
+bit-identical to main (/private/tmp/htfa-rbf-final.npz). Dataset tests 6 passed,
+13 network tests deselected; lint and mypy passed. Tutorial 12 re-executed.
+The earlier Linux wheel and BrainIAK passes predate this mixture-only fix;
+release-candidate wheel artifacts are also from 4c358d4 and need rebuilding.
+
+Tutorial 13 now executes end to end with the local verified cache; all six
+figures inspected. Fixed its empty-graph colorbar request (no edge values to
+color). Final strict Sphinx build passed; log
+/private/tmp/htfa-integration-final-docs.log. Lint, formatting and mypy pass.
+Original worktrees remain unchanged. No outward publication has occurred.
