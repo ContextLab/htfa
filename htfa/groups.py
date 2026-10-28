@@ -323,6 +323,22 @@ class GroupTest:
             out[f.name] = np.asarray(value)
         return out
 
+    @classmethod
+    def from_arrays(cls, arrays: Any) -> GroupTest:
+        """A `GroupTest` from `to_arrays` output (or an ``np.load`` of it).
+
+        Group keys come back as strings (nested keys joined with ``'/'``), a
+        ``random_state`` of -1 as ``None``; other entries of ``arrays`` are
+        ignored.
+        """
+        kw = {f.name: arrays[f.name] for f in dataclasses.fields(cls)}
+        kw["level"] = int(kw["level"])
+        kw["groups"] = [str(g) for g in kw["groups"]]
+        seed = int(kw["random_state"])
+        kw["random_state"] = None if seed == -1 else seed
+        kw["seconds"] = float(kw["seconds"])
+        return cls(**kw)
+
 
 def _permuted_labels(
     labels: list[list[Hashable]], level: int, rng: np.random.Generator

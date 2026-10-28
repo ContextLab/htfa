@@ -444,6 +444,13 @@ def test_group_test_saves_without_pickle(tmp_path):
         np.testing.assert_array_equal(z["center_null"], test.center_null)
         assert list(z["groups"]) == ["y", "x"]
         assert z["permuted_labels"].shape == (2, 9)
+        back = GroupTest.from_arrays(z)
+    assert back.groups == ["y", "x"] and back.random_state == 0 and back.level == 0
+    for stat in ("center", "width", "connectivity"):
+        np.testing.assert_array_equal(back.pvalues(stat), test.pvalues(stat))
+        np.testing.assert_array_equal(
+            back.pvalues(stat, True), test.pvalues(stat, True)
+        )
 
 
 # --------------------------------------------------------------- results
