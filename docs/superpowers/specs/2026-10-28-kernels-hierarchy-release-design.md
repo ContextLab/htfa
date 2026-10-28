@@ -112,3 +112,25 @@ Mechanics
 ## Left to the builder
 Parameterisations (identifiability) of laplace/mixture/mexican_hat, priors for the extra shape
 parameters, the group-permutation statistic, API names consistent with the existing code.
+
+## Integration decisions (2026-10-28)
+
+- Laplace smoothing is dimensionless, relative to sqrt(width), rather than voxel
+  spacing: `exp(0.1 - sqrt(d^2 / w + 0.1^2))`. This keeps the profile at one at
+  its center, makes it independent of the sampling grid, and gives analytic
+  derivatives in the same scaled coordinate as the other kernels. The original
+  voxel-relative proposal above is superseded by this documented parameterization.
+- User plotting clarification: each mixture component is a separate spatial lobe;
+  every component-to-component copy of a factor connection carries the same edge
+  value. No extra edges within a factor. Sphere/centroid summaries remain optional.
+- Static BrainNet, animation, and nilearn views share component profiles and factor
+  membership. BrainNet draws both signs as isosurfaces; nilearn keeps signed
+  maximum-absolute projections. Group templates retain component centers, widths,
+  mixing weights and their uncertainty through every hierarchy level.
+- Repeated participant IDs are rejected, including within a group: permutation
+  inference requires independent subjects, not repeated runs counted as people.
+
+- Mixture logits are unbounded: a finite box relative to one component is not
+  invariant to changing that reference. Matching only permutes component values;
+  stable softmax floors exponentials only at the float64 normal minimum to keep
+  positive representable weights and finite warm-start logits.

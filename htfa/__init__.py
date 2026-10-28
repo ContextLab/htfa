@@ -1,14 +1,16 @@
 """Hierarchical Topographic Factor Analysis."""
 
 from . import datasets as datasets
+from . import stats as stats
 from ._lazy import require, set_autoinstall
 from .brainnet import animate_network, plot_network
 from .connectivity import dynamic_connectivity, isfc, static_connectivity
 from .fit import fit
+from .groups import group_permutation_test
 from .htfa import HTFA
 from .io import Subject, load
 from .results import HTFAResults
-from .synthetic import make_htfa_data, make_tfa_data
+from .synthetic import make_group_data, make_htfa_data, make_tfa_data
 from .tfa import TFA
 from .timecourse import plot_timecourse
 
@@ -22,8 +24,10 @@ __all__ = [
     "animate_network",
     "dynamic_connectivity",
     "fit",
+    "group_permutation_test",
     "isfc",
     "load",
+    "make_group_data",
     "make_htfa_data",
     "make_tfa_data",
     "plot_network",
@@ -31,4 +35,5 @@ __all__ = [
     "require",
     "set_autoinstall",
     "static_connectivity",
+    "stats",
 ]

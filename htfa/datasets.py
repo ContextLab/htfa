@@ -49,29 +49,37 @@ TUTORIAL_DATA_URL = (
 # permutation nulls): name -> (file in the tutorial-data-v1 pre-release of the
 # htfa repository, SHA-256).
 TUTORIAL_FITS = {
+    "development_fmri_10children_10adults_K30": (
+        "htfa_development_fmri_10children_10adults_K30-01a094f61846.npz",
+        "01a094f618466ae4400c4d3583342f64496e84a4733028a95399131b1bd9b468",
+    ),
+    "development_fmri_children_adults_null_100": (
+        "htfa_development_fmri_children_adults_null_100-d7c05c55f4a9.npz",
+        "d7c05c55f4a90e6e8fb0cf528afb7a490ecaed3327703a3139364daf8214fac1",
+    ),
     "mitchell2008_K100": (
-        "htfa_mitchell2008_K100.npz",
-        "635d821194ee1d4a37932a1f4a1ed03592f18838a6453200b1bda0570fa895c4",
+        "htfa_mitchell2008_K100-de0427fbc847.npz",
+        "de0427fbc8476fb5b0233b17eae0bf7f116d874287667b0cb7a285bd2d01b92c",
     ),
     "development_fmri_12adults_K50": (
-        "htfa_development_fmri_12adults_K50.npz",
-        "647dc7c2da0eec69b16df12f7c3fcc68a2f33637056dc21532b77da9b3c0cc13",
+        "htfa_development_fmri_12adults_K50-939fb70901ca.npz",
+        "939fb70901cacb0d800133014d7366e51e28a8b609ca6e5cb1b2f0e991175e61",
     ),
     "development_fmri_6adults_K30": (
-        "htfa_development_fmri_6adults_K30.npz",
-        "48d0cdda811a515fad809b2b667f29d470cf5c2c19c53a9c7bc29495ee4ba829",
+        "htfa_development_fmri_6adults_K30-b1b11b99f829.npz",
+        "b1b11b99f8296348546b1ad570ee9f89290df0806e2b89844d4d2c346c5de488",
     ),
     "mitchell2008_embeddings": (
         "htfa_mitchell2008_embeddings_Qwen3-Embedding-0.6B.npz",
         "0f61b70541d0e5c3cb428fb9b81f1cb98df2a835bb76cbd7c76d9f13ce6b2e96",
     ),
     "mitchell2008_null_20": (
-        "htfa_mitchell2008_null_20.npz",
-        "69a937cefa24806ac16b842564285434e43869485ce5cf5d0f24e4d90f8e7b05",
+        "htfa_mitchell2008_null_20-47da3a734a49.npz",
+        "47da3a734a49253a82cdceebc94879989543202fbe31a2aa0ba82677fe8f75b0",
     ),
     "mitchell2008_null_100": (
-        "htfa_mitchell2008_null_100.npz",
-        "c756356412a1f4b85eaa6d4c93b00901e41dc0b5b415f5fefd95c4d2c526f337",
+        "htfa_mitchell2008_null_100-3708d4eac165.npz",
+        "3708d4eac165fb5aaa5510cd6f8b1f9189d61842e5e1ecb3dfbf1bfff91e1e7d",
     ),
 }
 
@@ -354,8 +362,8 @@ def fetch_tutorial_fit(
 ) -> dict[str, Array]:
     """A saved result of one of the tutorials, downloaded on first use.
 
-    The results (HTFA fits, and tutorial 09's word embeddings and permutation
-    nulls) are files of the ``tutorial-data-v1`` pre-release of the htfa
+    The results (HTFA fits, and tutorials 09/13's permutation nulls and tutorial 09's
+    word embeddings) are files of the ``tutorial-data-v1`` pre-release of the htfa
     repository (see ``htfa.datasets.TUTORIAL_FITS``). The file is downloaded
     once, its SHA-256 is checked before it is loaded, and it is loaded with
     ``allow_pickle=False``. Each file records how it was made (for a fit:
@@ -369,7 +377,9 @@ def fetch_tutorial_fit(
         ``"mitchell2008_embeddings"``, ``"mitchell2008_null_20"`` and
         ``"mitchell2008_null_100"`` (tutorial 09),
         ``"development_fmri_12adults_K50"`` (tutorial 10) or
-        ``"development_fmri_6adults_K30"`` (tutorial 11).
+        ``"development_fmri_6adults_K30"`` (tutorial 11),
+        ``"development_fmri_10children_10adults_K30"`` and
+        ``"development_fmri_children_adults_null_100"`` (tutorial 13).
     cache_dir : path, optional
         Where the file is kept (default: ``tutorial_fits`` in htfa's data
         folder, ``$HTFA_DATA_DIR`` or ``~/.cache/htfa``).

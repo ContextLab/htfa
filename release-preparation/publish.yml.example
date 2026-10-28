@@ -1,0 +1,59 @@
+# INACTIVE TEMPLATE. Do not activate or dispatch before Jeremy's explicit approval.
+# After review, copy to .github/workflows/publish.yml and configure protected
+# pypi/testpypi environments and matching Trusted Publishers first.
+name: approved publication
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: Successful release-candidate workflow run ID
+        required: true
+      approved_sha:
+        description: Full commit SHA explicitly reviewed and approved
+        required: true
+      target:
+        type: choice
+        options: [testpypi, pypi]
+        required: true
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - name: Verify candidate provenance and successful validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.candidate_run_id }}
+          APPROVED_SHA: ${{ inputs.approved_sha }}
+        shell: python
+        run: |
+          import json, os, re, subprocess
+          run_id = os.environ['RUN_ID']
+          sha = os.environ['APPROVED_SHA']
+          assert run_id.isdecimal()
+          assert re.fullmatch(r'[0-9a-f]{40}', sha)
+          repo = os.environ['GITHUB_REPOSITORY']
+          run = json.loads(subprocess.check_output(
+              ['gh', 'api', f'repos/{repo}/actions/runs/{run_id}'], text=True))
+          assert run['head_sha'] == sha
+          assert run['head_repository']['full_name'] == repo
+          assert run['path'] == '.github/workflows/candidate.yml'
+          assert run['status'] == 'completed' and run['conclusion'] == 'success'
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-ubuntu-latest-3.12
+          path: dist
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+      - if: inputs.target == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+      - if: inputs.target == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1

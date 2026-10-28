@@ -9,6 +9,18 @@ in BrainIAK. It does not import BrainIAK and has no C++ or MPI code.
 
 Added:
 
+- Component matching preserves the fitted mixture exactly. Reference-relative
+  logit boxes were not invariant under relabeling: for three components,
+  merely swapping their order could change a 99.9% weight to about 50%.
+  Logits are now unbounded with stable softmax and finite warm-start conversion;
+  regression tests compare the represented fields before and after matching.
+
+- Component-aware network plots: separate spatial lobes for mixture components,
+  signed kernel profiles, identical factor edges repeated between component
+  pairs, and ``node_mode='summary'`` for one sphere/centroid per factor.
+  Static BrainNet plots, animations and nilearn glass-brain plots share the
+  component geometry; group templates retain their component parameters.
+
 - :class:`htfa.TFA` and :class:`htfa.HTFA` estimators, and :func:`htfa.fit`.
 - A bounded Levenberg-Marquardt solver for the centers and widths
   (``nlss_method='bounded-lm'``), built on the factor structure of
@@ -103,6 +115,35 @@ Added:
   brain only on request (``view='glass'``). ``truth=`` adds a reference panel.
 - Synthetic data with ground truth for 2D and 3D coordinates.
 - Installation of optional dependencies on first use.
+- Groups of subjects: ``HTFA.fit(..., groups=..., subject_ids=...)`` and
+  ``htfa.fit(..., groups=...)`` fit a template per group (and per nested
+  subgroup) under the global template, each with a prior centred on its
+  parent's template and a posterior covariance; group factors are in global
+  factor order (:mod:`htfa.groups`). It needs ``template_update='fixed'`` or
+  ``'empirical'``; crossed designs raise ``ValueError``. Without ``groups``,
+  fits are identical bit for bit to those before (150 arrays of 15 fits
+  compared). :func:`htfa.group_permutation_test` refits with shuffled labels
+  and gives per-factor p-values for center, width and connectivity
+  differences, uncorrected or family-wise; on synthetic data with no
+  difference, 3.4%, 5.6% and 5.4% of 1000 factor tests had p <= 0.05
+  (:doc:`validation`). :class:`htfa.HTFAResults` gains ``group_centers``,
+  ``group_widths``, ``group_subjects`` and ``group=`` on its node and network
+  plots; :func:`htfa.make_group_data` simulates groups; tutorial 13.
+
+- Kernel shapes and mixtures: ``kernel`` (``'rbf'``, the default;
+  ``'laplace'``; ``'mexican_hat'``, the D-dimensional negative Laplacian of a
+  Gaussian) and ``n_components`` (default 1) on :class:`htfa.TFA`,
+  :class:`htfa.HTFA` and :func:`htfa.fit`. With ``n_components > 1`` each
+  factor is a mixture of components of that shape, each with its own center
+  and width, and softmax mixing weights fitted in the nonlinear solve. Exact
+  derivatives in every solver (``'varpro'``, ``'bounded-lm'``, ``'trf'``,
+  ``'dogbox'``) and both modes; HTFA priors and updates for every component
+  and the mixing weights; shapes and mixtures in :func:`htfa.make_tfa_data`,
+  :func:`htfa.make_htfa_data` and the effective nodes of the plots;
+  :func:`htfa.tfa.component_factors`. ``'rbf'`` with one component gives the
+  same results as before, bit for bit. Checked against a dense sympy oracle
+  over 240 generated scenarios, by finite differences and by recovery from
+  synthetic data (see :doc:`validation`); tutorial 12.
 
 BrainIAK behavior that differs from BrainIAK's code (each has a regression test):
 
@@ -124,3 +165,8 @@ BrainIAK behavior that differs from BrainIAK's code (each has a regression test)
 8. ``utils.from_tri_2_sym`` fills only the upper triangle of the (co)variance
    matrix and never mirrors it, so the HTFA center prior uses ``triu(Sigma)^-1``
    instead of ``Sigma^-1``. Full symmetric covariances are used here.
+
+* Add ``htfa.stats`` with pooled voxel-baseline R², Gaussian plug-in likelihood,
+  AIC/AICc/BIC and explicit conditional reconstruction parameter counts.
+* Add tutorials 14 (statistics assumptions and usage) and 15 (real multi-subject
+  fMRI comparison across all three kernels, with one and two components).

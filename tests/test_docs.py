@@ -13,6 +13,9 @@ EXTRA_NAMES = [
     "htfa.datasets.fetch_tutorial_fit",
     "htfa.datasets.regress_confounds",
     "htfa.synthetic.match_factors",
+    "htfa.groups.GroupTest",
+    "htfa.groups.GroupTree",
+    "htfa.groups.group_tree",
     "htfa.tfa.standardize_data",
 ]
 
