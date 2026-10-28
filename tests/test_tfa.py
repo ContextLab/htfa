@@ -830,30 +830,51 @@ def test_stopping_objective_subsample_sizes():
     assert TFA(voxel_ratio=0.5)._eval_sizes(1600, 100, (800, 100)) == (1600, 100)
 
 
-# (mode, seed) of this setup where a factor vanishes. Measured over seeds
-# 0-299: exact 3, 22, 27, 33, ... (13 seeds); fast 173 only.
-VANISHING_CASES = [("exact", 3), ("fast", 173)]
+def _vanishing_setup(n_vanished):
+    """30 random voxels in [0, 100]^3, K = 4, and a start whose first
+    ``n_vanished`` factors are 0 at every voxel: width at the lower bound of
+    ``lower_ratio=1e-5`` and center at the point of a grid over the box
+    farthest from every voxel (squared distance / width far above the 745
+    where exp underflows). A vanished factor has zero derivatives, so no
+    solver step moves it, on any platform."""
+    from scipy.spatial import cKDTree
+
+    from htfa._kernels import bounds, max_sigma
+
+    rng = np.random.default_rng(3)
+    R, X = rng.uniform(0, 100, (30, 3)), rng.normal(size=(30, 10))
+    K = 4
+    lb, _ = bounds(R, K, 1e-5, 1.8)
+    axis = np.linspace(R.min(), R.max(), 41)
+    grid = np.stack(np.meshgrid(axis, axis, axis, indexing="ij"), -1).reshape(-1, 3)
+    grid = grid[np.all((grid >= R.min(0)) & (grid <= R.max(0)), axis=1)]
+    dist, _ = cKDTree(R).query(grid)
+    far = grid[np.argsort(dist)[::-1][:n_vanished]]
+    centers = R[:K].copy()
+    widths = np.full(K, 0.1 * max_sigma(R))
+    centers[:n_vanished], widths[:n_vanished] = far, lb[-1]
+    assert np.min(dist[np.argsort(dist)[::-1][:n_vanished]]) ** 2 / lb[-1] > 2000
+    return X, R, (centers, widths)
 
 
-@pytest.mark.parametrize(("mode", "seed"), VANISHING_CASES)
-def test_ols_fit_with_a_factor_that_vanishes_finishes(mode, seed):
-    """With 'ols' and a small lower_ratio a width can shrink until its factor is
-    0 at every voxel; the full-data weights then had a singular gram and
-    ridge_weights raised LinAlgError (seeds 0, 3, 4, 18 of this setup). Now
-    the fit finishes with the minimum-norm weights the varpro objective uses
-    and a finite cost_. The vanished factor's weight is 0 only up to rounding:
-    the eigensolver mixes the zero column's direction into the eigenvector of
-    the smallest kept eigenvalue by about eps times the kept condition number
-    (eigenvector perturbation with that eigenvalue as the gap), and that
-    eigenvector carries weights of size max|W|; summed over the K - 1 kept
-    directions, |w| <= (K - 1) eps cond max|W|. Measured: 8.6e-10 of the
-    largest weight (macOS, Accelerate) and 1.2e-8 (macOS runners with Python
-    3.10 and 3.11), with eps cond = 1.4e-8 here. Each mode runs on a seed
-    where its fit reaches a vanished factor (VANISHING_CASES)."""
+@pytest.mark.parametrize("mode", ["exact", "fast"])
+def test_ols_fit_with_a_factor_that_vanishes_finishes(mode):
+    """With 'ols' a factor that is 0 at every voxel (as a width shrunk to a
+    small lower_ratio can make it) gives a singular gram, and ridge_weights
+    raised LinAlgError on the full-data weights. Now the fit finishes with the
+    minimum-norm weights the varpro objective uses and a finite cost_. The
+    vanished factor's weight is 0 only up to rounding: the eigensolver mixes
+    the zero column's direction into the eigenvector of the smallest kept
+    eigenvalue by about eps times the kept condition number (eigenvector
+    perturbation with that eigenvalue as the gap), and that eigenvector
+    carries weights of size max|W|; summed over the K - 1 kept directions,
+    |w| <= (K - 1) eps cond max|W|. The vanished factor is constructed in the
+    start (`_vanishing_setup`), so the test does not depend on a fit
+    trajectory, which differs between platforms: a fast fit that shrank a
+    factor to 0 on macOS from seed 173 kept every factor on Windows."""
     from htfa._kernels import GRAM_RCOND, gram_solve
 
-    rng = np.random.default_rng(seed)
-    R, X = rng.uniform(0, 100, (30, 3)), rng.normal(size=(30, 10))
+    X, R, start = _vanishing_setup(1)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ConvergenceWarning)
         m = TFA(
@@ -862,22 +883,34 @@ def test_ols_fit_with_a_factor_that_vanishes_finishes(mode, seed):
             lower_ratio=1e-5,
             max_iter=20,
             mode=mode,
-            random_state=seed,
-        ).fit(X, R)
+            random_state=3,
+        ).fit(X, R, start=start)
     F = factors(R, m.centers_, m.widths_)
     vanished = ~F.any(axis=0)
-    W, _, _ = gram_solve(F, standardize_data(X, "auto"), 0.0)
     print(
         f"vanished factors {np.flatnonzero(vanished)}, widths {m.widths_}, "
         f"cost {m.cost_:.6g}, weight rows max {np.abs(m.weights_).max(1)}"
     )
+    assert vanished.tolist() == [True, False, False, False]
+    W, _, _ = gram_solve(F, standardize_data(X, "auto"), 0.0)
     vals = np.linalg.eigvalsh(F.T @ F)
     kept = vals[vals > GRAM_RCOND * vals[-1]]
     cond = float(vals[-1] / kept.min())
     bound = (len(kept) - 1) * np.finfo(np.float64).eps * cond
     ratio = np.abs(m.weights_[vanished]).max() / np.abs(m.weights_).max()
     print(f"vanished weight / max weight {ratio:.2e}, bound {bound:.2e}")
-    assert vanished.any()
     assert ratio <= bound
     np.testing.assert_allclose(m.weights_, W, rtol=1e-12, atol=0)
     assert np.isfinite(m.cost_)
+
+
+@pytest.mark.parametrize("mode", ["exact", "fast"])
+def test_fit_from_a_start_where_every_factor_vanishes_raises(mode):
+    """Every factor 0 at every voxel: the gram's eigenvalues all fall below
+    GRAM_FLOOR, and the fit raises the ValueError that names the fix instead
+    of failing on an empty array."""
+    X, R, start = _vanishing_setup(4)
+    with pytest.raises(ValueError, match="factors are 0 at every voxel"):
+        TFA(K=4, weight_method="ols", lower_ratio=1e-5, mode=mode, random_state=3).fit(
+            X, R, start=start
+        )
