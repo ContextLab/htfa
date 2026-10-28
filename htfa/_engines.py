@@ -132,10 +132,12 @@ def one_blas_thread() -> Iterator[None]:
     of NumPy engines.
 
     BLAS rounds differently with one thread than with several (Accelerate:
-    one vs any other count; OpenBLAS: from one count to the next, 1e-13 on CI),
-    and joblib's loky workers get thread variables of ``cpu_count // n_jobs``.
-    `htfa.htfa.HTFA` fits every subject inside this block, serial or parallel,
-    so that its results do not depend on ``n_jobs``. The engine's chunk threads
+    one vs any other count; OpenBLAS: from one count to the next, 1e-13 on CI).
+    `htfa.htfa.HTFA` fits every subject inside this block, serial or on worker
+    threads, so that its results do not depend on ``n_jobs``. The
+    threadpoolctl limit is process-wide and the Accelerate mode per thread, so
+    HTFA enters the block once around all fits and again in each worker
+    thread. The engine's chunk threads
     still run in parallel (see `thread_limit`); their chunks do not depend on
     the thread count. (K-means runs single-threaded on any thread; see
     `htfa._kernels.kmeans`.)

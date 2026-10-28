@@ -190,12 +190,15 @@ def _scramble_small_allocations(seed: int) -> list:
 
 @pytest.mark.parametrize("mode", ["fast", "exact"])
 def test_htfa_bitwise_independent_of_n_jobs(mode: str) -> None:
-    """joblib's loky workers get BLAS thread variables of cpu_count // n_jobs
-    (1 from n_jobs > cpu_count / 2), and BLAS rounds differently with one
-    thread than with several (Accelerate) or with every thread count (OpenBLAS,
-    1e-13 on CI). Measured before every subject fit ran on one BLAS thread (12
-    cores, 7 workers): this case gave different subject centers; on real data
-    at K=100 (8 subjects, n_jobs=8 vs 4) a different template and optima.
+    """Serial and parallel subject fits must agree bit for bit. Measured before
+    the fixes: (1) loky worker processes got BLAS thread variables of
+    cpu_count // n_jobs, and BLAS rounds differently with one thread than with
+    several (12 cores, 7 workers: different subject centers; real data at
+    K=100, 8 subjects, n_jobs=8 vs 4: a different template); (2) with every fit
+    on one BLAS thread but still in worker processes, Windows CI runners with
+    AMD EPYC 9V45/9V74 CPUs failed in 1-7% of runs, because OpenBLAS rounds
+    differently in about 1-2.5% of freshly started processes there. The fits
+    now run as threads of one process.
 
     The comparison is meaningful only where repeated serial fits agree bit for
     bit whatever the memory layout, so that is checked first, with the small
@@ -213,8 +216,9 @@ def test_htfa_bitwise_independent_of_n_jobs(mode: str) -> None:
         layouts = set()
         for seed in range(4):
             junk = _scramble_small_allocations(seed)
-            fit = _fit_subject(HTFA(**kw)._tfa_params(10), Xs[0], Rs[0], None,
-                               None, 7, 1, True)  # fmt: skip
+            fit = _fit_subject(
+                HTFA(**kw)._tfa_params(10), Xs[0], Rs[0], None, None, 7, 1
+            )
             layouts.add((fit.centers_.tobytes(), fit.widths_.tobytes()))
             del junk
         print(f"serial subject fits under 4 memory layouts: {len(layouts)} distinct")

@@ -185,17 +185,16 @@ def _fit_subject(
     start: tuple[Array, Array] | None,
     seed: int,
     n_threads: int,
-    quiet: bool,
 ) -> TFA:
-    # Filters are set here so that they also apply inside loky workers.
-    with (
-        threadpool_limits(n_threads),
-        one_blas_thread(),
-        thread_limit(n_threads),
-        warnings.catch_warnings(),
-    ):
-        if quiet:
-            warnings.simplefilter("ignore", ConvergenceWarning)
+    """One subject's TFA fit, on the calling thread or a worker thread.
+
+    Sets only per-thread state: Accelerate's threading mode (one thread) and
+    the NumPy engine's ``n_threads`` chunk threads. The process-wide limits
+    (OpenBLAS and the other threadpoolctl-visible BLAS on one thread) and the
+    warning filters are set once by `HTFA._fit_subjects`, around all fits,
+    since concurrent enter and exit of process-wide settings would race.
+    """
+    with one_blas_thread(), thread_limit(n_threads):
         return TFA(**params, random_state=seed).fit(X, R, prior=prior, start=start)
 
 
@@ -261,16 +260,17 @@ class HTFA(BaseEstimator):
         (docs/validation.rst). Pass ``mode='exact'`` for the reference
         template.
     n_jobs : int, optional
-        Number of joblib workers for the subject fits (numpy engines only). The
-        results do not depend on it: every subject fit, serial or parallel, runs
-        BLAS on one thread (`htfa._engines.one_blas_thread`), since BLAS rounds
-        differently with different thread counts and the workers get fewer.
-        On macOS, a standalone `htfa.TFA` fit and the stage-0 fit of the same
-        subject can therefore differ at rounding level.
+        Number of subject fits run at once (numpy engines only), as threads of
+        this process (joblib's threading backend). The results do not depend
+        on it: all fits share one process, and so one BLAS library state, and
+        every subject fit, serial or parallel, runs BLAS on one thread
+        (`htfa._engines.one_blas_thread`), since BLAS rounds differently with
+        different thread counts. On macOS, a standalone `htfa.TFA` fit and the
+        stage-0 fit of the same subject can therefore differ at rounding level.
     n_threads : int, optional
-        OpenMP and NumPy engine threads per subject fit (the engine splits each
-        pass into fixed voxel chunks, so the count does not change results;
-        BLAS runs on one thread, see ``n_jobs``). ``None`` uses the
+        NumPy engine threads per subject fit (the engine splits each pass into
+        fixed voxel chunks, so the count does not change results; BLAS runs on
+        one thread, see ``n_jobs``). ``None`` uses the
         lowest thread count the loaded BLAS libraries currently report (the
         OpenMP libraries when no BLAS library is visible to
         ``threadpoolctl.threadpool_info``): a limit set by ``OMP_NUM_THREADS``,
@@ -424,34 +424,33 @@ class HTFA(BaseEstimator):
     ) -> list[TFA]:
         """Fit every subject's TFA; seeds are fixed per subject, not per worker.
 
-        Local (penalized) fits run with ``quiet=True``: their per-fit
-        ConvergenceWarnings are suppressed in favour of one HTFA-level warning.
+        Local (penalized) fits (``prior`` given) have their per-fit
+        ConvergenceWarnings suppressed in favour of one HTFA-level warning.
         """
         params = self._tfa_params(max_iter)
-        quiet = prior is not None
         n = len(Xs)
         n_workers = min(n, effective_n_jobs(self.n_jobs)) if parallel else 1
         n_threads = self._subject_threads(n_workers)
-        if not parallel:
-            return [
-                _fit_subject(
-                    params,
-                    Xs[s],
-                    Rs[s],
-                    prior,
-                    starts[s],
-                    int(seeds[s]),
-                    n_threads,
-                    quiet,
-                )
-                for s in range(n)
-            ]
-        fits: list[TFA] = Parallel(n_jobs=n_workers, backend="loky")(
-            delayed(_fit_subject)(
-                params, Xs[s], Rs[s], prior, starts[s], int(seeds[s]), n_threads, quiet
-            )
+        jobs = [
+            (params, Xs[s], Rs[s], prior, starts[s], int(seeds[s]), n_threads)
             for s in range(n)
-        )
+        ]
+        # Worker threads in this process, not worker processes: every fit then
+        # uses the same BLAS state. On Windows with some AMD EPYC CPUs, OpenBLAS
+        # rounds differently in about 1-2.5% of freshly started processes, so
+        # process workers made results depend on n_jobs there.
+        with (
+            threadpool_limits(n_threads),
+            one_blas_thread(),
+            warnings.catch_warnings(),
+        ):
+            if prior is not None:
+                warnings.simplefilter("ignore", ConvergenceWarning)
+            if n_workers == 1:
+                return [_fit_subject(*job) for job in jobs]
+            fits: list[TFA] = Parallel(n_jobs=n_workers, backend="threading")(
+                delayed(_fit_subject)(*job) for job in jobs
+            )
         return fits
 
     def fit(
