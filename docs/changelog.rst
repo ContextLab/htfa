@@ -65,9 +65,9 @@ Added:
   keeps it and raises the damping instead of taking a Gauss-Newton step, and
   it forms the largest curvature products of the linear loss in float32;
   costs and gradients are unchanged. On six development_fmri adults a
-  full-run TFA fit took 8.7 s instead of 24.6 s at K = 50 and 21.6 s instead
-  of 113.4 s at K = 100. The fast fits reach other local minima of the same
-  objective: on twelve adults their objectives were within -4.5e-4 to
+  full-run TFA fit took 8.5 s instead of 24.1 s at K = 50 and 21.0 s instead
+  of 108.3 s at K = 100. The fast fits reach other local minima of the same
+  objective: on twelve adults their objectives were within -4.7e-4 to
   +3.4e-4 (relative) of the exact fits, with mean held-out R² 0.0429 and
   0.0507 against 0.0427 and 0.0506. The fast HTFA template (12 adults,
   K = 50) is a different map: 15.8 mm from the exact one (median center

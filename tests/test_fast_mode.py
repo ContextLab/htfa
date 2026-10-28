@@ -502,7 +502,7 @@ def test_tfa_rejects_unknown_mode():
 
 # Real data: full-run fit of the first adult, defaults otherwise. Measured over
 # the 12 adults (docs/validation.rst): fast - exact objective from -4.5e-4 to
-# +2.7e-4 at K = 50 and from -4.1e-4 to +3.4e-4 at K = 100.
+# +2.7e-4 at K = 50 and from -4.7e-4 to +3.4e-4 at K = 100.
 REAL_COST_RTOL = 1e-3
 
 

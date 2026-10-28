@@ -419,8 +419,8 @@ class TFA(BaseEstimator):
         linear loss in float32. On real fMRI the Hessian is indefinite at most
         points of a solve, so ``'fast'`` takes fewer steps and can end at a
         different local minimum. On six development_fmri adults it fitted
-        2.8 (K = 50) and 5.3 (K = 100) times faster; on twelve, its
-        objectives were within -4.5e-4 to +3.4e-4 (relative) of the exact
+        2.8 (K = 50) and 5.2 (K = 100) times faster; on twelve, its
+        objectives were within -4.7e-4 to +3.4e-4 (relative) of the exact
         fits, and mean held-out R^2 0.0429 and 0.0507 against 0.0427 and
         0.0506 (see docs/performance.rst and docs/validation.rst).
     random_state : None, int or numpy.random.Generator, default=None

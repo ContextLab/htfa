@@ -848,25 +848,25 @@ every subject's run on them), averaged over the twelve factor sets.
      - K = 100
    * - objective, fast - exact (relative): range, subjects lower
      - -4.5e-4 to +2.7e-4, 9 of 12
-     - -4.1e-4 to +3.4e-4, 5 of 12
+     - -4.7e-4 to +3.4e-4, 5 of 12
    * - held-out R² (ridge), mean exact / fast
      - 0.0427 / 0.0429
      - 0.0506 / 0.0507
    * - held-out R², fast - exact per subject (subjects higher)
      - -0.0011 to +0.0016 (6 of 12)
-     - -0.0016 to +0.0014 (8 of 12)
+     - -0.0016 to +0.0014 (7 of 12)
    * - decoding, 1-sample windows, exact / fast
      - 0.139 / 0.130
-     - 0.179 / 0.181
+     - 0.178 / 0.181
    * - decoding, 6-sample windows, exact / fast
      - 0.513 / 0.502
-     - 0.613 / 0.603
+     - 0.611 / 0.603
 
 The fast fits end at other local minima, below the exact ones for 9 of 12
 subjects at K = 50 and 5 of 12 at K = 100. Held-out reconstruction is the
 same on average; per subject it differs by up to 0.0016 in R², in both
 directions. Fast-mode decoding is lower by 0.009 (1-sample windows) and 0.011
-(6-sample windows) at K = 50, and differs by +0.002 and -0.010 at K = 100.
+(6-sample windows) at K = 50, and differs by +0.002 and -0.009 at K = 100.
 Between the twelve factor sets of the exact mode, the accuracy ranges from
 0.105 to 0.165 (K = 50, 1-sample windows); the splits and factor sets are not
 independent, so no significance test is given. Seconds per fit are in

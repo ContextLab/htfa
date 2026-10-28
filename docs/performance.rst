@@ -303,8 +303,8 @@ matrix and the Hessian.
 
 **Timings.** The first six adults (full runs, defaults, 12 threads), the
 exact and the fast fit of each subject one after the other, 2026-10-27, at
-load averages of 2.5 to 5.7 (every speedup quoted in these docs is from
-this run):
+load averages of 4.6 to 15 from other jobs (every speedup quoted in these docs
+is from this run):
 
 .. list-table:: Whole TFA fits, 6 development_fmri adults
    :header-rows: 1
@@ -315,20 +315,20 @@ this run):
      - ratio of total times (per subject)
      - Hessian assemblies per fit, exact / fast
    * - 50
-     - 24.6 s
-     - 8.7 s
-     - 2.8 (1.7 to 4.4)
+     - 24.1 s
+     - 8.5 s
+     - 2.8 (1.8 to 4.4)
      - 241 to 693 / 105 to 186
    * - 100
-     - 113.4 s
-     - 21.6 s
-     - 5.3 (3.2 to 8.4)
+     - 108.3 s
+     - 21.0 s
+     - 5.2 (3.1 to 8.4)
      - 695 to 1881 / 195 to 247
 
 HTFA with its defaults on the twelve adults (K = 50, ``n_jobs=6``, 10 global
-iterations in both modes; ``scripts/validation_modes.py --htfa``) took 664 s
-in exact mode and 244 s in fast mode (2.7 times; load average 4.9 when the
-run started, other jobs raised it during the run).
+iterations in both modes; ``scripts/validation_modes.py --htfa``) took 628 s
+in exact mode and 233 s in fast mode (2.7 times; load average 5.4 when the
+run started).
 
 **Options measured and not adopted** (development_fmri, same machine, with
 the earlier damping rule):

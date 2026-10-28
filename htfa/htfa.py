@@ -247,7 +247,7 @@ class HTFA(BaseEstimator):
     mode : {'fast', 'exact'}, default='fast'
         Passed to each subject's `TFA` (see there). On the twelve
         development_fmri adults (K = 50, defaults, 10 global iterations) the
-        fast fit took 244 s against 664 s, and its template is a different
+        fast fit took 233 s against 628 s, and its template is a different
         map: its centers are 15.8 mm (median; 42.3 mm at most) from the exact
         template's, while a 1e-12 change of the data moved the exact template
         by 2.0 to 5.6 mm (median; 8.8 to 13.6 at most) in three trials. The
