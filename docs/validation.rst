@@ -252,6 +252,18 @@ Objectives are equal within the solver's ``ftol`` (1e-8) or lower, and the
 held-out R² values differ by at most 8.3e-6 (sub-pixar125, which stopped after
 2 instead of 9 outer iterations at a 1.4e-5 lower objective).
 
+Reproducibility
+---------------
+
+A fit repeated with the same inputs, settings and ``random_state`` in the same
+process gives identical results, bit for bit, and an HTFA's results do not
+depend on ``n_jobs`` (``tests/test_htfa.py::test_htfa_bitwise_independent_of_n_jobs``,
+in both modes). Across processes this also holds where the BLAS library
+computes the same bits in every process. On Windows with some AMD EPYC CPUs
+(measured on 9V45 and 9V74), OpenBLAS rounds differently in about 1 to 2.5% of
+freshly started processes, so two runs of the same fit are not guaranteed to
+agree bit for bit there; the differences start at rounding level.
+
 Real fMRI: data
 ---------------
 

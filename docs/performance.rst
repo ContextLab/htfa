@@ -164,21 +164,36 @@ Other settings that change the cost of a fit
   the coordinates with ``n_init=10`` on one thread, for reproducible sums (7.6
   to 8.0 s per start at ``V = 69585``, ``K = 100`` at a load average of 7; 55 to 83 s
   under a load average of 100 to 190).
-- ``n_jobs`` runs the per-subject fits of an HTFA in parallel (NumPy backend).
-  Every subject fit runs BLAS on one thread, serial or parallel, so that the
-  results do not depend on ``n_jobs`` (BLAS rounds differently with one thread
-  than with several, and joblib gives each worker ``cpu_count // n_jobs``
-  threads). On development_fmri subject 0 (Accelerate, 12 cores, load average
+- ``n_jobs`` runs the per-subject fits of an HTFA in parallel (NumPy backend),
+  as threads of the calling process (joblib's threading backend), so that every
+  fit uses the same BLAS library state. Every subject fit also runs BLAS on one
+  thread, serial or parallel, since BLAS rounds differently with one thread
+  than with several. The results therefore do not depend on ``n_jobs``.
+  Wall time, 7 synthetic subjects (``(20, 20, 20)`` grid, 60 samples,
+  ``K = 36``, 2 global iterations; 12 cores, load average 8 to 10): serial
+  6.9 s, worker processes (the earlier backend) 6.4 s, threads 3.3 s in the
+  fast mode, and 12.3 s, 9.2 s and 6.1 s in the exact mode, all with identical
+  results. Threads hold the subjects' data once: peak memory 711 MB in one
+  process, against 207 MB plus up to 258 MB in each of 7 worker processes.
+  Three development_fmri subjects at ``K = 100`` (fast mode, ``init='ncorr'``,
+  one global iteration; load average 7 to 16): serial 250.6 s, worker
+  processes 126.0 s, threads 126.8 s, identical results; peak memory 2163 MB
+  in one process with threads, against 476 MB plus up to 986 MB in each of 3
+  worker processes.
+  On development_fmri subject 0 (Accelerate, 12 cores, load average
   3 to 6, mean of two fits) one BLAS thread made a fit 12% slower at ``K = 50``
   (15.7 s instead of 14.1 s) and 17% slower at ``K = 100`` (28.9 s instead of
-  24.7 s); workers that joblib already limits to one thread
-  (``n_jobs > cpu_count / 2``) lose nothing. A standalone :class:`htfa.TFA`
+  24.7 s). A standalone :class:`htfa.TFA`
   keeps the BLAS threads of the caller, so on macOS it and HTFA's stage-0 fit
   of the same subject can differ at rounding level.
-  ``n_threads`` sets the OpenMP and NumPy engine threads of each subject fit; by default
+  ``n_threads`` sets the NumPy engine threads of each subject fit; by default
   HTFA takes the lowest limit already in effect (``OMP_NUM_THREADS``,
   ``OPENBLAS_NUM_THREADS``, an enclosing ``threadpoolctl.threadpool_limits``),
   or all CPUs, divided among the ``n_jobs`` workers.
+  On Windows with some AMD EPYC CPUs (measured on 9V45 and 9V74), OpenBLAS
+  rounds differently in about 1 to 2.5% of freshly started processes, so two
+  runs of the same fit in different processes are not guaranteed to agree bit
+  for bit there; within one run the results do not depend on ``n_jobs``.
 - ``nlss_loss='soft_l1'`` costs ``O(V T K^2)`` per Gauss-Newton assembly and
   needs the slow alternation (below); the default ``'linear'`` with
   ``'varpro'`` costs ``O(V T K (D + 1))`` per assembly.
@@ -401,7 +416,9 @@ At a load average of 3 to 7, one fit took 18.7 s with 12 threads and 19.2 s
 with 2, so ``n_jobs`` workers of 2 threads use the cores better than one subject
 at a time (``n_jobs=None``, the default): six adults (``init='ncorr'``, K = 50)
 took 104.8 s one after the other with 12 threads and 49.0 s as 6 workers of 2
-threads, 2.1 times the throughput. The rows at a load average of 95 to 115 are
+threads, 2.1 times the throughput. These and the HTFA rows below were measured
+with worker processes, before the subject fits ran as threads; the threads
+were as fast or faster in the comparisons above. The rows at a load average of 95 to 115 are
 not comparable with these.
 
 HTFA rounds (each round fits every subject once, in parallel):
