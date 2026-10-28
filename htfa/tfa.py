@@ -1103,12 +1103,18 @@ class TFA(BaseEstimator):
         check_is_fitted(self, "centers_")
         D = self.centers_.shape[1]
         R = self.coords_ if coords is None else _check_coords(coords, None, D)
+        kernel = Kernel(
+            getattr(self, "kernel", "rbf"), getattr(self, "n_components", 1)
+        )
+        if kernel.plain_rbf:  # also fits saved before the kernel shapes
+            result: Array = factors(R, self.centers_, self.widths_)
+            return result
         return component_factors(
             R,
             self.component_centers_,
             self.component_widths_,
             self.mixing_weights_,
-            self._kernel(),
+            kernel,
         )
 
     def _set_components(self, x: Array, K: int, D: int) -> None:
@@ -1125,14 +1131,6 @@ class TFA(BaseEstimator):
         if M > 1:
             self.centers_ = np.einsum("km,kmd->kd", pi, self.component_centers_)
             self.widths_ = np.sum(pi * self.component_widths_, axis=1)
-
-    def _x(self) -> Array:
-        """The fitted parameter vector (see `htfa._kernels.Kernel`)."""
-        return self._kernel().join(
-            self.component_centers_,
-            self.component_widths_,
-            Kernel.logits(self.mixing_weights_),
-        )
 
     def reconstruct(self) -> Array:
         """Reconstruction ``F @ weights_`` (V, T) at the fitted coords.

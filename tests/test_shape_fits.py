@@ -14,7 +14,7 @@ import warnings
 import numpy as np
 import pytest
 
-from htfa import HTFAResults, load
+from htfa import HTFAResults, fit, load
 from htfa._kernels import KERNELS, Kernel, ridge_weights
 from htfa._matching import match_factors
 from htfa.brainnet import effective_nodes
@@ -346,3 +346,26 @@ def test_results_and_display_nodes_for_mixture_fits():
     np.testing.assert_array_equal(res.factors(1), F)
     g = res.display_nodes("global")
     assert g[0].shape == (2, 2) and np.all(np.isfinite(g[1]))
+
+
+def test_fit_passes_kernel_and_n_components():
+    """htfa.fit with one subject (TFA) and several (HTFA): the options reach
+    the estimator and the results' factors are the mixture factors."""
+    X, R, _ = make_tfa_data((12, 12), 20, K=2, random_state=8, kernel="laplace",
+                            n_components=2)  # fmt: skip
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = fit(X, K=2, coords=R, kernel="laplace", n_components=2,
+                  standardize=False, random_state=0)  # fmt: skip
+        assert isinstance(res.model, TFA) and res.model.kernel == "laplace"
+        assert res.model.mixing_weights_.shape == (2, 2)
+        np.testing.assert_array_equal(res.factors(), res.model.factors())
+        Xs, Rs, _ = make_htfa_data(2, (10, 10), 15, K=2, random_state=9,
+                                   kernel="mexican_hat")  # fmt: skip
+        res = fit(Xs, K=2, coords=Rs, kernel="mexican_hat", max_global_iter=2,
+                  random_state=0)  # fmt: skip
+    assert isinstance(res.model, HTFA) and res.model.kernel == "mexican_hat"
+    F = component_factors(Rs[0], res.model.component_centers_[0],
+                          res.model.component_widths_[0],
+                          res.model.mixing_weights_[0], "mexican_hat")  # fmt: skip
+    np.testing.assert_array_equal(res.factors(0), F)
