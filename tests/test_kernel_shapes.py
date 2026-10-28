@@ -42,13 +42,16 @@ FD_RTOL = 1e-6
 DENSE_RTOL = 1e-11
 
 
-def _phi(name, z):
-    """The profiles written out from their definitions."""
+def _phi(name, d, w, D):
+    """The profiles written out from their definitions (``d`` the squared
+    distance); the mexican hat as -Laplacian(exp(-d / w)) / its value at 0,
+    with Laplacian(exp(-d / w)) = (4 d / w**2 - 2 D / w) exp(-d / w)."""
     if name == "rbf":
-        return np.exp(-z)
+        return np.exp(-d / w)
     if name == "laplace":
-        return np.exp(LAPLACE_EPS - np.sqrt(z + LAPLACE_EPS**2))
-    return (1.0 - z) * np.exp(-z)
+        return np.exp(LAPLACE_EPS - np.sqrt(d / w + LAPLACE_EPS**2))
+    lap = (4 * d / w**2 - 2 * D / w) * np.exp(-d / w)
+    return -lap / (2 * D / w)
 
 
 def _brute_factors(R, C, w, logits, name, M):
@@ -62,7 +65,7 @@ def _brute_factors(R, C, w, logits, name, M):
             for m in range(M):
                 c = k * M + m
                 d = float(np.sum((R[v] - C[c]) ** 2))
-                F[v, k] += pi[m] * _phi(name, d / w[c])
+                F[v, k] += pi[m] * _phi(name, d, w[c], R.shape[1])
     return F
 
 
@@ -177,7 +180,7 @@ def test_kernel_factors_match_bruteforce(name, M, D):
         err = np.abs(got - expected).max()
         print(f"{name} M={M} D={D} grid={grid is not None}: max err {err:.2e}")
         assert err < 1e-14
-    one = Kernel(name).profile(np.zeros(1))
+    one = Kernel(name).profile(np.zeros(1), D)
     assert one[0] == 1.0
 
 

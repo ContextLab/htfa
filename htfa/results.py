@@ -6,13 +6,14 @@ from typing import Any
 
 import numpy as np
 
+from ._kernels import Kernel
 from ._kernels import factors as _factors
 from ._lazy import lazy_import
 from .brainnet import animate_network, effective_nodes, plot_network
 from .connectivity import dynamic_connectivity, isfc, static_connectivity
 from .htfa import HTFA
 from .io import Subject
-from .tfa import TFA, standardize_data
+from .tfa import TFA, component_factors, standardize_data
 
 Array = np.ndarray
 
@@ -86,6 +87,13 @@ class HTFAResults:
         Per-subject centers ``(K, D)``, widths ``(K,)`` and weights ``(K, T)``.
     global_centers, global_widths : ndarray or None
         The HTFA template; ``None`` for a single-subject TFA fit.
+    kernel : htfa._kernels.Kernel
+        The fit's ``kernel`` and ``n_components`` (``'rbf'`` and 1 for a model
+        without them).
+    component_centers, component_widths, mixing_weights : list or None
+        Per-subject components (K, M, D), (K, M) and (K, M) of a fit with
+        another kernel or several components; ``None`` for single RBFs, whose
+        ``centers`` and ``widths`` define the factors.
 
     Examples
     --------
@@ -112,6 +120,17 @@ class HTFAResults:
             self.weights = [model.weights_]
             self.global_centers = None
             self.global_widths = None
+        self.kernel = Kernel(
+            getattr(model, "kernel", "rbf"), getattr(model, "n_components", 1)
+        )
+        self.component_centers: list[Array] | None = None
+        self.component_widths: list[Array] | None = None
+        self.mixing_weights: list[Array] | None = None
+        if not self.kernel.plain_rbf:
+            many = isinstance(model, HTFA)
+            for name in ("component_centers", "component_widths", "mixing_weights"):
+                value = getattr(model, name + "_")
+                setattr(self, name, list(value) if many else [value])
         if len(self.centers) != len(subjects):
             raise ValueError(
                 f"model has {len(self.centers)} subjects but {len(subjects)} given"
@@ -140,8 +159,37 @@ class HTFAResults:
         >>> res.factors().shape
         (216, 2)
         """
-        return _factors(
-            self.subjects[subject].coords, self.centers[subject], self.widths[subject]
+        coords = self.subjects[subject].coords
+        if self.component_centers is None:
+            return _factors(coords, self.centers[subject], self.widths[subject])
+        assert self.component_widths is not None and self.mixing_weights is not None
+        return component_factors(
+            coords,
+            self.component_centers[subject],
+            self.component_widths[subject],
+            self.mixing_weights[subject],
+            self.kernel,
+        )
+
+    def _shape(self, subject: Any) -> tuple[str, Array, Array, Array] | None:
+        """Kernel name and components of ``subject`` (``'global'``: the
+        template) for the effective nodes; None for single RBFs."""
+        if self.component_centers is None:
+            return None
+        assert self.component_widths is not None and self.mixing_weights is not None
+        if subject == "global" and isinstance(self.model, HTFA):
+            return (
+                self.kernel.name,
+                self.model.global_component_centers_,
+                self.model.global_component_widths_,
+                self.model.global_mixing_weights_,
+            )
+        s = 0 if subject == "global" else subject
+        return (
+            self.kernel.name,
+            self.component_centers[s],
+            self.component_widths[s],
+            self.mixing_weights[s],
         )
 
     def reconstruct(self, subject: int = 0) -> Array:
@@ -786,7 +834,9 @@ class HTFAResults:
         ``lambda_eff = 2 * sigma_eff**2`` from the weighted spread (see
         `htfa.brainnet.effective_nodes`). The fit is not changed. This
         returns what a plot with the default ``snap=True`` drew, and works on
-        any fit, including one saved before snapping existed.
+        any fit, including one saved before snapping existed. Fits with
+        another ``kernel`` or several components use their own profiles
+        (see `htfa.brainnet.effective_nodes`).
 
         Parameters
         ----------
@@ -821,4 +871,8 @@ class HTFAResults:
         centers, widths = self._fitted_nodes(subject)
         if mask is None:
             mask = self._display_mask(subject)
+        shape = self._shape(subject)
+        if shape is not None:
+            name, comp_c, comp_w, pi = shape
+            return effective_nodes(comp_c, comp_w, mask, name, pi)
         return effective_nodes(centers, widths, mask)

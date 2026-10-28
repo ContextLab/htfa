@@ -446,11 +446,12 @@ def test_tfa_sklearn_params():
     assert params["init"] == "auto" and params["n_screen_iter"] == 0
     assert params["max_iter"] == 100 and params["threshold"] == 1e-3
     assert params["mode"] == "fast"
+    assert params["kernel"] == "rbf" and params["n_components"] == 1
     assert set(params) == {
         "K", "max_iter", "threshold", "nlss_method", "nlss_loss", "x_scale",
         "weight_method", "upper_ratio", "lower_ratio", "voxel_ratio", "tr_ratio",
         "max_voxels", "max_trs", "standardize", "init", "n_screen_iter", "backend",
-        "mode", "random_state", "verbose",
+        "mode", "random_state", "verbose", "kernel", "n_components",
     }  # fmt: skip
     assert clone(model).get_params() == params
 

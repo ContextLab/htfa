@@ -18,6 +18,7 @@ from htfa._engines import LOSS_NAMES, loss_terms, select_engine
 from htfa._kernels import (
     NLSS_METHODS,
     SOLVER_MODES,
+    Kernel,
     Prior,
     ProjectedProblem,
     ResidualProblem,
@@ -28,6 +29,7 @@ from htfa._kernels import (
     max_sigma,
     ridge_weights,
     solve_centers_widths,
+    x_factors,
 )
 from htfa._matching import match_factors
 
@@ -278,12 +280,87 @@ def _initial_starts(
         return {name: future.result() for name, future in futures.items()}
 
 
+def _kw(kernel: Kernel) -> dict[str, Any]:
+    """``kernel=kernel`` for the kernel functions, or nothing for one RBF
+    component: the plain RBF fit then calls them exactly as before the kernel
+    shapes (tests/test_fit_equivalence.py runs it on the 3298278 kernels)."""
+    return {} if kernel.plain_rbf else {"kernel": kernel}
+
+
+def _x_factors(R: Array, C: Array, w: Array, K: int, kernel: Kernel) -> Array:
+    """`factors` for one RBF component (see `_kw`), `x_factors` otherwise."""
+    if kernel.plain_rbf:
+        result: Array = factors(R, C, w)
+        return result
+    return x_factors(R, C, w, K, kernel, None)
+
+
+def component_factors(
+    R: Array,
+    centers: ArrayLike,
+    widths: ArrayLike,
+    mixing_weights: ArrayLike,
+    kernel: Kernel,
+) -> Array:
+    """Factors (V, K) at coordinates ``R`` of components with centers
+    (K, M, D), widths (K, M) and mixing weights (K, M) (see `TFA`)."""
+    C = np.asarray(centers, dtype=np.float64)
+    K, M, D = C.shape
+    w = np.asarray(widths, dtype=np.float64).reshape(K * M)
+    tail = np.concatenate([w, Kernel.logits(mixing_weights).ravel()])
+    return x_factors(R, C.reshape(K * M, D), tail, K, kernel, None)
+
+
+def _start_x(kernel: Kernel, start: tuple[ArrayLike, ...], K: int, D: int) -> Array:
+    """``x`` of an explicit ``start``: (centers (K, D), widths (K,)) for one
+    component, (centers (K, M, D), widths (K, M), mixing weights (K, M))
+    for M > 1."""
+    M = kernel.n_components
+    shapes = [np.shape(a) for a in start]
+    if M == 1:
+        if len(start) != 2 or shapes != [(K, D), (K,)]:
+            raise ValueError(
+                f"start must be (centers ({K}, {D}), widths ({K},)), got {shapes}"
+            )
+        return np.concatenate([np.ravel(start[0]), np.ravel(start[1])]).astype(float)
+    if len(start) != 3 or shapes != [(K, M, D), (K, M), (K, M)]:
+        raise ValueError(
+            f"start must be (centers ({K}, {M}, {D}), widths ({K}, {M}), "
+            f"mixing_weights ({K}, {M})), got {shapes}"
+        )
+    return kernel.join(start[0], start[1], Kernel.logits(start[2]))
+
+
+def _matched_step(
+    kernel: Kernel, K: int, D: int, x: Array, x_new: Array, length: float
+) -> tuple[Array, float]:
+    """``x_new`` with its factors matched to those of ``x`` (Hungarian, on
+    the component centers), and the scaled change ``max(max|dc| / length,
+    max|dw| / w, max|da|)`` over components and logits."""
+    M = kernel.n_components
+    C, w, a = kernel.split(x, K, D)
+    C_new, w_new, a_new = kernel.split(x_new, K, D)
+    perm = match_factors(C.reshape(K, M * D), C_new.reshape(K, M * D))
+    C_new = C_new.reshape(K, M, D)[perm].reshape(K * M, D)
+    w_new = w_new.reshape(K, M)[perm].ravel()
+    a_new = a_new[perm]
+    change = max(
+        float(np.max(np.abs(C_new - C))) / length,
+        float(np.max(np.abs(w_new - w) / w)),
+    )
+    if a.size:
+        change = max(change, float(np.max(np.abs(a_new - a))))
+    return kernel.join(C_new, w_new, a_new), change
+
+
 class TFA(BaseEstimator):
     """Topographic Factor Analysis of one subject's data.
 
     Models data ``X`` (V, T) as ``F @ W``, where ``F[v, k] =
     exp(-||r_v - c_k||**2 / w_k)`` are radial basis factors with centers ``c_k``
-    and widths ``w_k = 2 sigma_k**2`` (BrainIAK's convention). The fit alternates
+    and widths ``w_k = 2 sigma_k**2`` (BrainIAK's convention), or factors of
+    another shape or mixtures of several components (``kernel``,
+    ``n_components``). The fit alternates
     ridge-regression weights with a bounded nonlinear least-squares solve for the
     centers and widths, from one or more candidate starts (see ``init``), and keeps
     the candidate with the lowest final objective.
@@ -428,13 +505,42 @@ class TFA(BaseEstimator):
     verbose : bool, default=False
         Print the scaled change of every iteration (and, with subsampling, the
         relative decrease of the stopping objective), flushed immediately.
+    kernel : {'rbf', 'laplace', 'mexican_hat'}, default='rbf'
+        Profile ``phi(z)``, ``z = ||r - c||**2 / w``, of each factor (see
+        `htfa._kernels.Kernel`): ``'rbf'`` ``exp(-z)``; ``'laplace'``
+        ``exp(eps - sqrt(z + eps**2))`` with ``eps = 0.1``, a sharp peak with
+        exponential tails ``exp(-r / sqrt(w))``, rounded within about
+        ``0.1 sqrt(w)`` of the center so that its derivatives exist;
+        ``'mexican_hat'`` ``(1 - 2 z / D) exp(-z)`` in D dimensions, the
+        negative Laplacian of a Gaussian: positive within ``r = sqrt(D w /
+        2)``, negative outside, with integral 0. All are 1 at the center.
+    n_components : int, default=1
+        Components per factor. With ``n_components = M > 1`` each factor is
+        ``sum_m pi_m phi(||r - c_m||**2 / w_m)``: M components of the kernel's
+        shape, each with its own center and width, and mixing weights ``pi =
+        softmax(0, a_2, ..., a_M)`` (logits ``a`` in ``[-log(1e3), log(1e3)]``)
+        fitted in the nonlinear solve with them. The weights sum to 1 and the
+        first logit is fixed, so the factor's amplitude stays in its
+        time-series weights. Each factor starts with its components at its
+        start center, widths ``0.25**m`` times its start width (m = 0, ...,
+        M - 1) and equal mixing weights. ``x_scale``, the solvers and both
+        modes apply unchanged; the scaled change (see ``threshold``) also
+        covers the logits, unscaled.
 
     Attributes
     ----------
     centers_ : ndarray, shape (K, D)
-        Factor centers.
+        Factor centers (with ``n_components > 1``: the mixing-weighted mean
+        of the component centers).
     widths_ : ndarray, shape (K,)
-        Factor widths ``2 sigma**2``.
+        Factor widths ``2 sigma**2`` (with ``n_components > 1``: the
+        mixing-weighted mean of the component widths).
+    component_centers_ : ndarray, shape (K, M, D)
+        Centers of each factor's components (``centers_[:, None]`` for M = 1).
+    component_widths_ : ndarray, shape (K, M)
+        Widths of each factor's components.
+    mixing_weights_ : ndarray, shape (K, M)
+        Mixing weights of each factor's components (1 for M = 1).
     weights_ : ndarray, shape (K, T)
         Weights fitted on the full (standardized) data.
     n_iter_ : int
@@ -511,6 +617,8 @@ class TFA(BaseEstimator):
         mode: str = "fast",
         random_state: int | np.random.Generator | None = None,
         verbose: bool = False,
+        kernel: str = "rbf",
+        n_components: int = 1,
     ) -> None:
         self.K = K
         self.max_iter = max_iter
@@ -532,6 +640,12 @@ class TFA(BaseEstimator):
         self.mode = mode
         self.random_state = random_state
         self.verbose = verbose
+        self.kernel = kernel
+        self.n_components = n_components
+
+    def _kernel(self) -> Kernel:
+        """The `htfa._kernels.Kernel` of ``kernel`` and ``n_components``."""
+        return Kernel(self.kernel, self.n_components)
 
     def _validate(self, X: ArrayLike, coords: ArrayLike) -> tuple[Array, Array]:
         X = np.asarray(X, dtype=np.float64)
@@ -555,6 +669,7 @@ class TFA(BaseEstimator):
             )
         if self.mode not in SOLVER_MODES:
             raise ValueError(f"mode must be one of {SOLVER_MODES}, got {self.mode!r}")
+        self._kernel()  # validates kernel and n_components
         if self.weight_method not in ("rr", "ols"):
             raise ValueError(
                 f"weight method must be 'rr' or 'ols', got {self.weight_method!r}"
@@ -601,9 +716,11 @@ class TFA(BaseEstimator):
         """Full-data objective at ``x`` (for ``loss``, by default the final
         stage's) and the full-data weights it uses."""
         K, D = self.K, R.shape[1]
-        F = factors(R, x[: K * D].reshape(K, D), x[K * D :])
+        kernel = self._kernel()
+        n = K * kernel.n_components * D
+        F = _x_factors(R, x[:n].reshape(-1, D), x[n:], K, kernel)
         W = ridge_weights(X, F, self.weight_method)
-        r = ResidualProblem(X, W, R, engine, prior).residual(x)
+        r = ResidualProblem(X, W, R, engine, prior, **_kw(kernel)).residual(x)
         loss = self._stages()[-1][0] if loss is None else loss
         return 0.5 * float(np.sum(loss_terms(loss, r * r)[0])), W
 
@@ -691,6 +808,8 @@ class TFA(BaseEstimator):
         """
         (V, T), (Vs, Ts) = X.shape, sizes
         K, D = self.K, R.shape[1]
+        kernel = self._kernel()
+        n = K * kernel.n_components * D
         length = np.sqrt(max_sigma(R) / 2.0)
         subsampled = Vs < V or Ts < T
         best, stale = np.inf, 0
@@ -702,17 +821,18 @@ class TFA(BaseEstimator):
             vi = np.sort(rng.choice(V, Vs, replace=False)) if Vs < V else slice(None)
             ti = np.sort(rng.choice(T, Ts, replace=False)) if Ts < T else slice(None)
             X_sub, R_sub = X[vi][:, ti], R[vi]
-            C, w = x[: K * D].reshape(K, D), x[K * D :]
             problem: ResidualProblem | ProjectedProblem
             if method == "varpro":
                 problem = ProjectedProblem(
-                    X_sub, R_sub, K, engine, prior, self.weight_method
+                    X_sub, R_sub, K, engine, prior, self.weight_method, **_kw(kernel)
                 )
             else:
-                W = ridge_weights(X_sub, factors(R_sub, C, w), self.weight_method)
+                F = _x_factors(R_sub, x[:n].reshape(-1, D), x[n:], K, kernel)
+                W = ridge_weights(X_sub, F, self.weight_method)
                 problem = ResidualProblem(
-                    X_sub, W, R_sub, engine, prior, compress=loss == "linear"
-                )
+                    X_sub, W, R_sub, engine, prior, compress=loss == "linear",
+                    **_kw(kernel),
+                )  # fmt: skip
             x_new, _ = solve_centers_widths(
                 problem,
                 x,
@@ -722,14 +842,7 @@ class TFA(BaseEstimator):
                 x_scale=self.x_scale,
                 mode=self.mode,
             )
-            C_new = x_new[: K * D].reshape(K, D)
-            perm = match_factors(C, C_new)
-            C_new, w_new = C_new[perm], x_new[K * D :][perm]
-            change = max(
-                float(np.max(np.abs(C_new - C))) / length,
-                float(np.max(np.abs(w_new - w) / w)),
-            )
-            x = np.concatenate([C_new.ravel(), w_new])
+            x, change = _matched_step(kernel, K, D, x, x_new, length)
             message = f"TFA {label} iteration {n_iter}: scaled change {change:.6g}"
             if lowest:
                 cost = objective(x)
@@ -765,7 +878,7 @@ class TFA(BaseEstimator):
         X: ArrayLike,
         coords: ArrayLike,
         prior: Prior | None = None,
-        start: tuple[ArrayLike, ArrayLike] | None = None,
+        start: tuple[ArrayLike, ...] | None = None,
     ) -> "TFA":
         """Fit centers, widths and weights.
 
@@ -778,12 +891,16 @@ class TFA(BaseEstimator):
             Voxel coordinates, D in {2, 3}.
         prior : Prior, optional
             HTFA template. When given, the fit starts from ``prior.centers`` and
-            ``prior.widths`` (``init`` is ignored), and every solve is penalized
+            ``prior.widths`` (and ``prior.logits``; per component with
+            ``n_components > 1``, see `htfa._kernels.Prior`) (``init`` is
+            ignored), and every solve is penalized
             towards the template with ``scale = 0.5 * (Vs * Ts) / (V * T)``
             (``prior.scale`` is ignored and the caller's prior is not modified).
-        start : tuple of (centers, widths), optional
-            Explicit starting point, shapes (K, D) and (K,). Overrides both
-            ``init`` and the prior start (the prior penalty still applies).
+        start : tuple of arrays, optional
+            Explicit starting point, shapes (K, D) and (K,); with
+            ``n_components = M > 1``, component centers (K, M, D), widths
+            (K, M) and mixing weights (K, M). Overrides both ``init`` and the
+            prior start (the prior penalty still applies).
 
         Returns
         -------
@@ -802,10 +919,17 @@ class TFA(BaseEstimator):
         X = standardize_data(X, self.standardize)
         V, T = X.shape
         K, D = self.K, R.shape[1]
-        if prior is not None and np.shape(prior.centers) != (K, D):
+        kernel = self._kernel()
+        M = kernel.n_components
+        if prior is not None and np.shape(prior.centers) != (K * M, D):
             raise ValueError(
-                f"prior.centers must have shape ({K}, {D}), "
+                f"prior.centers must have shape ({K * M}, {D}), "
                 f"got {np.shape(prior.centers)}"
+            )
+        if prior is not None and M > 1 and np.shape(prior.logits) != (K, M - 1):
+            raise ValueError(
+                f"prior.logits must have shape ({K}, {M - 1}), "
+                f"got {np.shape(prior.logits)}"
             )
         rng = np.random.default_rng(self.random_state)
         sample_seed = int(rng.integers(np.iinfo(np.int32).max))
@@ -814,7 +938,8 @@ class TFA(BaseEstimator):
             _sample_size(T, self.tr_ratio, self.max_trs),
         )
         engine = select_engine(self.backend, *sizes, K)
-        lb, ub = bounds(R, K, self.lower_ratio, self.upper_ratio)
+        lb, ub = bounds(R, K, self.lower_ratio, self.upper_ratio, **_kw(kernel))
+        w_lo, w_hi = lb[K * M * D], ub[K * M * D]
         if prior is None:
             fit_prior = full_prior = None
         else:
@@ -823,18 +948,17 @@ class TFA(BaseEstimator):
             )
             full_prior = dataclasses.replace(prior, scale=0.5)
         if start is not None:
-            if np.shape(start[0]) != (K, D) or np.shape(start[1]) != (K,):
-                raise ValueError(
-                    f"start must be (centers ({K}, {D}), widths ({K},)), got "
-                    f"{np.shape(start[0])} and {np.shape(start[1])}"
-                )
-            starts: dict[str, tuple[Array, Array]] = {
-                "start": (np.asarray(start[0]), np.asarray(start[1]))
-            }
+            starts: dict[str, Array] = {"start": _start_x(kernel, start, K, D)}
         elif prior is not None:
-            starts = {"prior": (prior.centers, prior.widths)}
+            logits = () if prior.logits is None else prior.logits
+            starts = {"prior": kernel.join(prior.centers, prior.widths, logits)}
         else:
-            starts = _initial_starts(X, R, K, names, rng, lb[-1], ub[-1])
+            starts = {
+                name: kernel.start(*pair)
+                for name, pair in _initial_starts(
+                    X, R, K, names, rng, w_lo, w_hi
+                ).items()
+            }
         Ve, Te = self._eval_sizes(V, T, sizes)
         eval_rng = np.random.default_rng([sample_seed, 1])
         ve = np.sort(eval_rng.choice(V, Ve, replace=False)) if Ve < V else slice(None)
@@ -849,8 +973,8 @@ class TFA(BaseEstimator):
         runs: dict[str, tuple[Array, int, str | None]] = {}
         loops = {}
         histories: dict[str, list[float]] = {name: [] for name in starts}
-        for name, (centers, widths) in starts.items():
-            x0 = np.clip(np.concatenate([np.ravel(centers), np.ravel(widths)]), lb, ub)
+        for name, x_start in starts.items():
+            x0 = np.clip(x_start, lb, ub)
             runs[name] = (x0, 0, None if self.max_iter > 0 else "max_iter")
             loops[name] = self._iterate(
                 X,
@@ -912,8 +1036,10 @@ class TFA(BaseEstimator):
                 ConvergenceWarning,
                 stacklevel=2,
             )
-        self.centers_ = x[: K * D].reshape(K, D).copy()
-        self.widths_ = x[K * D :].copy()
+        if M == 1:
+            self.centers_ = x[: K * D].reshape(K, D).copy()
+            self.widths_ = x[K * D :].copy()
+        self._set_components(x, K, D)
         self.coords_ = R
         self.engine_ = engine.name
         return self
@@ -945,7 +1071,36 @@ class TFA(BaseEstimator):
         check_is_fitted(self, "centers_")
         D = self.centers_.shape[1]
         R = self.coords_ if coords is None else _check_coords(coords, None, D)
-        return factors(R, self.centers_, self.widths_)
+        return component_factors(
+            R,
+            self.component_centers_,
+            self.component_widths_,
+            self.mixing_weights_,
+            self._kernel(),
+        )
+
+    def _set_components(self, x: Array, K: int, D: int) -> None:
+        """``component_centers_``, ``component_widths_`` and
+        ``mixing_weights_`` from ``x`` (and, with several components, the
+        mixing-weighted ``centers_`` and ``widths_``)."""
+        kernel = self._kernel()
+        M = kernel.n_components
+        C, w, logits = kernel.split(x, K, D)
+        pi = kernel.mixing(logits)
+        self.component_centers_ = C.reshape(K, M, D).copy()
+        self.component_widths_ = w.reshape(K, M).copy()
+        self.mixing_weights_ = pi
+        if M > 1:
+            self.centers_ = np.einsum("km,kmd->kd", pi, self.component_centers_)
+            self.widths_ = np.sum(pi * self.component_widths_, axis=1)
+
+    def _x(self) -> Array:
+        """The fitted parameter vector (see `htfa._kernels.Kernel`)."""
+        return self._kernel().join(
+            self.component_centers_,
+            self.component_widths_,
+            Kernel.logits(self.mixing_weights_),
+        )
 
     def reconstruct(self) -> Array:
         """Reconstruction ``F @ weights_`` (V, T) at the fitted coords.
