@@ -50,8 +50,16 @@ Detailed logs and exact generation provenance are in
 - Fresh BrainIAK cross-check: 27 passed, 1042 deselected.
 - Installed-wheel notebooks 01–06 and 12–15 executed successfully.
 - Source-distribution install and package/statistics smoke: 15 passed.
-- Final hardened wheel suite, final-head cross-platform CI, updated notebooks
-  09–11 and matched decoding nulls are still being completed.
+- Hardened installed-wheel suite: 1003 passed, 17 skipped, 28 deselected.
+- Refreshed installed-wheel notebooks 10–11 passed; all embedded figures inspected.
+- All 100 decoding permutations recomputed against the regenerated fit; the
+  20-permutation asset is an exact prefix. Exact-input hashes checked.
+- All 9 registered tutorial asset download/cache checks passed.
+- Refreshed installed-wheel notebook 09 passed; its six figures were inspected.
+  All 13 tutorial notebooks have now executed against an installed wheel locally.
+- Final-head cross-platform CI remains pending; the initial run exposed a narrow
+  macOS pixel-rounding assertion, now checked with exact geometry and bounded
+  pixel tolerances. Do not interpret local passes as a complete platform matrix.
 - The author's review/fixes above do not substitute for an independent review.
   Independent review and Jeremy's explicit publication approval remain gates.
 - TestPyPI round-trip and public release metadata/docs-stable checks require the

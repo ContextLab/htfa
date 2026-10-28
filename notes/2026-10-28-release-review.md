@@ -73,3 +73,19 @@ Completion evidence for this stage:
   comparison; geometry plus bounded rendering comparison is awaiting final CI.
 - Read-only checks: no remote v0.1.0 tag; PyPI/TestPyPI project endpoints return
   404. Inactive publication example in release-preparation/; no index configuration/upload.
+
+Final decoding assets:
+- 100 permutations complete, seeds 1000–1099, all finite. 20-permutation
+  asset is the exact prefix; both record full-run generation timing explicitly.
+- New assets added to tutorial-data-v1 without replacing any prior files; fit
+  and both null registry entries updated together. Manifest below.
+- Fresh-cache registered asset tests: 9 passed, 10 deselected,
+  /private/tmp/htfa-final-assets-tests.log.
+- Strict Sphinx build passed: /private/tmp/htfa-release-docs.log.
+- Final candidate wheel/sdist build and twine check pass:
+  /private/tmp/htfa-final-candidate-dist.
+- Refreshed notebook 09 passed against installed final candidate wheel; six
+  embedded PNGs visually inspected, executed output copied back. Log:
+  /private/tmp/htfa-installed-tutorial09.log. This completes local execution
+  of all 13 notebooks against an installed wheel.
+- Final lint, format and mypy checks pass. Final-head platform matrix pending.

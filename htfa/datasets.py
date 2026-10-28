@@ -58,8 +58,8 @@ TUTORIAL_FITS = {
         "d7c05c55f4a90e6e8fb0cf528afb7a490ecaed3327703a3139364daf8214fac1",
     ),
     "mitchell2008_K100": (
-        "htfa_mitchell2008_K100.npz",
-        "635d821194ee1d4a37932a1f4a1ed03592f18838a6453200b1bda0570fa895c4",
+        "htfa_mitchell2008_K100-de0427fbc847.npz",
+        "de0427fbc8476fb5b0233b17eae0bf7f116d874287667b0cb7a285bd2d01b92c",
     ),
     "development_fmri_12adults_K50": (
         "htfa_development_fmri_12adults_K50-939fb70901ca.npz",
@@ -74,12 +74,12 @@ TUTORIAL_FITS = {
         "0f61b70541d0e5c3cb428fb9b81f1cb98df2a835bb76cbd7c76d9f13ce6b2e96",
     ),
     "mitchell2008_null_20": (
-        "htfa_mitchell2008_null_20.npz",
-        "69a937cefa24806ac16b842564285434e43869485ce5cf5d0f24e4d90f8e7b05",
+        "htfa_mitchell2008_null_20-47da3a734a49.npz",
+        "47da3a734a49253a82cdceebc94879989543202fbe31a2aa0ba82677fe8f75b0",
     ),
     "mitchell2008_null_100": (
-        "htfa_mitchell2008_null_100.npz",
-        "c756356412a1f4b85eaa6d4c93b00901e41dc0b5b415f5fefd95c4d2c526f337",
+        "htfa_mitchell2008_null_100-3708d4eac165.npz",
+        "3708d4eac165fb5aaa5510cd6f8b1f9189d61842e5e1ecb3dfbf1bfff91e1e7d",
     ),
 }
 

@@ -112,6 +112,8 @@ def main():
             n_permutations=n,
             seeds=1000 + np.arange(n),
             seconds=time.perf_counter() - started,
+            generation_permutations=count,
+            timing_kind="full generation run wall time; subset uses a prefix",
             observed=observed,
             fit=fit_path.name,
             fit_sha256=fit_sha,
