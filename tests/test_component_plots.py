@@ -174,7 +174,26 @@ def test_brainnet_component_geometry_and_real_static_animation(result, tmp_path)
     direct = brainnet.plot_network(
         result.model, E, mask=_mask(), mesh=None, snap=False, size=(240, 180)
     )
-    np.testing.assert_array_equal(np.asarray(image), np.asarray(direct))
+    direct_geometry = _network_geometry(
+        result.model, None, None, 0, False, _mask(), False, False, "auto", 0.05
+    )
+    np.testing.assert_array_equal(centers, direct_geometry[0])
+    np.testing.assert_array_equal(components.widths, direct_geometry[3].widths)
+    np.testing.assert_array_equal(components.mixing, direct_geometry[3].mixing)
+    for (i, sign, surface), (j, other_sign, other) in zip(
+        surfaces, direct_geometry[4], strict=True
+    ):
+        assert (i, sign) == (j, other_sign)
+        np.testing.assert_array_equal(surface.points, other.points)
+        np.testing.assert_array_equal(surface.faces, other.faces)
+    # Separate OpenGL contexts can round a few translucent fragments differently
+    # (macOS CI: 12/129600 channels, max difference 16). Geometry above is exact;
+    # still reject visible rendering changes or a wrapper dropping kernel state.
+    pixels = np.asarray(image)
+    difference = np.abs(pixels.astype(np.int16) - np.asarray(direct).astype(np.int16))
+    assert np.count_nonzero(pixels < 250) > 100
+    assert np.mean(difference != 0) < 0.001
+    assert difference.max() <= 32
     movie = result.animate_network(
         tmp_path / "components.gif",
         subject=0,

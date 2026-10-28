@@ -65,7 +65,7 @@ def main():
     )
     cell(11)
     cell(15)
-    # Define the same permutation statistic without executing the notebook's cache branch.
+    # Define the permutation statistic without executing the cache branch.
     source = "".join(notebook["cells"][20]["source"]).split("if RECOMPUTE_NULL:")[0]
     exec(compile(source, "tutorial09-permutation", "exec"), ns)
     observed_start = time.perf_counter()

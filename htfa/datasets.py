@@ -50,11 +50,11 @@ TUTORIAL_DATA_URL = (
 # htfa repository, SHA-256).
 TUTORIAL_FITS = {
     "development_fmri_10children_10adults_K30": (
-        "htfa_development_fmri_10children_10adults_K30.npz",
+        "htfa_development_fmri_10children_10adults_K30-01a094f61846.npz",
         "01a094f618466ae4400c4d3583342f64496e84a4733028a95399131b1bd9b468",
     ),
     "development_fmri_children_adults_null_100": (
-        "htfa_development_fmri_children_adults_null_100.npz",
+        "htfa_development_fmri_children_adults_null_100-d7c05c55f4a9.npz",
         "d7c05c55f4a90e6e8fb0cf528afb7a490ecaed3327703a3139364daf8214fac1",
     ),
     "mitchell2008_K100": (
@@ -62,12 +62,12 @@ TUTORIAL_FITS = {
         "635d821194ee1d4a37932a1f4a1ed03592f18838a6453200b1bda0570fa895c4",
     ),
     "development_fmri_12adults_K50": (
-        "htfa_development_fmri_12adults_K50.npz",
-        "647dc7c2da0eec69b16df12f7c3fcc68a2f33637056dc21532b77da9b3c0cc13",
+        "htfa_development_fmri_12adults_K50-939fb70901ca.npz",
+        "939fb70901cacb0d800133014d7366e51e28a8b609ca6e5cb1b2f0e991175e61",
     ),
     "development_fmri_6adults_K30": (
-        "htfa_development_fmri_6adults_K30.npz",
-        "48d0cdda811a515fad809b2b667f29d470cf5c2c19c53a9c7bc29495ee4ba829",
+        "htfa_development_fmri_6adults_K30-b1b11b99f829.npz",
+        "b1b11b99f8296348546b1ad570ee9f89290df0806e2b89844d4d2c346c5de488",
     ),
     "mitchell2008_embeddings": (
         "htfa_mitchell2008_embeddings_Qwen3-Embedding-0.6B.npz",
