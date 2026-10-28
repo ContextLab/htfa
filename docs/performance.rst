@@ -191,9 +191,13 @@ Other settings that change the cost of a fit
   ``OPENBLAS_NUM_THREADS``, an enclosing ``threadpoolctl.threadpool_limits``),
   or all CPUs, divided among the ``n_jobs`` workers.
   On Windows with some AMD EPYC CPUs (measured on 9V45 and 9V74), OpenBLAS
-  rounds differently in about 1 to 2.5% of freshly started processes, so two
+  rounds differently in about 0.5 to 2.5% of freshly started processes, so two
   runs of the same fit in different processes are not guaranteed to agree bit
   for bit there; within one run the results do not depend on ``n_jobs``.
+  Threads cannot be stopped from outside: after a ``KeyboardInterrupt``
+  (Ctrl-C) during the parallel fits, control returns at once, but the worker
+  threads finish the subject fits they are running in the background before
+  they end.
 - ``nlss_loss='soft_l1'`` costs ``O(V T K^2)`` per Gauss-Newton assembly and
   needs the slow alternation (below); the default ``'linear'`` with
   ``'varpro'`` costs ``O(V T K (D + 1))`` per assembly.
@@ -417,8 +421,9 @@ with 2, so ``n_jobs`` workers of 2 threads use the cores better than one subject
 at a time (``n_jobs=None``, the default): six adults (``init='ncorr'``, K = 50)
 took 104.8 s one after the other with 12 threads and 49.0 s as 6 workers of 2
 threads, 2.1 times the throughput. These and the HTFA rows below were measured
-with worker processes, before the subject fits ran as threads; the threads
-were as fast or faster in the comparisons above. The rows at a load average of 95 to 115 are
+with worker processes, before the subject fits ran as threads; in the
+comparisons above the threads matched the processes on real data (126.8 s
+against 126.0 s) and were faster on the synthetic data. The rows at a load average of 95 to 115 are
 not comparable with these.
 
 HTFA rounds (each round fits every subject once, in parallel):

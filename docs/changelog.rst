@@ -61,7 +61,7 @@ Added:
   and n_jobs=4 gave different templates), and the subject fits run as threads
   of the calling process (joblib's threading backend) instead of worker
   processes, so that all of them use the same BLAS state (on Windows with some
-  AMD EPYC CPUs, OpenBLAS rounds differently in about 1 to 2.5% of freshly
+  AMD EPYC CPUs, OpenBLAS rounds differently in about 0.5 to 2.5% of freshly
   started processes).
 - ``mode='fast'`` (the default of `htfa.TFA`, `htfa.HTFA` and
   :func:`htfa.fit`) and ``mode='exact'`` (the earlier behavior). Where the

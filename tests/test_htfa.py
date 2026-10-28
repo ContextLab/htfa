@@ -21,7 +21,6 @@ WEIGHT_MIN_R = 0.995  # measured: 0.9981 (seed 0, 3D subject 3); 1 - r has 2.5x 
 # Measured (seed 0): the mixed-T and different-V cases converge after 11 global
 # iterations (scaled change 8.3e-4 and 8.6e-4; 1.02e-3 and 1.04e-3 after 10).
 SLOW_MAX_GLOBAL_ITER = 15
-PARALLEL_RTOL = 1e-10  # measured: 1.04e-13 max relative diff, serial vs n_jobs=2 (CI)
 
 
 def test_map_update_matches_closed_form() -> None:
@@ -160,15 +159,12 @@ def test_htfa_parallel_equals_serial() -> None:
     )
     a = HTFA(K=4, standardize=False, n_jobs=1, random_state=3).fit(Xs, Rs)
     b = HTFA(K=4, standardize=False, n_jobs=2, random_state=3).fit(Xs, Rs)
-    # Workers run BLAS with fewer threads than the serial path, so reductions are
-    # ordered differently: results agree to rounding, not bit for bit (measured:
-    # max relative difference 1e-13 on ubuntu CI).
-    close = {"rtol": PARALLEL_RTOL, "atol": 0.0}
-    np.testing.assert_allclose(a.global_centers_, b.global_centers_, **close)
-    np.testing.assert_allclose(a.global_widths_, b.global_widths_, **close)
+    # Serial and threaded fits run BLAS on one thread in one process: bit for bit.
+    np.testing.assert_array_equal(a.global_centers_, b.global_centers_)
+    np.testing.assert_array_equal(a.global_widths_, b.global_widths_)
     for s in range(3):
-        np.testing.assert_allclose(a.centers_[s], b.centers_[s], **close)
-        np.testing.assert_allclose(a.weights_[s], b.weights_[s], **close)
+        np.testing.assert_array_equal(a.centers_[s], b.centers_[s])
+        np.testing.assert_array_equal(a.weights_[s], b.weights_[s])
 
 
 # Factors of the n_jobs test: K (D + 1) * 8 bytes = 1152 >= 1024, so every
@@ -197,7 +193,7 @@ def test_htfa_bitwise_independent_of_n_jobs(mode: str) -> None:
     K=100, 8 subjects, n_jobs=8 vs 4: a different template); (2) with every fit
     on one BLAS thread but still in worker processes, Windows CI runners with
     AMD EPYC 9V45/9V74 CPUs failed in 1-7% of runs, because OpenBLAS rounds
-    differently in about 1-2.5% of freshly started processes there. The fits
+    differently in about 0.5-2.5% of freshly started processes there. The fits
     now run as threads of one process.
 
     The comparison is meaningful only where repeated serial fits agree bit for
@@ -249,7 +245,10 @@ def test_htfa_different_voxel_counts_per_subject() -> None:
     _check_recovery(model, Rs, truth, Xs)
 
 
-def test_htfa_no_local_warning_spam() -> None:
+@pytest.mark.parametrize("n_jobs", [1, 3])
+def test_htfa_no_local_warning_spam(n_jobs: int) -> None:
+    """The local fits' ConvergenceWarnings are suppressed, also when they run on
+    worker threads (the filter is set once, around all fits)."""
     Xs, Rs, _ = make_htfa_data(
         n_subjects=3, grid_shape=(10, 10), n_samples=20, K=3, random_state=0
     )
@@ -259,6 +258,7 @@ def test_htfa_no_local_warning_spam() -> None:
         max_local_iter=1,
         threshold=0.0,
         standardize=False,
+        n_jobs=n_jobs,
         random_state=0,
     )
     with pytest.warns(ConvergenceWarning) as record:
@@ -267,6 +267,25 @@ def test_htfa_no_local_warning_spam() -> None:
     print("ConvergenceWarnings:", messages)
     assert not model.converged_ and model.n_iter_ == 2
     assert len(messages) == 1 and messages[0].startswith("HTFA did not converge")
+
+
+def test_htfa_worker_exception_reaches_caller() -> None:
+    """An error inside one subject's fit on a worker thread reaches the caller
+    as itself, with the worker's frames (_fit_subject, TFA.fit) in the
+    formatted traceback."""
+    import traceback
+
+    Xs, Rs, _ = make_htfa_data(
+        n_subjects=3, grid_shape=(10, 10), n_samples=20, K=3, random_state=0
+    )
+    Xs[1], Rs[1] = Xs[1][:4], Rs[1][:4]  # 4 voxels: K=5 is too many for TFA
+    with pytest.raises(
+        ValueError, match="must be smaller than the number of voxels"
+    ) as err:
+        HTFA(K=5, n_jobs=3, random_state=0).fit(Xs, Rs)
+    text = "".join(traceback.format_exception(err.value))
+    print(text[-1200:])
+    assert "in _fit_subject" in text and "in _validate" in text
 
 
 def test_htfa_validation_errors() -> None:
@@ -317,7 +336,8 @@ def test_htfa_fit_runs_with_n_threads():
         warnings.simplefilter("ignore", ConvergenceWarning)
         a = HTFA(n_threads=1, **kw).fit(Xs, Rs)
         b = HTFA(n_threads=2, **kw).fit(Xs, Rs)
-    np.testing.assert_allclose(a.global_centers_, b.global_centers_, rtol=PARALLEL_RTOL)
+    # The engine's chunks do not depend on its thread count: bit for bit.
+    np.testing.assert_array_equal(a.global_centers_, b.global_centers_)
 
 
 def _small_htfa_data():

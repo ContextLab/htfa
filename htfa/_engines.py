@@ -127,6 +127,21 @@ def single_threaded_accelerate() -> Iterator[None]:
 
 
 @contextmanager
+def one_blas_thread_here() -> Iterator[None]:
+    """The per-thread half of `one_blas_thread`: Accelerate on one thread in the
+    calling thread, and the NumPy engines created in the block start their
+    chunk threads the same way. Changes no process-wide setting, so worker
+    threads can enter it concurrently; it relies on the caller's process-wide
+    one-thread BLAS limit (`one_blas_thread`) for the other BLAS libraries."""
+    token = _ONE_BLAS_THREAD.set(True)
+    try:
+        with single_threaded_accelerate():
+            yield
+    finally:
+        _ONE_BLAS_THREAD.reset(token)
+
+
+@contextmanager
 def one_blas_thread() -> Iterator[None]:
     """Run BLAS on one thread inside the block, here and in the chunk threads
     of NumPy engines.
@@ -134,20 +149,15 @@ def one_blas_thread() -> Iterator[None]:
     BLAS rounds differently with one thread than with several (Accelerate:
     one vs any other count; OpenBLAS: from one count to the next, 1e-13 on CI).
     `htfa.htfa.HTFA` fits every subject inside this block, serial or on worker
-    threads, so that its results do not depend on ``n_jobs``. The
-    threadpoolctl limit is process-wide and the Accelerate mode per thread, so
-    HTFA enters the block once around all fits and again in each worker
-    thread. The engine's chunk threads
-    still run in parallel (see `thread_limit`); their chunks do not depend on
-    the thread count. (K-means runs single-threaded on any thread; see
-    `htfa._kernels.kmeans`.)
+    threads, so that its results do not depend on ``n_jobs``. It sets the
+    process-wide threadpoolctl limit (OpenBLAS, MKL, BLIS: one thread) and,
+    for this thread, `one_blas_thread_here`; HTFA's worker threads enter only
+    `one_blas_thread_here`. The engine's chunk threads still run in parallel
+    (see `thread_limit`); their chunks do not depend on the thread count.
+    (K-means runs single-threaded on any thread; see `htfa._kernels.kmeans`.)
     """
-    token = _ONE_BLAS_THREAD.set(True)
-    try:
-        with threadpool_limits(limits=1, user_api="blas"), single_threaded_accelerate():
-            yield
-    finally:
-        _ONE_BLAS_THREAD.reset(token)
+    with threadpool_limits(limits=1, user_api="blas"), one_blas_thread_here():
+        yield
 
 
 def default_threads() -> int:

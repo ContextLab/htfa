@@ -13,7 +13,12 @@ from sklearn.base import BaseEstimator
 from sklearn.exceptions import ConvergenceWarning
 from threadpoolctl import threadpool_info, threadpool_limits
 
-from htfa._engines import one_blas_thread, select_engine, thread_limit
+from htfa._engines import (
+    one_blas_thread,
+    one_blas_thread_here,
+    select_engine,
+    thread_limit,
+)
 from htfa._kernels import Prior, max_sigma
 from htfa._matching import match_factors
 from htfa.tfa import TFA
@@ -188,13 +193,17 @@ def _fit_subject(
 ) -> TFA:
     """One subject's TFA fit, on the calling thread or a worker thread.
 
-    Sets only per-thread state: Accelerate's threading mode (one thread) and
-    the NumPy engine's ``n_threads`` chunk threads. The process-wide limits
-    (OpenBLAS and the other threadpoolctl-visible BLAS on one thread) and the
-    warning filters are set once by `HTFA._fit_subjects`, around all fits,
-    since concurrent enter and exit of process-wide settings would race.
+    Sets per-thread state only: Accelerate's threading mode (one thread,
+    `htfa._engines.one_blas_thread_here`) and the NumPy engine's
+    ``n_threads`` chunk threads (`htfa._engines.thread_limit`). The
+    process-wide settings, the threadpoolctl BLAS limit (one thread) and the
+    warning filters, are set once by `HTFA._fit_subjects` around all fits,
+    since threads entering and leaving them concurrently would race. Inside
+    the fit, sklearn's K-means also enters a process-wide one-thread BLAS limit
+    of its own; that limit equals the outer one, so its exit restores the
+    same value.
     """
-    with one_blas_thread(), thread_limit(n_threads):
+    with one_blas_thread_here(), thread_limit(n_threads):
         return TFA(**params, random_state=seed).fit(X, R, prior=prior, start=start)
 
 
@@ -267,6 +276,9 @@ class HTFA(BaseEstimator):
         (`htfa._engines.one_blas_thread`), since BLAS rounds differently with
         different thread counts. On macOS, a standalone `htfa.TFA` fit and the
         stage-0 fit of the same subject can therefore differ at rounding level.
+        After a ``KeyboardInterrupt`` during the parallel fits, control returns
+        at once, but worker threads cannot be stopped: they finish the subject
+        fits they are running in the background.
     n_threads : int, optional
         NumPy engine threads per subject fit (the engine splits each pass into
         fixed voxel chunks, so the count does not change results; BLAS runs on
@@ -437,7 +449,7 @@ class HTFA(BaseEstimator):
         ]
         # Worker threads in this process, not worker processes: every fit then
         # uses the same BLAS state. On Windows with some AMD EPYC CPUs, OpenBLAS
-        # rounds differently in about 1-2.5% of freshly started processes, so
+        # rounds differently in about 0.5-2.5% of freshly started processes, so
         # process workers made results depend on n_jobs there.
         with (
             threadpool_limits(n_threads),
