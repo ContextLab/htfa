@@ -962,3 +962,132 @@ need the reference template should pass ``mode='exact'``.
    * - fast, perturbed
      - 0.135 / 0.553
      - 0.080 / 0.393
+
+Kernel shapes and mixtures
+--------------------------
+
+``kernel`` (``'rbf'``, ``'laplace'``, ``'mexican_hat'``) and ``n_components``
+(see :doc:`api` and :doc:`tutorials/12_kernel_shapes`) were checked as follows.
+All numbers are from the tests named, on macOS (Accelerate) unless stated.
+
+**'rbf' with one component is unchanged.** The plain RBF fit runs the original
+code paths, and calls the kernel functions with the original arguments.
+``scripts/rbf_fingerprint.py`` writes 341 arrays (factors, derivatives, costs,
+gradients, Gauss-Newton matrices and Hessians of the fixed-weight and varpro
+problems with and without a prior, four losses, both modes; ``bounded_lm``
+solves; TFA fits with every solver, both modes, subsampling and a prior; HTFA
+fits with the three template updates, both modes, serial and ``n_jobs=2``;
+synthetic data; effective nodes): on the same machine all 341 are bit for bit
+equal to those of main at 0948c13. ``tests/test_fit_equivalence.py`` (TFA on
+the frozen 3298278 kernels) and the BrainIAK cross-checks (``-m brainiak``, 27
+tests) pass unchanged.
+
+**Derivatives** (``tests/test_kernel_shapes.py``, 188 cases: each kernel with
+1 to 3 components, D = 2 and 3, linear, soft_l1 and cauchy losses, with and
+without a prior). Against central differences (step 1e-6): the matrix-free
+Jacobian within 3.5e-9 (relative to its largest entry), gradients 1.1e-7,
+Hessians 1.6e-8, the varpro gradient and Hessian likewise; the Gauss-Newton
+matrix and column norms equal the dense Jacobian's to 1.2e-15. Mode 'fast'
+changes the varpro Hessian by at most 1.9e-6 (relative).
+
+**Dense oracle sweep** (``tests/test_shape_equivalence.py``). The oracle,
+``tests/reference_shapes.py``, writes every factor symbolically from the
+definitions of the profiles (the mexican hat as sympy's Laplacian of a
+Gaussian) and differentiates it with sympy, then assembles the objectives
+densely: the full Jacobian, and for varpro the Schur complement of the joint
+Hessian in the centers/widths/logits and the weights, and Kaufman's
+Gauss-Newton matrix from the dense weight Jacobian. 240 generated scenarios
+(kernel, 1 to 3 components, D = 2 and 3, six coordinate families, 8 to 200
+voxels, T = 1 to 7, K = 1 to 4, widths from 1% of ``max_sigma`` to 1e4 times
+it, centers inside, at the edge and outside, mixing logits 0, moderate and
+near the bounds, 'rr' and 'ols', five losses including varpro, priors, five
+data families), three points each: 4135 comparisons. Largest relative
+differences: factors 5.7e-14, costs 2.0e-12, gradients 1.4e-12, Gauss-Newton
+matrices 5.2e-12, Hessians 4.0e-10 (a varpro point with an ill-conditioned
+gram), varpro weights 5.8e-12. Tolerances: 1e-9, or 1e3 x eps x the
+amplification (as in the sweep above) where larger; median 1e-9, maximum
+3.0e-7. 37 points were not compared: 18 where every factor is below 1e-150 and
+19 varpro points where a gram eigenvalue is dropped. A relative 1e-7 error
+injected into the mixture curvature of the last logit failed 101 of the 240
+scenarios, and into its first derivatives 118.
+
+**Recovery, one component** (``tests/test_shape_fits.py``; ``make_tfa_data``
+from each kernel, K = 3, T = 100, noise 0.1, seeds 0 to 5; a case counts when
+the default fit ends at least as low as a fit started from the true
+parameters). 24 x 24 grid: all 18 cases count; largest center errors 0.0028
+(rbf), 0.0055 (laplace) and 0.0022 (mexican_hat) lengths, width errors 2.8%,
+5.3% and 1.8%. 18 x 18 x 18 grid: 17 of 18 count; center errors at most 0.0039
+lengths, width errors 1.7% (rbf), 1.6% (laplace), 0.6% (mexican_hat). The
+excluded case is a 3D mexican hat whose default starts end in a local optimum
+(one factor 1.7 lengths off). With the profile ``(1 - z) exp(-z)`` in 3D (whose
+surround outweighs its center) instead of the balanced ``(1 - 2z/3) exp(-z)``,
+the default starts reached the optimum of 3 of these 6 3D datasets instead of
+5 of 6, which is why ``'mexican_hat'`` uses the D-dimensional Laplacian.
+
+**Recovery, two components.** Two factors of two components each, the second
+1.5 sigma from the first and 0.4 times as wide (30 x 30 and 16 x 16 x 16
+grids, noise 0.05, T = 150, 3 seeds per kernel and D): every default fit reached
+the optimum of a fit from the truth, with component centers within 0.0096
+lengths, component widths within 10.1% (laplace; rbf 2.5%, mexican_hat 2.1%) and
+mixing weights within 0.011 (matched up to the order of a factor's
+components). On ``make_tfa_data`` mixtures (second component 0.75 sigma from
+the first, 24 x 24, K = 3, 6 seeds per kernel), whose components overlap too
+much to be identified one by one, the two-component fits explained within
+5.6e-4 of the variance the true parameters explain.
+
+**HTFA** (3 subjects on 24 x 24, K = 3, center jitter 1 voxel, 5 global
+iterations): template centers within 0.079 to 0.115 lengths of the global
+truth for every kernel, 1 and 2 components and the three template updates (the
+mean of three jittered subjects is about 0.08 lengths from it), one-component
+template widths within 3.3%. Serial and ``n_jobs=2`` fits are bit for bit equal
+for every kernel, 1 and 2 components, and both modes.
+
+**Effective nodes.** An interior node keeps its center; its ``lambda_eff``
+measured on a grid is 6.00 w (D = 2) and 7.97 w (D = 3) for ``'laplace'``
+(6.02 and 8.01 by radial integration) and 0.281 w and 0.352 w for
+``'mexican_hat'`` (0.282 and 0.351), with mass fractions within 0.2% of 1.
+
+**Linux.** The four test files above (250 tests) pass in a ``python:3.12-slim``
+container (aarch64, scipy-openblas 0.3.34).
+
+**Tutorial 12** (2D, 30 x 30, K = 5, T = 120, noise 0.3; fit on 60 samples,
+factors kept for the other 60). Held-out variance explained, data (rows) by
+fitted kernel:
+
+.. list-table::
+   :header-rows: 1
+
+   * - data
+     - true factors
+     - rbf
+     - laplace
+     - mexican_hat
+     - rbf, 2 components
+   * - rbf
+     - 0.587
+     - 0.587
+     - 0.569
+     - 0.519
+     - 0.587
+   * - laplace
+     - 0.635
+     - 0.619
+     - 0.635
+     - 0.589
+     - 0.633
+   * - mexican_hat
+     - 0.400
+     - 0.347
+     - 0.291
+     - 0.400
+     - 0.348
+   * - rbf, 2 components
+     - 0.464
+     - 0.454
+     - 0.436
+     - 0.405
+     - 0.463
+
+Each single-component kernel fits its own data best; on the mixture data the
+two-component fit is within 0.001 of the true factors. Its 16 fits took 2.3 s
+and the whole notebook 20 s (Apple M2 Max).

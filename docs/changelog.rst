@@ -103,6 +103,20 @@ Added:
   brain only on request (``view='glass'``). ``truth=`` adds a reference panel.
 - Synthetic data with ground truth for 2D and 3D coordinates.
 - Installation of optional dependencies on first use.
+- Kernel shapes and mixtures: ``kernel`` (``'rbf'``, the default;
+  ``'laplace'``; ``'mexican_hat'``, the D-dimensional negative Laplacian of a
+  Gaussian) and ``n_components`` (default 1) on :class:`htfa.TFA`,
+  :class:`htfa.HTFA` and :func:`htfa.fit`. With ``n_components > 1`` each
+  factor is a mixture of components of that shape, each with its own center
+  and width, and softmax mixing weights fitted in the nonlinear solve. Exact
+  derivatives in every solver (``'varpro'``, ``'bounded-lm'``, ``'trf'``,
+  ``'dogbox'``) and both modes; HTFA priors and updates for every component
+  and the mixing weights; shapes and mixtures in :func:`htfa.make_tfa_data`,
+  :func:`htfa.make_htfa_data` and the effective nodes of the plots;
+  :func:`htfa.tfa.component_factors`. ``'rbf'`` with one component gives the
+  same results as before, bit for bit. Checked against a dense sympy oracle
+  over 240 generated scenarios, by finite differences and by recovery from
+  synthetic data (see :doc:`validation`); tutorial 12.
 
 BrainIAK behavior that differs from BrainIAK's code (each has a regression test):
 

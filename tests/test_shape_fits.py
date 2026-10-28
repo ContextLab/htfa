@@ -24,14 +24,14 @@ from htfa.tfa import TFA, component_factors
 
 START_RTOL = 1e-8
 # One component (make_tfa_data, noise 0.1, T = 100, K = 3; 24x24 and 18x18x18
-# grids, seeds 0-5). Measured on the qualifying cases: centers <= 0.009
+# grids, seeds 0-5). Measured on the qualifying cases: centers <= 0.0055
 # lengths, widths <= 5.3% (laplace; rbf 2.8%, mexican_hat 1.8%). In 3D the
 # default starts missed the optimum of one mexican_hat case of six.
 CENTER_LENGTHS = 0.02
 WIDTH_RTOL = 0.1
 MIN_QUALIFYING = 5
 # Two well-separated components (`_mixture_case`), measured: component
-# centers <= 0.0096 lengths, widths <= 10.5% (laplace), mixing weights
+# centers <= 0.0096 lengths, widths <= 10.1% (laplace), mixing weights
 # <= 0.011.
 COMPONENT_LENGTHS = 0.03
 COMPONENT_WIDTH_RTOL = 0.2

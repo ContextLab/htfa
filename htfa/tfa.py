@@ -300,12 +300,44 @@ def component_factors(
     centers: ArrayLike,
     widths: ArrayLike,
     mixing_weights: ArrayLike,
-    kernel: Kernel,
+    kernel: "str | Kernel" = "rbf",
 ) -> Array:
-    """Factors (V, K) at coordinates ``R`` of components with centers
-    (K, M, D), widths (K, M) and mixing weights (K, M) (see `TFA`)."""
+    """Factors of a fit with any kernel and number of components.
+
+    Factor k is ``sum_m pi_km phi(||r - c_km||**2 / w_km)`` with the profile
+    ``phi`` of ``kernel`` (see `TFA`).
+
+    Parameters
+    ----------
+    R : ndarray, shape (V, D)
+        Coordinates to evaluate the factors at.
+    centers : array_like, shape (K, M, D)
+        Component centers (``component_centers_`` of a fit).
+    widths : array_like, shape (K, M)
+        Component widths (``component_widths_``).
+    mixing_weights : array_like, shape (K, M)
+        Positive mixing weights summing to 1 per factor (``mixing_weights_``).
+    kernel : {'rbf', 'laplace', 'mexican_hat'}, default='rbf'
+        Profile of the components.
+
+    Returns
+    -------
+    ndarray, shape (V, K)
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from htfa.tfa import component_factors
+    >>> R = np.array([[0.0, 0.0], [1.0, 0.0], [3.0, 0.0]])
+    >>> F = component_factors(R, [[[0.0, 0.0], [3.0, 0.0]]], [[1.0, 1.0]],
+    ...                       [[0.75, 0.25]])
+    >>> np.round(F[:, 0], 3)
+    array([0.75, 0.28, 0.25])
+    """
     C = np.asarray(centers, dtype=np.float64)
     K, M, D = C.shape
+    if not isinstance(kernel, Kernel):
+        kernel = Kernel(kernel, M)
     w = np.asarray(widths, dtype=np.float64).reshape(K * M)
     tail = np.concatenate([w, Kernel.logits(mixing_weights).ravel()])
     return x_factors(R, C.reshape(K * M, D), tail, K, kernel, None)

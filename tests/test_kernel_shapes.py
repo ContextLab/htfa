@@ -34,7 +34,7 @@ SHAPES = [
 ]
 SHAPE_IDS = [f"{n}-M{m}" for n, m in SHAPES]
 # Central differences with step 1e-6 (as tests/test_kernels.py). Measured
-# relative errors: gradients <= 3e-9, Hessians <= 2e-8 over SHAPES.
+# relative errors: Jacobians <= 3.5e-9, gradients <= 1.1e-7, Hessians <= 1.6e-8.
 FD_STEP = 1e-6
 FD_RTOL = 1e-6
 # Gauss-Newton matrix and gradient vs. the dense Jacobian (the same sums in

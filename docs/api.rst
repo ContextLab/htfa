@@ -39,6 +39,33 @@ Factors are in template order for HTFA fits: factor ``k`` of every subject
 corresponds to global factor ``k``. Widths use the BrainIAK convention
 ``w = 2 * sigma**2``.
 
+Kernel shapes and mixtures
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``kernel`` sets the profile of every factor as a function of ``z = ||r - c||**2
+/ w``: ``'rbf'`` (default) ``exp(-z)``; ``'laplace'`` ``exp(eps - sqrt(z +
+eps**2))`` with ``eps = 0.1`` (exponential tails ``exp(-r / sqrt(w))``, rounded
+at the center so that it can be differentiated there); ``'mexican_hat'`` ``(1 - 2
+z / D) exp(-z)``, the negative Laplacian of a Gaussian in D dimensions (a
+positive center, a negative surround, integral 0). ``n_components = M > 1`` makes
+each factor a mixture of M components of that shape, each with its own center
+and width, with mixing weights (a softmax of M - 1 fitted logits) that are fitted
+with them; the factor's time series are fitted for the whole mixture.
+
+.. code-block:: python
+
+   model = TFA(K=10, kernel="laplace", n_components=2).fit(X, R)
+   model.component_centers_, model.component_widths_  # (K, 2, D), (K, 2)
+   model.mixing_weights_  # (K, 2), rows sum to 1
+   model.centers_, model.widths_  # mixing-weighted means of the components
+
+HTFA's template then carries every component and the mixing weights, each with
+a prior and update analogous to the widths' (``global_component_centers_``,
+``global_component_widths_``, ``global_mixing_weights_``). ``kernel='rbf'`` with
+one component is the original model, bit for bit. :func:`htfa.make_tfa_data` and
+:func:`htfa.make_htfa_data` generate data from any shape and number of
+components. See :doc:`tutorials/12_kernel_shapes` and :doc:`validation`.
+
 Common model parameters
 ~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -82,6 +109,12 @@ Common model parameters
    * - ``n_screen_iter``
      - 0
      - If greater than 0, run each start for this many iterations and continue only the best one
+   * - ``kernel``
+     - ``'rbf'``
+     - Factor shape: ``'rbf'``, ``'laplace'`` or ``'mexican_hat'`` (see above)
+   * - ``n_components``
+     - 1
+     - Components per factor; more than 1 fits each factor as a mixture
    * - ``backend``
      - ``'auto'``
      - ``'numpy'``, ``'cpu'``, ``'torch'``, ``'cuda'``, ``'mps'`` or ``'auto'``; see :doc:`performance`
@@ -155,7 +188,9 @@ MNI152 brain mask (:func:`htfa.brainnet.mni_mask`) for bare MNI centers or a fit
 estimator. ``HTFAResults.display_nodes(subject)`` returns the drawn centers, widths and
 per-node details (distance moved, snapped and ambiguous flags, in-brain mass
 fraction, ``sigma_eff``, ``lambda_eff / lambda``), also for fits made before this
-existed:
+existed. Fits with another ``kernel`` or several components are drawn from their
+own profiles (the positive part for ``'mexican_hat'``), with ``lambda_eff`` the
+width of the RBF with the same spread:
 
 .. code-block:: python
 
@@ -254,6 +289,7 @@ Utilities
    htfa.set_autoinstall
    htfa.require
    htfa.tfa.standardize_data
+   htfa.tfa.component_factors
 
 .. rubric:: Examples
 
