@@ -39,7 +39,8 @@ def fit(
     **model_kwargs
         Passed to `htfa.TFA` or `htfa.HTFA`; an unknown key raises ``TypeError``.
         One subject fits a TFA and several fit an HTFA, so HTFA-only kwargs
-        (e.g. ``max_global_iter``) fail for a single subject.
+        (e.g. ``max_global_iter``) fail for a single subject. Both take
+        ``kernel`` and ``n_components`` (factor shapes and mixtures).
 
     Returns
     -------

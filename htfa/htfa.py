@@ -20,8 +20,8 @@ from htfa._engines import (
     select_engine,
     thread_limit,
 )
-from htfa._kernels import Prior, max_sigma
-from htfa._matching import match_factors
+from htfa._kernels import MIXING_LOGIT_BOUND, Kernel, Prior, max_sigma
+from htfa._matching import match_components, match_factors
 from htfa.groups import group_key, group_tree
 from htfa.tfa import TFA
 
@@ -50,6 +50,11 @@ OBJECTIVE_PATIENCE = 2
 # and left out of the dispersion estimate (TRIM_STEPS reweighting passes).
 DISPERSION_QUANTILE = 0.9
 TRIM_STEPS = 3
+# Subject-level prior variance of the mixing logits log(pi_m / pi_1) of a
+# factor with several components (the initial value; 'brainiak' shrinks it
+# like the width variance): a standard deviation of 2, i.e. a factor of
+# about 7.4 in the weight ratio.
+MIXING_LOGIT_VAR = 4.0
 
 
 def map_update(
@@ -146,23 +151,115 @@ def empirical_dispersion(
     if n < 2:
         raise ValueError("template_update='empirical' needs at least 2 subjects")
 
-    def trimmed(values: Array) -> Array:
-        dev = (values - np.median(values, axis=0)).reshape(-1, values.shape[-1])
-        m = dev.shape[1]
-        chi_q = chi2.ppf(DISPERSION_QUANTILE, m)
-        consistency = chi2.cdf(chi_q, m + 2) / chi2.cdf(chi_q, m)
-        cov = dev.T @ dev / len(dev)
-        for _ in range(TRIM_STEPS):
-            d2 = np.einsum("ij,ij->i", dev @ np.linalg.pinv(cov), dev)
-            keep = dev[d2 <= np.quantile(d2, DISPERSION_QUANTILE)]
-            cov = keep.T @ keep / len(keep) * n / (n - 1) / consistency
-        return cov
-
-    cov = trimmed(centers)
+    cov = _trimmed_cov(centers)
     vals, vecs = np.linalg.eigh(cov)
     vals = np.maximum(vals, float(np.min(np.linalg.eigvalsh(floor_cov))))
-    var = float(trimmed(widths[:, :, None])[0, 0])
+    var = float(_trimmed_cov(widths[:, :, None])[0, 0])
     return (vecs * vals) @ vecs.T, max(var, floor_var)
+
+
+def _trimmed_cov(values: Array) -> Array:
+    """Trimmed pooled covariance (m, m) of the deviations of ``values``
+    (n_subj, K, m) from their median over subjects (see
+    `empirical_dispersion`)."""
+    n = values.shape[0]
+    dev = (values - np.median(values, axis=0)).reshape(-1, values.shape[-1])
+    m = dev.shape[1]
+    chi_q = chi2.ppf(DISPERSION_QUANTILE, m)
+    consistency = chi2.cdf(chi_q, m + 2) / chi2.cdf(chi_q, m)
+    cov = dev.T @ dev / len(dev)
+    for _ in range(TRIM_STEPS):
+        d2 = np.einsum("ij,ij->i", dev @ np.linalg.pinv(cov), dev)
+        keep = dev[d2 <= np.quantile(d2, DISPERSION_QUANTILE)]
+        cov = keep.T @ keep / len(keep) * n / (n - 1) / consistency
+    return cov
+
+
+def _fit_params(f: TFA, M: int) -> tuple[Array, ...]:
+    """A subject fit as a `TFA` start: (centers, widths), or (component
+    centers, component widths, mixing weights) with M > 1 components."""
+    if M == 1:
+        return f.centers_, f.widths_
+    return f.component_centers_, f.component_widths_, f.mixing_weights_
+
+
+def _as_x(params: Sequence[Array], kernel: Kernel) -> tuple[Array, Array, Array]:
+    """Component centers (K M, D), widths (K M,) and logits (K, M - 1) of a
+    `_fit_params` tuple."""
+    if kernel.n_components == 1:
+        C, w = params
+        return C, w, np.zeros((len(w), 0))
+    C, w, pi = params
+    return C.reshape(-1, C.shape[-1]), np.ravel(w), Kernel.logits(pi)
+
+
+def _from_x(C: Array, w: Array, a: Array, kernel: Kernel) -> tuple[Array, ...]:
+    """Inverse of `_as_x`."""
+    M = kernel.n_components
+    if M == 1:
+        return C, w
+    K = len(a)
+    return C.reshape(K, M, -1), w.reshape(K, M), Kernel.mixing(a)
+
+
+def _factor_centers(C: Array, w: Array, a: Array, kernel: Kernel) -> Array:
+    """Factor centers (K, D) for matching: the centers (one component) or the
+    mixing-weighted component centers."""
+    if kernel.n_components == 1:
+        return C
+    K = len(a)
+    return np.einsum(
+        "km,kmd->kd", Kernel.mixing(a), C.reshape(K, kernel.n_components, -1)
+    )
+
+
+def _match_params(
+    C: Array, w: Array, a: Array, params: Sequence[Array], kernel: Kernel
+) -> tuple[NDArray[np.intp], NDArray[np.intp] | None, tuple[Array, ...]]:
+    """Order of a fit (`_fit_params`) matched to the template (``C``, ``w``,
+    ``a``): factors by their centers (`_factor_centers`), then, with several
+    components, each factor's components by their centers
+    (`htfa._matching.match_components`). Returns the factor permutation, the
+    per-factor component permutations (K, M) (None for one component) and
+    the reordered parameters."""
+    M = kernel.n_components
+    if M == 1:
+        perm = match_factors(C, params[0])
+        return perm, None, (params[0][perm], params[1][perm])
+    K = len(a)
+    perm = match_factors(
+        _factor_centers(C, w, a, kernel),
+        _factor_centers(*_as_x(params, kernel), kernel),
+    )
+    Cc, wc, pi = (np.asarray(p)[perm] for p in params)
+    comp = match_components(C.reshape(K, M, -1), Cc)
+    rows = np.arange(K)[:, None]
+    pi = pi[rows, comp]
+    # Reordering changes the reference (first) component of the logits; with
+    # M >= 3 they can then leave the solver's box, where TFA would clip its
+    # start. Clip them here, so that template and starts stay feasible.
+    a_new = Kernel.logits(pi)
+    if np.any(np.abs(a_new) > MIXING_LOGIT_BOUND):
+        pi = Kernel.mixing(np.clip(a_new, -MIXING_LOGIT_BOUND, MIXING_LOGIT_BOUND))
+    return perm, comp, (Cc[rows, comp], wc[rows, comp], pi)
+
+
+def _match_fit(
+    C: Array, w: Array, a: Array, f: TFA, kernel: Kernel
+) -> tuple[Array, Array, Array]:
+    """Reorder fit ``f`` in place to the template order of `_match_params`;
+    returns its component centers, widths and logits (`_as_x`)."""
+    M = kernel.n_components
+    perm, _, matched = _match_params(C, w, a, _fit_params(f, M), kernel)
+    f.weights_ = f.weights_[perm]
+    if M == 1:
+        f.centers_, f.widths_ = matched
+        f.component_centers_ = f.centers_[:, None].copy()
+        f.component_widths_ = f.widths_[:, None].copy()
+    else:
+        f.centers_, f.widths_ = f.centers_[perm], f.widths_[perm]
+        f.component_centers_, f.component_widths_, f.mixing_weights_ = matched
+    return _as_x(matched, kernel)
 
 
 def _available_threads() -> int:
@@ -189,7 +286,7 @@ def _fit_subject(
     X: Array,
     R: Array,
     prior: Prior | None,
-    start: tuple[Array, Array] | None,
+    start: tuple[Array, ...] | None,
     seed: int,
     n_threads: int,
 ) -> TFA:
@@ -251,9 +348,19 @@ class HTFA(BaseEstimator):
         initial values).
     nlss_method, nlss_loss, x_scale, weight_method, upper_ratio, lower_ratio,
     voxel_ratio, tr_ratio, max_voxels, max_trs, standardize, backend, init,
-    n_screen_iter
+    n_screen_iter, kernel, n_components
         Passed to each subject's `TFA` (``init`` and ``n_screen_iter`` only matter
         for the template fits, the only ones with several candidate starts).
+        With ``n_components = M > 1`` the template holds every component's
+        center and width, each with the prior and update of a factor's (the
+        center covariance and width variance per component), and the mixing
+        logits ``log(pi_m / pi_1)`` (K, M - 1), each with an independent
+        Gaussian prior of initial variance 4 (`MIXING_LOGIT_VAR`), updated as
+        the widths are (``'brainiak'``: the same MAP update; ``'fixed'``: the
+        mean; ``'empirical'``: variance from the matched stage-0 fits, floored
+        at 1% of 4). Subject fits are matched to the template by their
+        mixing-weighted centers, then each factor's components by their
+        centers. The scaled change also covers the logits, unscaled.
     mode : {'fast', 'exact'}, default='fast'
         Passed to each subject's `TFA` (see there). On the twelve
         development_fmri adults (K = 50, defaults, 10 global iterations) the
@@ -303,14 +410,21 @@ class HTFA(BaseEstimator):
     Attributes
     ----------
     global_centers_ : ndarray, shape (K, D)
+        (With ``n_components > 1``: mixing-weighted means, as in `TFA`.)
     global_widths_ : ndarray, shape (K,)
     global_centers_cov_ : ndarray, shape (K, D, D)
         Posterior covariance of the global centers (``'fixed'`` and
         ``'empirical'``: ``Sigma / n_subjects``, that of a mean of
-        ``n_subjects`` draws; with ``groups``, ``(A^-1)_00 Sigma``, see
-        `htfa.groups`).
+        ``n_subjects`` draws). Shape (K, M, D, D), per component, with
+        ``n_components = M > 1``.
     global_widths_var_ : ndarray, shape (K,)
-        Posterior variance of the global widths (likewise).
+        Posterior variance of the global widths (likewise); (K, M) with
+        M > 1.
+    global_component_centers_, global_component_widths_, global_mixing_weights_
+        Template components, shapes (K, M, D), (K, M) and (K, M) (one
+        component: the template centers and widths, and weights 1).
+    global_logits_var_ : ndarray, shape (K, M - 1)
+        Posterior variance of the template's mixing logits.
     group_tree_ : htfa.groups.GroupTree or None
         The template tree of a fit with ``groups`` (labels, label paths,
         parents, each subject's innermost group); ``None`` without groups.
@@ -332,15 +446,20 @@ class HTFA(BaseEstimator):
         Subject-level width variance of the last local fits' prior.
     centers_, widths_, weights_ : list of ndarray
         Per-subject (K, D), (K,) and (K, T_s) estimates, in template order.
-    free_fits_ : list of (ndarray, ndarray)
+    component_centers_, component_widths_, mixing_weights_ : list of ndarray
+        Per-subject components (K, M, D), (K, M) and (K, M), in template
+        order (components too).
+    free_fits_ : list of tuple of ndarray
         Per-subject (centers (K, D), widths (K,)) of the unpenalized stage-0
-        fits, or the ``starts`` passed to `fit`.
+        fits, or the ``starts`` passed to `fit`; with M > 1 components
+        (component centers (K, M, D), widths (K, M), mixing weights (K, M)).
     template_subject_ : int
         Index of the subject whose free fit is the initial template (when no
         ``init_template`` is passed).
-    template_history_ : list of (ndarray, ndarray)
-        Global (centers, widths): the initial template, then the template after
-        each global iteration (``n_iter_ + 1`` entries).
+    template_history_ : list of tuple of ndarray
+        Global (centers, widths) (with M > 1: component centers, widths and
+        mixing weights): the initial template, then the template after each
+        global iteration (``n_iter_ + 1`` entries).
     n_iter_ : int
     converged_ : bool
         Whether the global loop stopped before ``max_global_iter``.
@@ -393,6 +512,8 @@ class HTFA(BaseEstimator):
         n_threads: int | None = None,
         random_state: int | None = None,
         verbose: bool = False,
+        kernel: str = "rbf",
+        n_components: int = 1,
     ) -> None:
         self.K = K
         self.max_global_iter = max_global_iter
@@ -419,12 +540,14 @@ class HTFA(BaseEstimator):
         self.n_threads = n_threads
         self.random_state = random_state
         self.verbose = verbose
+        self.kernel = kernel
+        self.n_components = n_components
 
     def _tfa_params(self, max_iter: int) -> dict[str, Any]:
         names = (
             "K nlss_method nlss_loss x_scale weight_method upper_ratio lower_ratio "
             "voxel_ratio tr_ratio max_voxels max_trs standardize backend mode init "
-            "n_screen_iter verbose"
+            "n_screen_iter verbose kernel n_components"
         ).split()
         params = {n: getattr(self, n) for n in names}
         params["max_iter"] = max_iter
@@ -448,7 +571,7 @@ class HTFA(BaseEstimator):
         Rs: list[Array],
         max_iter: int,
         priors: Sequence[Prior | None],
-        starts: Sequence[tuple[Array, Array] | None],
+        starts: Sequence[tuple[Array, ...] | None],
         seeds: NDArray[np.int64],
         parallel: bool,
     ) -> list[TFA]:
@@ -509,10 +632,12 @@ class HTFA(BaseEstimator):
         starts : list of (centers, widths), optional
             One (K, D), (K,) pair per subject, used in place of the unpenalized
             stage-0 fits (which are then skipped), e.g. a previous model's
-            ``free_fits_``.
+            ``free_fits_``. With ``n_components = M > 1``: (component centers
+            (K, M, D), widths (K, M), mixing weights (K, M)) per subject.
         init_template : tuple of (centers, widths), optional
-            Initial global template, shapes (K, D) and (K,), in place of the
-            template subject's stage-0 fit. To resume a fit, pass
+            Initial global template, shapes (K, D) and (K,) (or the three
+            arrays of ``starts`` with M > 1), in place of the template
+            subject's stage-0 fit. To resume a fit, pass
             ``starts=list(zip(model.centers_, model.widths_))`` and
             ``init_template=(model.global_centers_, model.global_widths_)``.
             This approximates continuing the fit rather than reproducing it:
@@ -596,17 +721,25 @@ class HTFA(BaseEstimator):
                 "update takes its prior from the template's own previous "
                 "posterior, not from a parent template"
             )
+        kernel = Kernel(self.kernel, self.n_components)
+        M = kernel.n_components
 
-        def checked(
-            pair: tuple[ArrayLike, ArrayLike], name: str
-        ) -> tuple[Array, Array]:
-            C, w = np.asarray(pair[0], np.float64), np.asarray(pair[1], np.float64)
-            if C.shape != (K, D) or w.shape != (K,):
-                raise ValueError(
-                    f"{name} must be (centers ({K}, {D}), widths ({K},)), got "
-                    f"{C.shape} and {w.shape}"
+        def checked(pair: Sequence[ArrayLike], name: str) -> tuple[Array, ...]:
+            arrays = tuple(np.asarray(a, np.float64) for a in pair)
+            if M == 1:
+                expected = [(K, D), (K,)]
+                what = f"(centers ({K}, {D}), widths ({K},))"
+            else:
+                expected = [(K, M, D), (K, M), (K, M)]
+                what = (
+                    f"(centers ({K}, {M}, {D}), widths ({K}, {M}), "
+                    f"mixing_weights ({K}, {M}))"
                 )
-            return C, w
+            if [a.shape for a in arrays] != expected:
+                raise ValueError(
+                    f"{name} must be {what}, got {[a.shape for a in arrays]}"
+                )
+            return arrays
 
         if starts is not None and len(starts) != n_subj:
             raise ValueError(f"starts must have one entry per subject ({n_subj})")
@@ -624,7 +757,7 @@ class HTFA(BaseEstimator):
             K,
         )
         parallel = engine.name == "numpy" and self.n_jobs not in (None, 1)
-        none: list[tuple[Array, Array] | None] = [None] * n_subj
+        none: list[tuple[Array, ...] | None] = [None] * n_subj
         no_priors: list[Prior | None] = [None] * n_subj
 
         # Unpenalized multi-start TFA per subject; the template is the fit of a
@@ -636,29 +769,39 @@ class HTFA(BaseEstimator):
             fitted = self._fit_subjects(
                 Xs, Rs, self.template_max_iter, no_priors, none, free_seeds, parallel
             )
-            given = [(f.centers_, f.widths_) for f in fitted]
+            given = [_fit_params(f, M) for f in fitted]
         self.free_fits_, self.template_subject_ = given, t
         R_t = Rs[t]
         centers_cov = np.cov(R_t.T) * K ** (-2.0 / 3.0)
         widths_var = max_sigma(R_t)
+        logits_var = MIXING_LOGIT_VAR
         g_cov_scaled = centers_cov / n_subj
         g_var_scaled = widths_var / n_subj
-        C, w = given[t] if template_start is None else template_start
-        C, w = C.copy(), w.copy()
-        self.template_history_ = [(C, w)]
+        g_logit_scaled = logits_var / n_subj
+        C, w, a = _as_x(given[t] if template_start is None else template_start, kernel)
+        C, w, a = C.copy(), w.copy(), a.copy()
+        self.template_history_ = [_from_x(C, w, a, kernel)]
         brainiak = self.template_update == "brainiak"
         if self.template_update == "empirical":
-            matched = [match_factors(C, g[0]) for g in given]
-            matched_C = np.stack([g[0][p] for g, p in zip(given, matched, strict=True)])
-            matched_w = np.stack([g[1][p] for g, p in zip(given, matched, strict=True)])
+            local = [_match_params(C, w, a, g, kernel)[2] for g in given]
+            local = [_as_x(p, kernel) for p in local]
+            matched_C = np.stack([p[0] for p in local])
+            matched_w = np.stack([p[1] for p in local])
             if tree is not None:
                 matched_C = tree.within_groups(matched_C)
                 matched_w = tree.within_groups(matched_w)
             centers_cov, widths_var = empirical_dispersion(
                 matched_C, matched_w, 0.01 * centers_cov, 0.01 * widths_var
             )
-        C_cov = np.tile(centers_cov, (K, 1, 1))
-        w_var = np.full(K, widths_var)
+            if M > 1:
+                matched_a = np.stack([p[2] for p in local])
+                if tree is not None:
+                    matched_a = tree.within_groups(matched_a)
+                spread = _trimmed_cov(matched_a[..., None])
+                logits_var = max(float(spread[0, 0]), 0.01 * MIXING_LOGIT_VAR)
+        C_cov = np.tile(centers_cov, (K * M, 1, 1))
+        w_var = np.full(K * M, widths_var)
+        a_var = np.full((K, M - 1), logits_var)
         length = np.sqrt(max_sigma(R_t) / 2.0)
 
         reason = "max_iter"
@@ -669,14 +812,28 @@ class HTFA(BaseEstimator):
         n_nodes = 1 if tree is None else tree.n_nodes
         nodes_C = np.repeat(C[None], n_nodes, axis=0)
         nodes_w = np.repeat(w[None], n_nodes, axis=0)
-        new_nodes_C, new_nodes_w = nodes_C, nodes_w
+        nodes_a = np.repeat(a[None], n_nodes, axis=0)
+        new_nodes_C, new_nodes_w, new_nodes_a = nodes_C, nodes_w, nodes_a
         while n_iter < self.max_global_iter:
             n_iter += 1
             if tree is None:
-                priors = [Prior(C, w, C_cov, w_var, 1.0)] * n_subj
+                prior = (
+                    Prior(C, w, C_cov, w_var, 1.0)
+                    if M == 1
+                    else Prior(C, w, C_cov, w_var, 1.0, a, a_var)
+                )
+                priors = [prior] * n_subj
             else:
                 node_priors = [
-                    Prior(nodes_C[v], nodes_w[v], C_cov, w_var, 1.0)
+                    Prior(
+                        nodes_C[v],
+                        nodes_w[v],
+                        C_cov,
+                        w_var,
+                        1.0,
+                        nodes_a[v] if M > 1 else None,
+                        a_var if M > 1 else None,
+                    )
                     for v in range(tree.n_nodes)
                 ]
                 priors = [node_priors[v] for v in tree.subject_node]
@@ -707,22 +864,27 @@ class HTFA(BaseEstimator):
                     if b.cost_ < fits[s].cost_:
                         fits[s] = b
             else:
-                warm = [(f.centers_, f.widths_) for f in fits]
+                warm = [_fit_params(f, M) for f in fits]
                 fits = self._fit_subjects(
                     Xs, Rs, fit_local, priors, warm, seeds, parallel
                 )
-            local_C = np.empty((n_subj, K, C.shape[1]))
-            local_w = np.empty((n_subj, K))
+            local_C = np.empty((n_subj, K * M, C.shape[1]))
+            local_w = np.empty((n_subj, K * M))
+            local_a = np.empty((n_subj, K, M - 1))
             for s, f in enumerate(fits):
-                # Each subject is matched to the template its prior is centred on.
-                ref = C if tree is None else nodes_C[tree.subject_node[s]]
-                perm = match_factors(ref, f.centers_)
-                local_C[s], local_w[s] = f.centers_[perm], f.widths_[perm]
-                f.centers_, f.widths_ = local_C[s], local_w[s]
-                f.weights_ = f.weights_[perm]
+                ref = (
+                    (C, w, a)
+                    if tree is None
+                    else (
+                        nodes_C[tree.subject_node[s]],
+                        nodes_w[tree.subject_node[s]],
+                        nodes_a[tree.subject_node[s]],
+                    )
+                )
+                local_C[s], local_w[s], local_a[s] = _match_fit(*ref, f, kernel)
             if brainiak:
                 new_C, new_C_cov = np.empty_like(C), np.empty_like(C_cov)
-                for k in range(K):
+                for k in range(K * M):
                     new_C[k], new_C_cov[k] = map_update(
                         C[k], C_cov[k], g_cov_scaled, local_C[:, k]
                     )
@@ -731,19 +893,35 @@ class HTFA(BaseEstimator):
                     w_var * common * local_w.mean(axis=0) + common * g_var_scaled * w
                 )
                 new_w_var = w_var * common * g_var_scaled
-                new_C, new_w, new_C_cov, new_w_var = assign_posterior(
-                    C, new_C, new_w, new_C_cov, new_w_var
+                common_a = 1.0 / (a_var + g_logit_scaled)
+                new_a = (
+                    a_var * common_a * local_a.mean(axis=0)
+                    + common_a * g_logit_scaled * a
                 )
+                new_a_var = a_var * common_a * g_logit_scaled
+                if M == 1:
+                    new_C, new_w, new_C_cov, new_w_var = assign_posterior(
+                        C, new_C, new_w, new_C_cov, new_w_var
+                    )
+                else:
+                    # Factor order of the posterior: by the flattened component
+                    # centers (each posterior component stays with its own).
+                    perm = match_factors(C.reshape(K, -1), new_C.reshape(K, -1))
+                    idx = (perm[:, None] * M + np.arange(M)).ravel()
+                    new_C, new_C_cov = new_C[idx], new_C_cov[idx]
+                    new_w, new_w_var = new_w[idx], new_w_var[idx]
+                    new_a, new_a_var = new_a[perm], new_a_var[perm]
             elif tree is None:
                 # Fixed subject-level prior: the template minimizing the summed
                 # penalized objectives is the mean of the local estimates.
                 new_C, new_w = local_C.mean(axis=0), local_w.mean(axis=0)
-                new_C_cov, new_w_var = C_cov, w_var
+                new_a = local_a.mean(axis=0)
+                new_C_cov, new_w_var, new_a_var = C_cov, w_var, a_var
             else:
-                # The templates of the tree minimizing the summed penalties.
                 new_nodes_C, new_nodes_w = tree.solve(local_C), tree.solve(local_w)
-                new_C, new_w = new_nodes_C[0], new_nodes_w[0]
-                new_C_cov, new_w_var = C_cov, w_var
+                new_nodes_a = tree.solve(local_a) if M > 1 else nodes_a
+                new_C, new_w, new_a = new_nodes_C[0], new_nodes_w[0], new_nodes_a[0]
+                new_C_cov, new_w_var, new_a_var = C_cov, w_var, a_var
             old_C, old_w, cur_C, cur_w = (
                 (C, w, new_C, new_w)
                 if tree is None
@@ -753,11 +931,15 @@ class HTFA(BaseEstimator):
                 float(np.max(np.abs(cur_C - old_C))) / length,
                 float(np.max(np.abs(cur_w - old_w) / old_w)),
             )
+            if M > 1:
+                delta_a = new_a - a if tree is None else new_nodes_a - nodes_a
+                change = max(change, float(np.max(np.abs(delta_a))))
             self.prior_centers_cov_, self.prior_widths_var_ = C_cov[0], float(w_var[0])
             C, w, C_cov, w_var = new_C, new_w, new_C_cov, new_w_var
             if tree is not None:
-                nodes_C, nodes_w = new_nodes_C, new_nodes_w
-            self.template_history_.append((C, w))
+                nodes_C, nodes_w, nodes_a = new_nodes_C, new_nodes_w, new_nodes_a
+            a, a_var = new_a, new_a_var
+            self.template_history_.append(_from_x(C, w, a, kernel))
             objectives.append(float(sum(f.cost_ for f in fits)))
             rel = [
                 abs(b - a) / abs(a)
@@ -788,16 +970,44 @@ class HTFA(BaseEstimator):
         self.converged_reason_ = reason
         self.converged_ = reason != "max_iter"
         self.objective_history_ = objectives
+        for name in (
+            "group_keys_",
+            "group_centers_",
+            "group_widths_",
+            "group_centers_cov_",
+            "group_widths_var_",
+            "group_component_centers_",
+            "group_component_widths_",
+            "group_mixing_weights_",
+            "group_logits_var_",
+        ):
+            if hasattr(self, name):
+                delattr(self, name)
         self.group_tree_ = tree
         if tree is not None:
             self.group_keys_ = [group_key(p) for p in tree.paths[1:]]
-            self.group_centers_, self.group_widths_ = nodes_C[1:], nodes_w[1:]
+            G = tree.n_nodes - 1
+            self.group_component_centers_ = nodes_C[1:].reshape(G, K, M, D)
+            self.group_component_widths_ = nodes_w[1:].reshape(G, K, M)
+            self.group_mixing_weights_ = np.stack(
+                [Kernel.mixing(na) for na in nodes_a[1:]]
+            )
+            pi = self.group_mixing_weights_
+            self.group_centers_ = np.sum(
+                pi[..., None] * self.group_component_centers_, axis=2
+            )
+            self.group_widths_ = np.sum(pi * self.group_component_widths_, axis=2)
             var = tree.variance[1:, None]
-            self.group_centers_cov_ = C_cov[None] * var[:, :, None, None]
-            self.group_widths_var_ = w_var[None] * var
+            gcov = C_cov[None] * var[:, :, None, None]
+            gvar = w_var[None] * var
+            self.group_centers_cov_ = gcov if M == 1 else gcov.reshape(G, K, M, D, D)
+            self.group_widths_var_ = gvar if M == 1 else gvar.reshape(G, K, M)
+            self.group_logits_var_ = a_var[None] * var[:, :, None]
             C_cov, w_var = C_cov * tree.variance[0], w_var * tree.variance[0]
+            a_var = a_var * tree.variance[0]
         elif not brainiak:
             C_cov, w_var = C_cov / n_subj, w_var / n_subj
+            a_var = a_var / n_subj
         if not self.converged_:
             warnings.warn(
                 f"HTFA did not converge in max_global_iter={self.max_global_iter} "
@@ -805,10 +1015,25 @@ class HTFA(BaseEstimator):
                 ConvergenceWarning,
                 stacklevel=2,
             )
-        self.global_centers_, self.global_widths_ = C, w
-        self.global_centers_cov_, self.global_widths_var_ = C_cov, w_var
+        if M == 1:
+            self.global_centers_, self.global_widths_ = C, w
+            self.global_centers_cov_, self.global_widths_var_ = C_cov, w_var
+        else:
+            pi = Kernel.mixing(a)
+            Cg, wg = C.reshape(K, M, D), w.reshape(K, M)
+            self.global_centers_ = np.einsum("km,kmd->kd", pi, Cg)
+            self.global_widths_ = np.sum(pi * wg, axis=1)
+            self.global_centers_cov_ = C_cov.reshape(K, M, D, D)
+            self.global_widths_var_ = np.reshape(w_var, (K, M))
+        self.global_component_centers_ = C.reshape(K, M, D)
+        self.global_component_widths_ = w.reshape(K, M)
+        self.global_mixing_weights_ = Kernel.mixing(a)
+        self.global_logits_var_ = a_var
         self.centers_ = [f.centers_ for f in fits]
         self.widths_ = [f.widths_ for f in fits]
         self.weights_ = [f.weights_ for f in fits]
+        self.component_centers_ = [f.component_centers_ for f in fits]
+        self.component_widths_ = [f.component_widths_ for f in fits]
+        self.mixing_weights_ = [f.mixing_weights_ for f in fits]
         self.engine_ = fits[0].engine_
         return self

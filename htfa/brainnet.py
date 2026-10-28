@@ -44,7 +44,9 @@ from scipy.spatial import cKDTree
 from ._download import DATA_DIR_ENV as DATA_DIR_ENV
 from ._download import data_dir
 from ._download import sha256 as _sha256
+from ._kernels import LAPLACE_EPS, Kernel
 from ._lazy import lazy_import
+from ._spatial import ComponentNodes, check_level, component_mode
 
 Array = np.ndarray
 
@@ -519,12 +521,9 @@ def _fit_nodes(nodes: Any, subject: Any) -> tuple[Array, Array | None]:
     from .tfa import TFA
 
     if isinstance(nodes, HTFAResults):
-        if subject == "global":
-            if nodes.global_centers is None:
-                raise ValueError("a TFA fit has no global template; pass subject=0")
-            centers, widths = nodes.global_centers, nodes.global_widths
-        else:
-            centers, widths = nodes.centers[subject], nodes.widths[subject]
+        if subject == "global" and nodes.global_centers is None:
+            raise ValueError("a TFA fit has no global template; pass subject=0")
+        centers, widths = nodes._fitted_nodes(subject)
     elif isinstance(nodes, HTFA):
         if subject == "global":
             centers, widths = nodes.global_centers_, nodes.global_widths_
@@ -540,9 +539,74 @@ def _fit_nodes(nodes: Any, subject: Any) -> tuple[Array, Array | None]:
     )
 
 
+def _fit_shape(nodes: Any, subject: Any) -> tuple[str, Array, Array, Array] | None:
+    """Kernel name and component centers, widths and mixing weights of a fit
+    whose factors are not single RBFs (None for those and for arrays)."""
+    from .htfa import HTFA
+    from .results import HTFAResults
+    from .tfa import TFA
+
+    if isinstance(nodes, HTFAResults):
+        return nodes._shape(subject)
+    if not isinstance(nodes, (HTFA, TFA)):
+        return None
+    kernel = Kernel(getattr(nodes, "kernel", "rbf"), getattr(nodes, "n_components", 1))
+    if kernel.plain_rbf:
+        return None
+    if isinstance(nodes, TFA):
+        parts = (nodes.component_centers_, nodes.component_widths_)
+        return (kernel.name, *parts, nodes.mixing_weights_)
+    if subject == "global":
+        return (
+            kernel.name,
+            nodes.global_component_centers_,
+            nodes.global_component_widths_,
+            nodes.global_mixing_weights_,
+        )
+    return (
+        kernel.name,
+        nodes.component_centers_[subject],
+        nodes.component_widths_[subject],
+        nodes.mixing_weights_[subject],
+    )
+
+
 # ------------------------------------------------------------- effective nodes
 
 _TAIL_SIGMAS = 5.0  # RBF weights beyond 5 sigma (exp(-12.5)) are left out
+_TAIL_LOG = _TAIL_SIGMAS**2 / 2  # the other kernels: profile values below exp(-12.5)
+
+
+def _reach(kernel: str, w: float, D: int) -> float:
+    """Radius beyond which a component of width ``w`` is left out: its profile
+    is below ``exp(-12.5)`` there (``'mexican_hat'``: the positive lobe,
+    ``r < sqrt(D w / 2)``)."""
+    if kernel == "rbf":
+        return math.sqrt(_TAIL_LOG * w)
+    if kernel == "laplace":
+        return math.sqrt(w * ((_TAIL_LOG + LAPLACE_EPS) ** 2 - LAPLACE_EPS**2))
+    return math.sqrt(D * w / 2)
+
+
+_UNIT_MASS: dict[tuple[str, int], float] = {}
+
+
+def _unit_mass(kernel: str, D: int) -> float:
+    """Integral over R^D of a width-1 component's profile (``'mexican_hat'``:
+    of its positive lobe); ``pi**(D / 2)`` for the RBF."""
+    if (kernel, D) not in _UNIT_MASS:
+        from scipy.integrate import quad
+
+        profile = Kernel(kernel).profile
+        upper = math.sqrt(D / 2) if kernel == "mexican_hat" else np.inf
+        radial = quad(
+            lambda t: float(profile(np.array(t * t), D)) * t ** (D - 1), 0, upper
+        )
+        sphere = 2 * math.pi ** (D / 2) / math.gamma(D / 2)
+        _UNIT_MASS[kernel, D] = sphere * radial[0]
+    return _UNIT_MASS[kernel, D]
+
+
 _TIE_TOL = 1e-3  # distances within 1e-3 voxel count as tied
 
 
@@ -678,7 +742,11 @@ def _lowest_tied(tree: Any, points: Array, tol: float, p: float) -> tuple[Array,
 
 
 def effective_nodes(
-    centers: Any, widths: Any, mask: Any
+    centers: Any,
+    widths: Any,
+    mask: Any,
+    kernel: str = "rbf",
+    mixing_weights: Any = None,
 ) -> tuple[Array, Array, dict[str, Array]]:
     """In-mask ("effective") centers and widths of RBF nodes, for display.
 
@@ -704,14 +772,28 @@ def effective_nodes(
     the midline between the hemispheres) go to the lowest voxel index and
     are flagged ``ambiguous``.
 
+    Other kernels and mixtures (``kernel``, component ``centers`` (K, M, D))
+    use their own profile ``F`` in place of the RBF's, summed over the
+    components with the mixing weights: for ``'mexican_hat'`` its positive
+    part ``max(F, 0)`` (the centre, not the negative surround, is the node).
+    ``lambda_eff = 2 sigma_eff**2`` is then the width of the RBF with the
+    same spread: an interior node has ``lambda_eff = 6.02 w`` (D = 2) or
+    ``8.01 w`` (D = 3) for ``'laplace'`` (``2 (D + 1) w`` without the
+    rounding at its center), and ``0.282 w`` or ``0.351 w`` for
+    ``'mexican_hat'`` (by numerical integration). The mass fraction divides by
+    the summed masses of the components (positive lobes), each fully inside;
+    voxels where every component is below ``exp(-12.5)`` are left out, and a
+    node with no voxel left (far outside the mask) is treated as a point.
+
     Parameters
     ----------
-    centers : array of shape (K, D)
-    widths : array of shape (K,) or None
-        RBF widths ``lambda`` (the BrainIAK convention ``2 * sigma**2``).
-        ``None`` treats the nodes as points: a center within half a voxel of
-        the mask stays, any other goes to the nearest mask voxel, and the
-        widths and masses are NaN.
+    centers : array of shape (K, D) or (K, M, D)
+        Node centers, or component centers of nodes with M components.
+    widths : array of shape (K,) or (K, M), or None
+        RBF widths ``lambda`` (the BrainIAK convention ``2 * sigma**2``), or
+        the components' widths. ``None`` treats the nodes as points: a
+        center within half a voxel of the mask stays, any other goes to the
+        nearest mask voxel, and the widths and masses are NaN.
     mask : array of shape (V, D), NIfTI image or (volume, affine)
         The in-brain voxels: voxel centers on a regular grid (its spacing
         may differ per axis; a union of differently aligned grids is moved
@@ -730,7 +812,12 @@ def effective_nodes(
         (tied nearest voxels), ``mass_fraction`` (in-mask RBF mass over the
         mass of an RBF fully inside, ``(pi * lambda)**(D / 2)`` divided by
         the voxel volume), ``sigma`` (``sigma_eff``) and ``width_ratio``
-        (``lambda_eff / lambda``).
+        (``lambda_eff / lambda``; with components, ``lambda`` is their
+        mixing-weighted mean width).
+    kernel : {'rbf', 'laplace', 'mexican_hat'}, default='rbf'
+        Shape of the nodes (see `htfa.TFA`).
+    mixing_weights : array of shape (K, M), optional
+        Mixing weights of component centers (default: equal).
 
     Examples
     --------
@@ -744,13 +831,33 @@ def effective_nodes(
     (True, False)
     """
     c = np.asarray(centers, dtype=np.float64)
-    if c.ndim != 2:
-        raise ValueError(f"centers must be (K, D), got {c.shape}")
+    if c.ndim not in (2, 3):
+        raise ValueError(f"centers must be (K, D) or (K, M, D), got {c.shape}")
+    shape = Kernel(kernel, 1 if c.ndim == 2 else c.shape[1])
+    if c.ndim == 2 and mixing_weights is not None:
+        raise ValueError("mixing_weights need component centers (K, M, D)")
+    comps = None
+    if c.ndim == 3:
+        if widths is None:
+            raise ValueError("component centers (K, M, D) need their widths")
+        Kc, M, _ = c.shape
+        wc = np.asarray(widths, dtype=np.float64).reshape(Kc, M)
+        if mixing_weights is None:
+            pi = np.full((Kc, M), 1.0 / M)
+        else:
+            pi = np.asarray(mixing_weights, dtype=np.float64).reshape(Kc, M)
+        comps = (c, wc, pi)
+        c = np.einsum("km,kmd->kd", pi, c)
+        widths = np.sum(pi * wc, axis=1)
+        if not np.all(wc > 0):
+            raise ValueError("widths must be positive")
     K, D = c.shape
     coords, spacing, voxel_volume = _mask_coords(mask, D)
     w = None if widths is None else _per_node(widths, K, "widths")
     if w is not None and not np.all(w > 0):
         raise ValueError("widths must be positive")
+    if comps is None and w is not None:
+        comps = (c[:, None], w[:, None], np.ones((K, 1)))
     tree = cKDTree(coords)
     grid = cKDTree(coords / spacing)  # voxel units: "inside" is <= 0.5 per axis
     half = 0.5 * (1 + 1e-9)
@@ -759,7 +866,34 @@ def effective_nodes(
     mass = np.full(K, np.nan)
     snapped = np.zeros(K, dtype=bool)
     ambiguous = np.zeros(K, dtype=bool)
-    if w is not None:
+    if comps is not None and not shape.plain_rbf:
+        for k in range(K):
+            ck, wk, pk = comps[0][k], comps[1][k], comps[2][k]
+            dm = tree.query(ck)[0]
+            idx = sorted(
+                set().union(
+                    *(
+                        tree.query_ball_point(ck[m], dm[m] + _reach(kernel, wk[m], D))
+                        for m in range(len(wk))
+                    )
+                )
+            )
+            r = coords[idx]
+            f = np.zeros(len(r))
+            for m in range(len(wk)):
+                z = np.sum((r - ck[m]) ** 2, axis=1) / wk[m]
+                f += pk[m] * shape.profile(z, D)
+            if kernel == "mexican_hat":
+                f = np.maximum(f, 0.0)
+            total = f.sum()
+            if not total > 0:
+                continue  # nothing of the node inside: a point
+            m_k = f @ r / total
+            sigma[k] = np.sqrt(f @ np.sum((r - m_k) ** 2, axis=1) / total / D)
+            full = _unit_mass(kernel, D) * np.sum(pk * wk ** (D / 2))
+            mass[k] = total * voxel_volume / full
+            out[k] = m_k
+    elif w is not None:
         dmin = tree.query(c)[0]
         for k in range(K):
             s = np.sqrt(w[k] / 2)
@@ -827,7 +961,7 @@ def _default_mask(nodes: Any, subject: Any) -> Any:
     from .results import HTFAResults
 
     if isinstance(nodes, HTFAResults):
-        return nodes._display_mask(subject)
+        return nodes._lobe_mask(subject)
     return _mni_mask()
 
 
@@ -861,7 +995,12 @@ def _display_nodes(
         raise ValueError("scale_by_mass and fade_by_mass need node widths (widths=)")
     if mask is None:
         mask = _default_mask(nodes, subject)
-    centers, w_eff, info = effective_nodes(centers, w, mask)
+    shape = _fit_shape(nodes, subject) if widths is None else None
+    if shape is None:
+        centers, w_eff, info = effective_nodes(centers, w, mask)
+    else:
+        name, comp_c, comp_w, pi = shape
+        centers, w_eff, info = effective_nodes(comp_c, comp_w, mask, name, pi)
     if sizes is not None:
         node_sizes = _per_node(sizes, K, "sizes")
     else:
@@ -999,6 +1138,78 @@ def _headless_window() -> str | None:
     )
 
 
+def _component_surfaces(components: ComponentNodes, mask: Any, level: float) -> list:
+    """Isosurfaces of each signed component; coordinates remain in world space."""
+    pv = lazy_import("pyvista", "brain3d", "component lobes")
+    level = check_level(level)
+    surfaces = []
+    for i, img in components.images(mask):
+        data = np.asarray(img.dataobj)
+        peak = float(components.mixing[i])
+        if float(np.max(np.abs(data))) < level * peak:
+            continue
+        data = np.pad(data, 1)
+        grid = pv.ImageData(dimensions=data.shape, origin=(-1, -1, -1))
+        grid.point_data["profile"] = data.ravel(order="F")
+        for sign in (1, -1):
+            if float(np.max(sign * data)) < level * peak:
+                continue
+            surface = grid.contour([sign * level * peak], scalars="profile")
+            if surface.n_points:
+                surface = surface.transform(img.affine, inplace=False)
+                surfaces.append((i, sign, surface))
+    return surfaces
+
+
+def _network_geometry(
+    nodes: Any,
+    sizes: Any,
+    widths: Any,
+    subject: Any,
+    snap: bool,
+    mask: Any,
+    scale_by_mass: bool,
+    fade_by_mass: bool | float,
+    node_mode: str,
+    lobe_level: float,
+) -> tuple:
+    """Common static/movie geometry, with factor IDs for expanding edges."""
+    shape = _fit_shape(nodes, subject)
+    if not component_mode(node_mode, shape is not None):
+        return (
+            *_display_nodes(
+                nodes, sizes, widths, subject, snap, mask, scale_by_mass, fade_by_mass
+            ),
+            None,
+            None,
+        )
+    if shape is None:
+        centers, fit_widths = _fit_nodes(nodes, subject)
+        w = fit_widths if widths is None else _per_node(widths, len(centers), "widths")
+        if w is None:
+            raise ValueError("component lobes need a fitted model or widths")
+        shape = ("rbf", centers[:, None], w[:, None], np.ones((len(centers), 1)))
+    elif widths is not None:
+        raise ValueError(
+            "widths cannot override fitted component shapes; use node_mode='summary'"
+        )
+    if sizes is not None or scale_by_mass or fade_by_mass:
+        raise ValueError(
+            "sizes and mass scaling apply to node_mode='summary'; "
+            "component lobes use fitted geometry"
+        )
+    components = ComponentNodes.from_shape(shape)
+    if mask is None:
+        mask = _default_mask(nodes, subject)
+    centers = components.centers
+    if snap:
+        centers, _, _ = effective_nodes(
+            centers, components.widths, mask, components.kernel
+        )
+    surfaces = _component_surfaces(components, mask, lobe_level)
+    return centers, components.widths, None, components, surfaces
+
+
 class _Scene:
     """Off-screen plotter holding mesh and nodes; edges change per frame."""
 
@@ -1017,6 +1228,9 @@ class _Scene:
         radius_range: tuple[float, float] = (2.0, 7.0),
         radius_kb: tuple[float, float] | None = None,
         radius_clip: tuple[float, float] | None = None,
+        component_surfaces: list | None = None,
+        component_weights: Array | None = None,
+        lobe_negative_color: Any = "teal",
     ) -> None:
         pv = lazy_import("pyvista", "brain3d", "network plots")
         if view not in VIEWS:
@@ -1031,6 +1245,12 @@ class _Scene:
                 f"node radii must be positive, got min {self.radii.min():.3g} mm; "
                 "set radius_clip"
             )
+        self.component_surfaces = component_surfaces
+        self.component_weights = component_weights
+        self.lobe_negative_color = lobe_negative_color
+        if component_surfaces is not None:
+            # Edges originate at each component anchor; no artificial sphere radius.
+            self.radii = np.zeros(len(centers))
         self.node_opacity = node_opacity
         self.size = (int(size[0]), int(size[1]))
         self.view_dir, self.view_up = (np.asarray(v, float) for v in VIEWS[view])
@@ -1081,23 +1301,46 @@ class _Scene:
                 smooth_shading=True,
                 **_DULL,
             )
-        spheres = [
-            pv.Sphere(radius=r, center=c, theta_resolution=40, phi_resolution=40)
-            for c, r in zip(centers, self.radii, strict=True)
-        ]
-        if self.node_opacity is None:
-            pl.add_mesh(
-                pv.merge(spheres), color=node_color, smooth_shading=True, **_DULL
-            )
-        else:
-            for sphere, alpha in zip(spheres, self.node_opacity, strict=True):
+        if self.component_surfaces is not None:
+            points = []
+            for i, sign, surface in self.component_surfaces:
+                alpha = (
+                    1.0 if self.component_weights is None else self.component_weights[i]
+                )
                 pl.add_mesh(
-                    sphere,
-                    color=node_color,
-                    opacity=float(alpha),
+                    surface,
+                    color=node_color if sign > 0 else self.lobe_negative_color,
+                    opacity=(0.2 + 0.6 * float(alpha)) * (0.35 if sign < 0 else 1.0),
                     smooth_shading=True,
+                    show_scalar_bar=False,
                     **_DULL,
                 )
+                points.append(np.asarray(surface.points))
+            if points:
+                geometry = np.vstack(points)
+                self.verts = (
+                    geometry
+                    if self.verts is None
+                    else np.vstack([self.verts, geometry])
+                )
+        else:
+            spheres = [
+                pv.Sphere(radius=r, center=c, theta_resolution=40, phi_resolution=40)
+                for c, r in zip(centers, self.radii, strict=True)
+            ]
+            if self.node_opacity is None:
+                pl.add_mesh(
+                    pv.merge(spheres), color=node_color, smooth_shading=True, **_DULL
+                )
+            else:
+                for sphere, alpha in zip(spheres, self.node_opacity, strict=True):
+                    pl.add_mesh(
+                        sphere,
+                        color=node_color,
+                        opacity=float(alpha),
+                        smooth_shading=True,
+                        **_DULL,
+                    )
         pl.enable_depth_peeling(number_of_peels=8)
         pl.enable_parallel_projection()
         direction, up = VIEWS[view]
@@ -1297,6 +1540,9 @@ def plot_network(
     mask: Any = None,
     scale_by_mass: bool = False,
     fade_by_mass: bool | float = False,
+    node_mode: str = "auto",
+    lobe_level: float = 0.05,
+    lobe_negative_color: Any = "teal",
     out: str | os.PathLike | None = None,
     jpeg_quality: int | None = None,
     **style: Any,
@@ -1344,6 +1590,26 @@ def plot_network(
         Node opacity ``floor + (1 - floor) * mass_fraction`` with floor 0.15
         (``True``) or the given floor, so nodes mostly outside the brain stay
         faintly visible (needs widths and ``snap``).
+    node_mode : {'auto', 'components', 'summary'}
+        ``'auto'`` draws non-RBF kernels and mixtures as spatial component
+        lobes; single RBFs retain the sphere view. ``'components'`` always
+        draws lobes. Every component is an edge anchor: each factor edge is
+        repeated, unchanged, between all pairs of its components and those
+        of the other factor. No within-factor edges are added. ``'summary'``
+        draws one sphere per factor at its effective centroid.
+    lobe_level : float
+        Isosurface level as a fraction of the component's unmasked peak
+        (default 0.05); both positive and negative surfaces are drawn where
+        they intersect ``mask``. Lobes use fitted spatial dimensions, not
+        the ``radius_*`` scaling of summary spheres. Mixing weights control
+        opacity (0.2 + 0.6 times the weight; negative shells use 35% of
+        that opacity so the positive core remains visible), never the edge value.
+        ``snap``
+        changes edge anchors only; it does not move the component field.
+    lobe_negative_color : color
+        Color of negative component surfaces (default teal); positive
+        surfaces use ``node_color``. This sign is spatial loading, distinct
+        from positive/negative connectivity colors.
     out : path, optional
         Save the image there: PNG, or JPEG for a ``.jpg``/``.jpeg`` suffix
         (quality ``jpeg_quality``, default 75, 4:2:0 chroma, like MATLAB's
@@ -1373,14 +1639,32 @@ def plot_network(
         The RGB image.
     """
     scene_opts, edge_opts = _style(dict(style))
-    centers, node_sizes, opacity = _display_nodes(
-        nodes, sizes, widths, subject, snap, mask, scale_by_mass, fade_by_mass
+    centers, node_sizes, opacity, components, surfaces = _network_geometry(
+        nodes,
+        sizes,
+        widths,
+        subject,
+        snap,
+        mask,
+        scale_by_mass,
+        fade_by_mass,
+        node_mode,
+        lobe_level,
     )
+    if components is not None and connectivity is not None:
+        connectivity = components.connectivity(connectivity)
     E = None
     if connectivity is not None:
         E = _connectivity(connectivity, len(centers), 2)
     scene = _Scene(
-        centers, node_sizes, load_mesh(mesh), **scene_opts, node_opacity=opacity
+        centers,
+        node_sizes,
+        load_mesh(mesh),
+        **scene_opts,
+        node_opacity=opacity,
+        component_surfaces=surfaces,
+        component_weights=None if components is None else components.mixing,
+        lobe_negative_color=lobe_negative_color,
     )
     try:
         if E is not None:
@@ -1480,6 +1764,9 @@ def animate_network(
     mask: Any = None,
     scale_by_mass: bool = False,
     fade_by_mass: bool | float = False,
+    node_mode: str = "auto",
+    lobe_level: float = 0.05,
+    lobe_negative_color: Any = "teal",
     captions: Sequence[str] | Callable[[float], str] | None = None,
     frames_dir: str | os.PathLike | None = None,
     jpeg_quality: int | None = None,
@@ -1496,6 +1783,9 @@ def animate_network(
     ----------
     nodes, sizes, widths, subject, mesh, snap, mask, scale_by_mass, fade_by_mass
         As in `plot_network` (``snap`` is on by default).
+    node_mode, lobe_level, lobe_negative_color
+        As in `plot_network`; the same component geometry and repeated edges
+        are used in every frame.
     **style
         As in `plot_network`.
     connectivity : array of shape (T, K, K), or (K, K) with duration
@@ -1574,9 +1864,20 @@ def animate_network(
     out = Path(out)
     if out.suffix.lower() not in (".mp4", ".gif"):
         raise ValueError(f"out must end in .mp4 or .gif, got {out.name!r}")
-    centers, node_sizes, opacity = _display_nodes(
-        nodes, sizes, widths, subject, snap, mask, scale_by_mass, fade_by_mass
+    centers, node_sizes, opacity, components, surfaces = _network_geometry(
+        nodes,
+        sizes,
+        widths,
+        subject,
+        snap,
+        mask,
+        scale_by_mass,
+        fade_by_mass,
+        node_mode,
+        lobe_level,
     )
+    if components is not None and connectivity is not None:
+        connectivity = components.connectivity(connectivity)
     K = len(centers)
     if n is not None and np.ndim(connectivity) == 2:
         E = _connectivity(connectivity, K, 2)[None]
@@ -1601,7 +1902,14 @@ def animate_network(
     if folder is not None:
         folder.mkdir(parents=True, exist_ok=True)
     scene = _Scene(
-        centers, node_sizes, load_mesh(mesh), **scene_opts, node_opacity=opacity
+        centers,
+        node_sizes,
+        load_mesh(mesh),
+        **scene_opts,
+        node_opacity=opacity,
+        component_surfaces=surfaces,
+        component_weights=None if components is None else components.mixing,
+        lobe_negative_color=lobe_negative_color,
     )
 
     def frames() -> Iterator[Any]:

@@ -161,6 +161,270 @@ def sq_distances(R: Array, centers: Array, grid: AxisGrid | None = None) -> Arra
     return d
 
 
+KERNELS = ("rbf", "laplace", "mexican_hat")
+# 'laplace' is exp(eps - sqrt(d / w + eps**2)) with eps = LAPLACE_EPS: 1 at the
+# center with slope 0, and exp(eps) exp(-r / sqrt(w)) once r >> eps sqrt(w).
+# The rounding scales with the width, so the profile is a function of d / w as
+# the RBF's is, and a fit stores no extra constant.
+LAPLACE_EPS = 0.1
+# Mixing weights pi = softmax(0, a_2, ..., a_M) of a mixture factor, with the
+# logits a_m bounded to +-MIXING_LOGIT_BOUND (a weight ratio of at most 1e3
+# between two components).
+MIXING_LOGIT_BOUND = float(np.log(1e3))
+# Start of a mixture: every component at its factor's start center, component
+# m (from 0) with MIXTURE_WIDTH_START**m times the start width, equal weights.
+# Equal widths would be a symmetric start that the solver never leaves.
+MIXTURE_WIDTH_START = 0.25
+
+
+@dataclass(frozen=True)
+class Kernel:
+    """Shape of the factors.
+
+    A factor is ``F_k(r) = sum_m pi_km phi(||r - c_km||**2 / w_km)`` over
+    ``n_components`` components ``m``, each with its own center ``c_km`` and
+    width ``w_km``, and mixing weights ``pi_k = softmax(0, a_k2, ..., a_kM)``
+    (one factor: ``pi = 1``, no logits). The profile ``phi(z)``:
+
+    - ``'rbf'``: ``exp(-z)``.
+    - ``'laplace'``: ``exp(eps - sqrt(z + eps**2))``, ``eps =`` `LAPLACE_EPS`.
+    - ``'mexican_hat'``: ``(1 - 2 z / D) exp(-z)`` in D dimensions, the
+      negative Laplacian of ``exp(-z)`` scaled to 1 at the center (the Ricker
+      wavelet): its integral is 0, positive within ``r = sqrt(D w / 2)`` and
+      negative outside, with minimum ``-exp(-2)`` (D = 2) or ``-(2 / 3)
+      exp(-5 / 2)`` (D = 3) at ``z = 1 + D / 2``. The balanced surround
+      matters for fitting: with ``(1 - z) exp(-z)`` in 3D (a surround
+      heavier than the center) the default starts reached the optimum of
+      3 of 6 synthetic 18**3 datasets, with the balanced profile 5 of 6.
+
+    ``phi(0) = 1`` and the weights sum to 1, so a factor's amplitude belongs to
+    its time-series weights alone; the logit of the first component is fixed at
+    0 so that the softmax has no free common shift.
+
+    The parameter vector of the nonlinear solve is ``x = [component centers
+    (K M, D) raveled, component widths (K M,), logits (K, M - 1) raveled]``,
+    components in factor-major order (``k * M + m``); with one component it is
+    ``[centers.ravel(), widths]``.
+    """
+
+    name: str = "rbf"
+    n_components: int = 1
+
+    def __post_init__(self) -> None:
+        if self.name not in KERNELS:
+            raise ValueError(f"kernel must be one of {KERNELS}, got {self.name!r}")
+        n = self.n_components
+        if not isinstance(n, (int, np.integer)) or isinstance(n, bool) or n < 1:
+            raise ValueError(f"n_components must be an integer >= 1, got {n!r}")
+
+    @property
+    def plain_rbf(self) -> bool:
+        """One RBF component per factor: the original code paths."""
+        return self.name == "rbf" and self.n_components == 1
+
+    def n_params(self, K: int, D: int) -> int:
+        """Length of ``x`` for K factors in D dimensions."""
+        M = self.n_components
+        return K * M * (D + 1) + K * (M - 1)
+
+    def split(self, x: ArrayLike, K: int, D: int) -> tuple[Array, Array, Array]:
+        """Component centers (K M, D), widths (K M,) and logits (K, M - 1) of
+        ``x``."""
+        x = np.asarray(x, dtype=np.float64).ravel()
+        n = K * self.n_components
+        return (
+            x[: n * D].reshape(n, D),
+            x[n * D : n * (D + 1)],
+            x[n * (D + 1) :].reshape(K, self.n_components - 1),
+        )
+
+    @staticmethod
+    def join(centers: ArrayLike, widths: ArrayLike, logits: ArrayLike) -> Array:
+        """``x`` of component centers, widths and logits (inverse of `split`)."""
+        return np.concatenate(
+            [np.ravel(centers), np.ravel(widths), np.ravel(logits)]
+        ).astype(np.float64)
+
+    @staticmethod
+    def mixing(logits: Array) -> Array:
+        """Mixing weights (K, M) ``softmax(0, logits)`` of logits (K, M - 1)."""
+        a = np.column_stack([np.zeros(len(logits)), logits])
+        e = np.exp(a - a.max(axis=1, keepdims=True))
+        result: Array = e / e.sum(axis=1, keepdims=True)
+        return result
+
+    @staticmethod
+    def logits(mixing_weights: ArrayLike) -> Array:
+        """Logits (K, M - 1) ``log(pi_m / pi_1)`` of mixing weights (K, M)."""
+        pi = np.asarray(mixing_weights, dtype=np.float64)
+        if pi.ndim != 2 or np.any(pi <= 0):
+            raise ValueError("mixing weights must be a positive (K, M) array")
+        result: Array = np.log(pi[:, 1:] / pi[:, :1])
+        return result
+
+    def start(self, centers: ArrayLike, widths: ArrayLike) -> Array:
+        """``x`` of a start from factor centers (K, D) and widths (K,): each
+        factor's components at its center, with widths ``MIXTURE_WIDTH_START**m``
+        times its width, and equal mixing weights."""
+        C = np.asarray(centers, dtype=np.float64)
+        w = np.asarray(widths, dtype=np.float64).ravel()
+        M = self.n_components
+        if M == 1:
+            return np.concatenate([C.ravel(), w])
+        Cc = np.repeat(C, M, axis=0)
+        wc = (w[:, None] * MIXTURE_WIDTH_START ** np.arange(M)[None, :]).ravel()
+        return self.join(Cc, wc, np.zeros((len(w), M - 1)))
+
+    def phi(self, z: Array, D: int) -> tuple[Array, Array, Array]:
+        """Profile ``phi(z)`` in D dimensions and its first and second
+        derivatives."""
+        if self.name == "rbf":
+            p = np.exp(-z)
+            return p, -p, p
+        if self.name == "laplace":
+            u = np.sqrt(z + LAPLACE_EPS**2)
+            p = np.exp(LAPLACE_EPS - u)
+            return p, -p / (2.0 * u), p * (1.0 + u) / (4.0 * u**3)
+        a = 2.0 / D
+        g = np.exp(-z)
+        return (1.0 - a * z) * g, (a * z - a - 1.0) * g, (1.0 + 2.0 * a - a * z) * g
+
+    def profile(self, z: Array, D: int) -> Array:
+        """``phi(z)`` alone, in D dimensions."""
+        if self.name == "rbf":
+            return np.exp(-z)
+        if self.name == "laplace":
+            return np.exp(LAPLACE_EPS - np.sqrt(z + LAPLACE_EPS**2))
+        return (1.0 - 2.0 / D * z) * np.exp(-z)
+
+
+RBF = Kernel()
+
+
+def kernel_factors(
+    R: Array,
+    centers: Array,
+    widths: Array,
+    logits: Array,
+    kernel: Kernel,
+    grid: AxisGrid | None = None,
+) -> Array:
+    """Factors (V, K) of ``kernel`` from component centers (K M, D), widths
+    (K M,) and logits (K, M - 1) (see `Kernel`); `factors` for one RBF
+    component."""
+    if kernel.plain_rbf:
+        return factors(R, centers, widths, grid)
+    d = sq_distances(R, centers, grid)
+    B = kernel.profile(d / widths[None, :], R.shape[1])  # (V, K M)
+    M = kernel.n_components
+    if M == 1:
+        return B
+    K = len(logits)
+    pi = kernel.mixing(logits)
+    result: Array = np.einsum("vkm,km->vk", B.reshape(len(R), K, M), pi)
+    return result
+
+
+@dataclass(frozen=True)
+class FactorDerivatives:
+    """Factors ``F`` (K, V), their derivatives ``G`` (K, A, V) in each factor's
+    A parameters (`param_positions` order) and ``curvature(M)``, the
+    contraction ``sum_v M[k, v] d2F[k, v] / dtheta_k**2`` (K, A, A)."""
+
+    F: Array
+    G: Array
+    curvature: Any
+
+
+def mixture_derivatives(
+    R: Array,
+    centers: Array,
+    widths: Array,
+    logits: Array,
+    kernel: Kernel,
+    grid: AxisGrid | None = None,
+    F: Array | None = None,
+) -> FactorDerivatives:
+    """`FactorDerivatives` of any kernel and number of components.
+
+    Per component, with ``z = d / w``, ``f_d = phi'(z) / w``, ``f_dd =
+    phi''(z) / w**2``: ``dB/dc_j = -2 f_d delta_j``, ``dB/dw = -z phi' / w``,
+    ``d2B/dc_i dc_j = 4 f_dd delta_i delta_j + 2 f_d [i = j]``, ``d2B/dc_i dw
+    = 2 (z phi'' + phi') delta_i / w**2`` and ``d2B/dw2 = (z**2 phi'' + 2 z
+    phi') / w**2`` (``delta = r - c``). A factor ``sum_m pi_m B_m`` adds
+    ``dF/da_j = sum_m B_m dpi_m/da_j`` and the cross terms through the
+    softmax, ``dpi_m/da_j = pi_m ([m = j] - pi_j)``. ``F`` (V, K) passes
+    `kernel_factors` at the same point when the caller has it.
+    """
+    K, M = len(logits), kernel.n_components
+    n, D = centers.shape
+    V = R.shape[0]
+    A = M * (D + 1) + M - 1
+    E = np.empty((n, D, V))
+    np.subtract(np.ascontiguousarray(R.T)[None], centers[:, :, None], out=E)
+    d = np.ascontiguousarray(sq_distances(R, centers, grid).T)  # (K M, V)
+    w = widths[:, None]
+    z = d / w
+    phi, phi1, phi2 = kernel.phi(z, D)
+    f_d = phi1 / w
+    Gc = np.empty((n, D + 1, V))
+    np.multiply((-2.0 * f_d)[:, None, :], E, out=Gc[:, :D])
+    Gc[:, D] = -z * phi1 / w
+    f_dd = phi2 / w**2
+    f_dw = -(z * phi2 + phi1) / w**2
+    f_ww = (z * z * phi2 + 2.0 * z * phi1) / w**2
+    pi = kernel.mixing(logits)  # (K, M)
+    eye = np.eye(M)
+    dpi = pi[:, :, None] * (eye[None] - pi[:, None, :])  # (K, M, M): dpi_m/da_j
+    d2pi = pi[:, :, None, None] * (
+        (eye[None, :, :, None] - pi[:, None, :, None])
+        * (eye[None, :, None, :] - pi[:, None, None, :])
+        - pi[:, None, None, :] * (eye[None, None] - pi[:, None, :, None])
+    )  # (K, M, M, M): d2pi_m / da_i da_j
+    B = phi.reshape(K, M, V)
+    pic = pi.reshape(n)
+    if F is not None:  # `kernel_factors` at the same point, (V, K)
+        F = np.ascontiguousarray(F.T)
+    elif M > 1:
+        F = np.einsum("kmv,km->kv", B, pi)
+    else:
+        F = phi
+    G = np.empty((K, A, V))
+    G[:, : M * (D + 1)] = (pic[:, None, None] * Gc).reshape(K, M * (D + 1), V)
+    if M > 1:
+        G[:, M * (D + 1) :] = np.einsum("kmv,kmj->kjv", B, dpi[:, :, 1:])
+
+    def curvature(MT: Array) -> Array:
+        Mc = np.repeat(MT, M, axis=0) * pic[:, None]  # (K M, V)
+        U = Mc * f_dd
+        Sc = np.empty((n, D + 1, D + 1))
+        Sc[:, :D, :D] = 4.0 * (U[:, None, :] * E) @ np.swapaxes(E, 1, 2)
+        Sc[:, range(D), range(D)] += 2.0 * np.sum(Mc * f_d, axis=1)[:, None]
+        Sc[:, :D, D] = -2.0 * np.sum(E * (Mc * f_dw)[:, None, :], axis=2)
+        Sc[:, D, :D] = Sc[:, :D, D]
+        Sc[:, D, D] = np.sum(Mc * f_ww, axis=1)
+        S = np.zeros((K, A, A))
+        Sc = Sc.reshape(K, M, D + 1, D + 1)
+        for m in range(M):
+            sl = slice(m * (D + 1), (m + 1) * (D + 1))
+            S[:, sl, sl] = Sc[:, m]
+        if M > 1:
+            # sum_v M_k dB_m/dtheta_m dpi_m/da_j, and sum_m (sum_v M_k B_m)
+            # d2pi_m / da_i da_j.
+            MG = np.einsum("kv,kmav->kma", MT, Gc.reshape(K, M, D + 1, V))
+            cross = MG[:, :, :, None] * dpi[:, :, None, 1:]  # (K, M, D+1, M-1)
+            cross = cross.reshape(K, M * (D + 1), M - 1)
+            S[:, : M * (D + 1), M * (D + 1) :] = cross
+            S[:, M * (D + 1) :, : M * (D + 1)] = np.swapaxes(cross, 1, 2)
+            MB = np.einsum("kv,kmv->km", MT, B)
+            S[:, M * (D + 1) :, M * (D + 1) :] = np.einsum(
+                "km,kmij->kij", MB, d2pi[:, :, 1:, 1:]
+            )
+        return S
+
+    return FactorDerivatives(np.ascontiguousarray(F), G, curvature)
+
+
 def factors(
     R: Array, centers: Array, widths: Array, grid: AxisGrid | None = None
 ) -> Array:
@@ -171,6 +435,7 @@ def factors(
     gathered. The two forms agree to rounding (measured on development_fmri:
     8.7e-14 relative per entry at most). Where the product underflows, the
     exponential of the sum is below the smallest normal number too.
+    `kernel_factors` evaluates the other kernels and mixtures.
     """
     if grid is None:
         return np.exp(-sq_distances(R, centers) / widths[None, :])
@@ -230,19 +495,34 @@ def max_sigma(R: Array) -> float:
 
 
 def bounds(
-    R: Array, K: int, lower_ratio: float, upper_ratio: float
+    R: Array,
+    K: int,
+    lower_ratio: float,
+    upper_ratio: float,
+    kernel: Kernel = RBF,
 ) -> tuple[Array, Array]:
-    """Lower and upper bounds for ``x = [centers.ravel(), widths]``.
+    """Lower and upper bounds for ``x`` (see `Kernel`; ``[centers.ravel(),
+    widths]`` for one component).
 
     Centers lie within the per-dimension coordinate range of ``R``; widths lie in
-    ``[lower_ratio, upper_ratio] * max_sigma(R)``.
+    ``[lower_ratio, upper_ratio] * max_sigma(R)``; mixing logits in
+    ``[-MIXING_LOGIT_BOUND, MIXING_LOGIT_BOUND]``.
     """
     sigma = max_sigma(R)
+    n, M = K * kernel.n_components, kernel.n_components
     lb = np.concatenate(
-        [np.tile(np.nanmin(R, axis=0), K), np.full(K, lower_ratio * sigma)]
+        [
+            np.tile(np.nanmin(R, axis=0), n),
+            np.full(n, lower_ratio * sigma),
+            np.full(K * (M - 1), -MIXING_LOGIT_BOUND),
+        ]
     )
     ub = np.concatenate(
-        [np.tile(np.nanmax(R, axis=0), K), np.full(K, upper_ratio * sigma)]
+        [
+            np.tile(np.nanmax(R, axis=0), n),
+            np.full(n, upper_ratio * sigma),
+            np.full(K * (M - 1), MIXING_LOGIT_BOUND),
+        ]
     )
     return lb, ub
 
@@ -286,6 +566,11 @@ class Prior:
 
     ``centers_cov`` is a full (K, D, D) SPD covariance per factor; ``widths_var`` is
     (K,); ``scale`` multiplies both prior terms of the squared residual.
+
+    For a kernel with M > 1 components the centers, widths and their
+    (co)variances are per component, (K M, D), (K M,), (K M, D, D) and (K M,)
+    in the order of `Kernel`, and ``logits`` (K, M - 1) and ``logits_var``
+    (K, M - 1) add an independent Gaussian prior on the mixing logits.
     """
 
     centers: Array
@@ -293,6 +578,49 @@ class Prior:
     centers_cov: Array
     widths_var: Array
     scale: float
+    logits: Array | None = None
+    logits_var: Array | None = None
+
+    def shape_mean_var(self) -> tuple[Array, Array]:
+        """Prior means and variances of the widths followed by the logits,
+        in the order of ``x``."""
+        if self.logits is None:
+            return np.asarray(self.widths), np.asarray(self.widths_var)
+        assert self.logits_var is not None
+        return (
+            np.concatenate([np.ravel(self.widths), np.ravel(self.logits)]),
+            np.concatenate([np.ravel(self.widths_var), np.ravel(self.logits_var)]),
+        )
+
+
+def x_factors(
+    R: Array, C: Array, w: Array, K: int, kernel: Kernel, grid: AxisGrid | None
+) -> Array:
+    """Factors (V, K) at component centers ``C`` (K M, D) and the rest of
+    ``x``, ``w`` (widths, then logits): `factors` for one RBF component,
+    `kernel_factors` otherwise."""
+    if kernel.plain_rbf:
+        return factors(R, C, w, grid)
+    n = len(C)
+    return kernel_factors(R, C, w[:n], w[n:].reshape(K, -1), kernel, grid)
+
+
+def x_derivatives(
+    R: Array,
+    C: Array,
+    w: Array,
+    K: int,
+    kernel: Kernel,
+    grid: AxisGrid | None,
+    F: Array | None = None,
+) -> Any:
+    """`factor_derivatives` for one RBF component, `mixture_derivatives`
+    otherwise, at ``C`` and ``w`` as in `x_factors` (``F`` (V, K): the factors
+    there, when the caller has them)."""
+    if kernel.plain_rbf:
+        return factor_derivatives(R, C, w, grid, F)
+    n = len(C)
+    return mixture_derivatives(R, C, w[:n], w[n:].reshape(K, -1), kernel, grid, F)
 
 
 class ResidualProblem:
@@ -301,7 +629,9 @@ class ResidualProblem:
     Data residual ``s * (X - F W)`` with ``s = 1 / (sqrt(2) std(X))`` (``s = 1`` for
     constant data), followed, when a prior is given, by the K center residuals
     ``sqrt(scale * dc^T Sigma^-1 dc)`` and the K signed width residuals
-    ``sqrt(scale / var) * (w - prior.widths)``.
+    ``sqrt(scale / var) * (w - prior.widths)``. With a ``kernel`` of M > 1
+    components the center and width residuals are per component (K M each),
+    followed by the K (M - 1) signed logit residuals (see `Prior`).
 
     ``data_on_engine=True`` sends only ``W`` to the engine, whose data must
     already be ``X`` (`ProjectedProblem` sets it once per solve).
@@ -320,6 +650,7 @@ class ResidualProblem:
         prior: Prior | None = None,
         compress: bool = False,
         data_on_engine: bool = False,
+        kernel: Kernel = RBF,
     ) -> None:
         if compress and data_on_engine:
             raise ValueError("compress needs the data sent to the engine")
@@ -328,6 +659,9 @@ class ResidualProblem:
         self.R = np.ascontiguousarray(R, dtype=np.float64)
         self.K = W.shape[0]
         self.D = self.R.shape[1]
+        self.kernel = kernel
+        self.M = kernel.n_components
+        self.Kc = self.K * self.M  # components
         std = float(np.std(X))
         self.s = 1.0 / (np.sqrt(2.0) * std) if std > 0 else 1.0
         self.cost_offset = 0.0
@@ -349,14 +683,25 @@ class ResidualProblem:
             inv = np.linalg.inv(np.asarray(prior.centers_cov, dtype=np.float64))
             # Symmetrize so that Sigma^-1 dc is exactly half the quadratic's gradient.
             self._cov_inv = 0.5 * (inv + np.swapaxes(inv, 1, 2))
-            self._width_coef = np.sqrt(prior.scale / np.asarray(prior.widths_var))
-        self.n_residuals = self.n_data + (2 * self.K if prior is not None else 0)
-        self.n_params = self.K * (self.D + 1)
+            self._width_coef = np.sqrt(prior.scale / prior.shape_mean_var()[1])
+        self.n_params = kernel.n_params(self.K, self.D)
+        n_prior = self.Kc + self.n_params - self.Kc * self.D
+        self.n_residuals = self.n_data + (n_prior if prior is not None else 0)
 
     def _unpack(self, x: ArrayLike) -> tuple[Array, Array]:
+        """Component centers (K M, D) and the rest of ``x``: widths (and
+        logits)."""
         x = np.asarray(x, dtype=np.float64).ravel()
-        n = self.K * self.D
-        return x[:n].reshape(self.K, self.D), x[n:]
+        n = self.Kc * self.D
+        return x[:n].reshape(self.Kc, self.D), x[n:]
+
+    def _kernel_factors(self, C: Array, w: Array, grid: AxisGrid | None) -> Array:
+        """Factors (V, K) at component centers ``C`` and widths/logits ``w``."""
+        return x_factors(self.R, C, w, self.K, self.kernel, grid)
+
+    def _derivatives(self, C: Array, w: Array, F: Array | None) -> Any:
+        """`x_derivatives` at ``C``, ``w``."""
+        return x_derivatives(self.R, C, w, self.K, self.kernel, self._grid, F)
 
     @cached_property
     def _grid(self) -> AxisGrid | None:
@@ -372,7 +717,7 @@ class ResidualProblem:
         if self._last is not None and np.array_equal(self._last[0], x):
             return self._last[1]
         C, w = self._unpack(x)
-        out = (C, w, factors(self.R, C, w, self._grid))
+        out = (C, w, self._kernel_factors(C, w, self._grid))
         self._last = (x, out)
         return out
 
@@ -386,17 +731,19 @@ class ResidualProblem:
         return r_c, (self.prior.scale * inv_r)[:, None] * sdc
 
     def residual(self, x: ArrayLike) -> Array:
-        """Residual vector of length ``V*T`` (+ ``2K`` with a prior)."""
+        """Residual vector of length ``V*T`` (+ the prior residuals)."""
         C, w = self._unpack(x)
-        r_d = self.s * self.engine.residual(factors(self.R, C, w))
+        r_d = self.s * self.engine.residual(self._kernel_factors(C, w, None))
         if self.prior is None:
             return r_d
         r_c, _ = self._center_prior(C)
-        r_w = self._width_coef * (w - self.prior.widths)
+        r_w = self._width_coef * (w - self.prior.shape_mean_var()[0])
         return np.concatenate([r_d, r_c, r_w])
 
     def jacobian(self, x: ArrayLike) -> LinearOperator:
         """Matrix-free Jacobian of :meth:`residual` at ``x``."""
+        if not self.kernel.plain_rbf:
+            return self._kernel_jacobian(x)
         C, w = self._unpack(x)
         R, K, s, n_data = self.R, self.K, self.s, self.n_data
         d = sq_distances(R, C)
@@ -439,10 +786,55 @@ class ResidualProblem:
             dtype=np.float64,
         )
 
+    def _kernel_jacobian(self, x: ArrayLike) -> LinearOperator:
+        """:meth:`jacobian` for any kernel, from `mixture_derivatives`:
+        ``dr[v, t] / dtheta[k, a] = -s G[k, a, v] W[k, t]``."""
+        C, w = self._unpack(x)
+        G = self._derivatives(C, w, None).G
+        K, s, n_data, Kc = self.K, self.s, self.n_data, self.Kc
+        pos = param_positions(K, self.D, self.M)
+        grad_c = self._center_prior(C)[1] if self.prior is not None else None
+
+        def matvec(p: Array) -> Array:
+            p = np.asarray(p, dtype=np.float64).ravel()
+            A = np.einsum("kav,ka->vk", G, p[pos].reshape(K, -1))
+            data = -s * self.engine.times_w(A)
+            if grad_c is None:
+                return data
+            pc, pw = self._unpack(p)
+            return np.concatenate(
+                [data, np.sum(grad_c * pc, axis=1), self._width_coef * pw]
+            )
+
+        def rmatvec(u: Array) -> Array:
+            u = np.asarray(u, dtype=np.float64).ravel()
+            Gu = self.engine.times_wt(u[:n_data])  # (V, K)
+            g = np.empty(self.n_params)
+            g[pos] = (-s * np.einsum("kav,vk->ka", G, Gu)).ravel()
+            if grad_c is not None:
+                g[: Kc * self.D] += (grad_c * u[n_data : n_data + Kc, None]).ravel()
+                g[Kc * self.D :] += self._width_coef * u[n_data + Kc :]
+            return g
+
+        def matmat(P: Array) -> Array:
+            return np.column_stack([matvec(col) for col in np.asarray(P).T])
+
+        def rmatmat(U: Array) -> Array:
+            return np.column_stack([rmatvec(col) for col in np.asarray(U).T])
+
+        return LinearOperator(
+            (self.n_residuals, self.n_params),
+            matvec=matvec,
+            rmatvec=rmatvec,
+            matmat=matmat,
+            rmatmat=rmatmat,
+            dtype=np.float64,
+        )
+
     def _prior_terms(
         self, C: Array, w: Array, loss: str, derivatives: bool
     ) -> tuple[float, Array, Array]:
-        """Prior cost ``0.5 sum rho(r**2)`` over the 2K prior residuals, and (when
+        """Prior cost ``0.5 sum rho(r**2)`` over the prior residuals, and (when
         ``derivatives``) its gradient (P,) and Hessian (P, P).
 
         The center term is a function of ``q_k = r_ck**2 = scale dc^T S dc``, so its
@@ -452,11 +844,11 @@ class ResidualProblem:
         their Hessian ``coef**2 (rho' + 2 r**2 rho'')`` is exact (same floor).
         """
         assert self.prior is not None
-        K, D, P = self.K, self.D, self.n_params
+        K, D, P = self.Kc, self.D, self.n_params
         dc = C - self.prior.centers
         Sdc = np.einsum("kij,kj->ki", self._cov_inv, dc)
         q = np.maximum(self.prior.scale * np.sum(dc * Sdc, axis=1), 0.0)
-        r_w = self._width_coef * (w - self.prior.widths)
+        r_w = self._width_coef * (w - self.prior.shape_mean_var()[0])
         rho_c, rho1_c, rho2_c = loss_terms(loss, q)
         rho_w, rho1_w, rho2_w = loss_terms(loss, r_w * r_w)
         cost = 0.5 * float(np.sum(rho_c) + np.sum(rho_w))
@@ -493,13 +885,14 @@ class ResidualProblem:
         self,
         x: ArrayLike,
         loss: str,
-        derivatives: tuple[Array, Array, Array] | None = None,
+        derivatives: Any = None,
         mode: str = "exact",
     ) -> tuple[float, Array, Array, Array]:
         """Cost (as :meth:`cost`), gradient (P,), positive semidefinite
         Gauss-Newton matrix (P, P) and Hessian (P, P) of the objective.
         ``derivatives`` passes `factor_derivatives` at ``x`` when the caller has
-        them already. With the linear loss in ``mode='fast'`` the Gauss-Newton
+        them already (`mixture_derivatives` for a kernel other than one RBF
+        component). With the linear loss in ``mode='fast'`` the Gauss-Newton
         product ``G G^T`` is formed in float32 (`curvature_operand`).
 
         The Gauss-Newton matrix is the Hessian without the data term's
@@ -515,16 +908,20 @@ class ResidualProblem:
         second-order term is block diagonal per factor,
         ``-s sum_v M[v, k] d2F[v, k] / dtheta_k^2`` with ``M = (rho' r) W^T``, and
         costs O(V K (D+1)**2). The parameters of factor k are
-        ``theta_k = (c_k1, ..., c_kD, w_k)``.
+        ``theta_k = (c_k1, ..., c_kD, w_k)`` (with M components, each
+        component's ``(c, w)`` in turn and then the logits; `param_positions`).
         """
         K, D, P = self.K, self.D, self.n_params
         s = self.s
         if derivatives is None:
             C, w, F = self._factors(x)
-            derivatives = factor_derivatives(self.R, C, w, self._grid, F)
+            derivatives = self._derivatives(C, w, F)
         else:
             C, w = self._unpack(x)
-        E, F, G = derivatives
+        if self.kernel.plain_rbf:
+            E, F, G = derivatives
+        else:
+            F, G = derivatives.F, derivatives.G
         # The robust losses multiply G by float64 loss weights in the engine.
         G_gn = curvature_operand(G, mode) if loss == "linear" else G
         cost, M, H_ka = self.engine.gauss_newton(
@@ -532,18 +929,22 @@ class ResidualProblem:
         )
         MT = np.ascontiguousarray(M.T)  # (K, V)
         grad_ka = -s * (G @ MT[:, :, None])[:, :, 0]
-        # Second derivatives of F = exp(-d / w) per factor, contracted with M,
-        # from the moments m[k, a, b] = sum_v F M e_a e_b of e = (delta, d, 1).
-        m = ((F * MT)[:, None, :] * E) @ np.swapaxes(E, 1, 2)  # (K, D+2, D+2)
-        wk = w[:, None]
-        S = np.empty((K, D + 1, D + 1))
-        S[:, :D, :D] = 4.0 / w[:, None, None] ** 2 * m[:, :D, :D]
-        S[:, range(D), range(D)] -= 2.0 / wk * m[:, D + 1, D + 1][:, None]
-        S[:, :D, D] = 2.0 / wk**2 * (m[:, :D, D] / wk - m[:, :D, D + 1])
-        S[:, D, :D] = S[:, :D, D]
-        S[:, D, D] = (m[:, D, D] / w - 2.0 * m[:, D, D + 1]) / w**3
+        if self.kernel.plain_rbf:
+            # Second derivatives of F = exp(-d / w) per factor, contracted with
+            # M, from the moments m[k, a, b] = sum_v F M e_a e_b of e = (delta,
+            # d, 1).
+            m = ((F * MT)[:, None, :] * E) @ np.swapaxes(E, 1, 2)  # (K, D+2, D+2)
+            wk = w[:, None]
+            S = np.empty((K, D + 1, D + 1))
+            S[:, :D, :D] = 4.0 / w[:, None, None] ** 2 * m[:, :D, :D]
+            S[:, range(D), range(D)] -= 2.0 / wk * m[:, D + 1, D + 1][:, None]
+            S[:, :D, D] = 2.0 / wk**2 * (m[:, :D, D] / wk - m[:, :D, D + 1])
+            S[:, D, :D] = S[:, :D, D]
+            S[:, D, D] = (m[:, D, D] / w - 2.0 * m[:, D, D + 1]) / w**3
+        else:
+            S = derivatives.curvature(MT)
         k = np.arange(K)
-        pos = param_positions(K, D)
+        pos = param_positions(K, D, self.M)
         grad = np.empty(P)
         grad[pos] = grad_ka.ravel()
         gn = np.empty((P, P))
@@ -561,12 +962,23 @@ class ResidualProblem:
         return cost, grad, gn, 0.5 * (hess + hess.T)
 
     def column_norms(self, x: ArrayLike) -> Array:
-        """Exact Euclidean norms (K*(D+1),) of the Jacobian columns at ``x``.
+        """Exact Euclidean norms (P,) of the Jacobian columns at ``x``.
 
         Each data column is the outer product of a (V,) factor derivative with the
         weights of its factor, so its norm is ``s * ||a_j|| * ||W_k||``.
         """
         C, w = self._unpack(x)
+        if not self.kernel.plain_rbf:
+            G = self._derivatives(C, w, None).G
+            sq = np.empty(self.n_params)
+            sq[param_positions(self.K, self.D, self.M)] = (
+                self.s**2 * self._w_sq_norms[:, None] * np.sum(G * G, axis=2)
+            ).ravel()
+            if self.prior is not None:
+                n = self.Kc * self.D
+                sq[:n] += (self._center_prior(C)[1] ** 2).ravel()
+                sq[n:] += self._width_coef**2
+            return np.sqrt(sq)
         d = sq_distances(self.R, C)
         Fw = np.exp(-d / w[None, :]) / w[None, :]
         s2w = self.s**2 * self._w_sq_norms
@@ -626,12 +1038,27 @@ def factor_derivatives(
     return E, F, G
 
 
-def param_positions(K: int, D: int) -> NDArray[np.int64]:
-    """Position in ``x = [centers.ravel(), widths]`` of each ``(k, a)``, raveled."""
-    k = np.arange(K)
-    pos = np.empty((K, D + 1), dtype=np.int64)
-    pos[:, :D] = k[:, None] * D + np.arange(D)[None, :]
-    pos[:, D] = K * D + k
+def param_positions(K: int, D: int, M: int = 1) -> NDArray[np.int64]:
+    """Position in ``x`` (see `Kernel`) of each ``(k, a)``, raveled, where
+    factor k's parameters ``a`` are its components' ``(c_1, ..., c_D, w)`` in
+    turn, then its M - 1 logits. With ``M = 1``, ``x = [centers.ravel(),
+    widths]``."""
+    if M == 1:
+        k = np.arange(K)
+        pos = np.empty((K, D + 1), dtype=np.int64)
+        pos[:, :D] = k[:, None] * D + np.arange(D)[None, :]
+        pos[:, D] = K * D + k
+        return pos.ravel()
+    n = K * M
+    comp = np.arange(n).reshape(K, M)
+    pos = np.empty((K, M * (D + 1) + M - 1), dtype=np.int64)
+    block = np.empty((K, M, D + 1), dtype=np.int64)
+    block[:, :, :D] = comp[:, :, None] * D + np.arange(D)
+    block[:, :, D] = n * D + comp
+    pos[:, : M * (D + 1)] = block.reshape(K, -1)
+    pos[:, M * (D + 1) :] = (
+        n * (D + 1) + np.arange(K)[:, None] * (M - 1) + np.arange(M - 1)
+    )
     return pos.ravel()
 
 
@@ -661,10 +1088,13 @@ class ProjectedProblem:
         engine: Engine,
         prior: Prior | None = None,
         weight_method: str = "rr",
+        kernel: Kernel = RBF,
     ) -> None:
         self.X = np.ascontiguousarray(X, dtype=np.float64)
         self.R = np.ascontiguousarray(R, dtype=np.float64)
         self.K, self.D = K, self.R.shape[1]
+        self.kernel = kernel
+        self.Kc = K * kernel.n_components
         self.engine, self.prior = engine, prior
         if weight_method not in ("rr", "ols"):
             raise ValueError(
@@ -675,7 +1105,7 @@ class ProjectedProblem:
         std = float(np.std(self.X))
         self.s = 1.0 / (np.sqrt(2.0) * std) if std > 0 else 1.0
         self.cost_offset = 0.0
-        self.n_params = K * (self.D + 1)
+        self.n_params = kernel.n_params(K, self.D)
         self._prior_only: ResidualProblem | None = None
         self._grid = axis_grid(self.R)
         self._last: tuple[Array, tuple[Any, ...]] | None = None
@@ -686,8 +1116,8 @@ class ProjectedProblem:
 
     def _unpack(self, x: ArrayLike) -> tuple[Array, Array]:
         x = np.asarray(x, dtype=np.float64).ravel()
-        n = self.K * self.D
-        return x[:n].reshape(self.K, self.D), x[n:]
+        n = self.Kc * self.D
+        return x[:n].reshape(self.Kc, self.D), x[n:]
 
     @cached_property
     def _x32(self) -> NDArray[np.float32]:
@@ -709,7 +1139,7 @@ class ProjectedProblem:
         if self._last is not None and np.array_equal(self._last[0], x):
             return self._last[1]
         C, w = self._unpack(x)
-        F = factors(self.R, C, w, self._grid)
+        F = x_factors(self.R, C, w, self.K, self.kernel, self._grid)
         W, inv, B = self._weights(F)
         objective = self._x_sq - float(np.sum(B * W))
         # The form is chosen at the first point only. A solve that starts far
@@ -742,6 +1172,7 @@ class ProjectedProblem:
                 self.R[:1],
                 NumpyEngine(1),
                 self.prior,
+                kernel=self.kernel,
             )
         return self._prior_only._prior_terms(C, w, "linear", derivatives=False)[0]
 
@@ -760,7 +1191,7 @@ class ProjectedProblem:
         """Fixed-weight Jacobian column norms at ``x`` (for ``x_scale='jac'``)."""
         inner = ResidualProblem(
             self.X, self.weights(x), self.R, self.engine, self.prior,
-            data_on_engine=True,
+            data_on_engine=True, kernel=self.kernel,
         )  # fmt: skip
         return inner.column_norms(x)
 
@@ -784,12 +1215,17 @@ class ProjectedProblem:
                 "elsewhere"
             )
         K, D = self.K, self.D
-        A, P, s2 = D + 1, self.n_params, self.s**2
-        derivatives = factor_derivatives(self.R, C, w, self._grid, F_vk)
-        _, F, G = derivatives
+        P, s2 = self.n_params, self.s**2
+        derivatives = x_derivatives(self.R, C, w, K, self.kernel, self._grid, F_vk)
+        if self.kernel.plain_rbf:
+            _, F, G = derivatives
+        else:
+            F, G = derivatives.F, derivatives.G
+        A = G.shape[1]
         inner = ResidualProblem(
-            self.X, W, self.R, self.engine, self.prior, data_on_engine=True
-        )
+            self.X, W, self.R, self.engine, self.prior, data_on_engine=True,
+            kernel=self.kernel,
+        )  # fmt: skip
         cost, grad, gn, hess = inner.cost_grad_hess(x, "linear", derivatives, mode)
         if data is None:
             cost += 0.5 * s2 * self.beta * float(np.sum(W * W))
@@ -807,7 +1243,7 @@ class ProjectedProblem:
         Z = (W @ Bt.T)[rows]  # Z[(k, a), (k', b)] = W_k . Bt_k'b
         term2 = Z * Y[rows].T  # times (M^-1 P_ka)[k']
         term4 = Mi[np.ix_(rows, rows)] * (Bt @ Bt.T)
-        pos = param_positions(K, D)
+        pos = param_positions(K, D, self.kernel.n_components)
         g1 = np.empty((P, P))
         g1[np.ix_(pos, pos)] = s2 * term1
         corr = np.empty((P, P))

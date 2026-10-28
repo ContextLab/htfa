@@ -39,6 +39,33 @@ Factors are in template order for HTFA fits: factor ``k`` of every subject
 corresponds to global factor ``k``. Widths use the BrainIAK convention
 ``w = 2 * sigma**2``.
 
+Kernel shapes and mixtures
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``kernel`` sets the profile of every factor as a function of ``z = ||r - c||**2
+/ w``: ``'rbf'`` (default) ``exp(-z)``; ``'laplace'`` ``exp(eps - sqrt(z +
+eps**2))`` with ``eps = 0.1`` (exponential tails ``exp(-r / sqrt(w))``, rounded
+at the center so that it can be differentiated there); ``'mexican_hat'`` ``(1 - 2
+z / D) exp(-z)``, the negative Laplacian of a Gaussian in D dimensions (a
+positive center, a negative surround, integral 0). ``n_components = M > 1`` makes
+each factor a mixture of M components of that shape, each with its own center
+and width, with mixing weights (a softmax of M - 1 fitted logits) that are fitted
+with them; the factor's time series are fitted for the whole mixture.
+
+.. code-block:: python
+
+   model = TFA(K=10, kernel="laplace", n_components=2).fit(X, R)
+   model.component_centers_, model.component_widths_  # (K, 2, D), (K, 2)
+   model.mixing_weights_  # (K, 2), rows sum to 1
+   model.centers_, model.widths_  # mixing-weighted means of the components
+
+HTFA's template then carries every component and the mixing weights, each with
+a prior and update analogous to the widths' (``global_component_centers_``,
+``global_component_widths_``, ``global_mixing_weights_``). ``kernel='rbf'`` with
+one component is the original model, bit for bit. :func:`htfa.make_tfa_data` and
+:func:`htfa.make_htfa_data` generate data from any shape and number of
+components. See :doc:`tutorials/12_kernel_shapes` and :doc:`validation`.
+
 Common model parameters
 ~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -82,6 +109,12 @@ Common model parameters
    * - ``n_screen_iter``
      - 0
      - If greater than 0, run each start for this many iterations and continue only the best one
+   * - ``kernel``
+     - ``'rbf'``
+     - Factor shape: ``'rbf'``, ``'laplace'`` or ``'mexican_hat'`` (see above)
+   * - ``n_components``
+     - 1
+     - Components per factor; more than 1 fits each factor as a mixture
    * - ``backend``
      - ``'auto'``
      - ``'numpy'``, ``'cpu'``, ``'torch'``, ``'cuda'``, ``'mps'`` or ``'auto'``; see :doc:`performance`
@@ -202,7 +235,9 @@ MNI152 brain mask (:func:`htfa.brainnet.mni_mask`) for bare MNI centers or a fit
 estimator. ``HTFAResults.display_nodes(subject)`` returns the drawn centers, widths and
 per-node details (distance moved, snapped and ambiguous flags, in-brain mass
 fraction, ``sigma_eff``, ``lambda_eff / lambda``), also for fits made before this
-existed:
+existed. Fits with another ``kernel`` or several components are drawn from their
+own profiles (the positive part for ``'mexican_hat'``), with ``lambda_eff`` the
+width of the RBF with the same spread:
 
 .. code-block:: python
 
@@ -302,7 +337,48 @@ Utilities
    htfa.set_autoinstall
    htfa.require
    htfa.tfa.standardize_data
+   htfa.tfa.component_factors
 
 .. rubric:: Examples
 
 .. minigallery:: htfa.set_autoinstall htfa.tfa.standardize_data
+
+Component network views
+-----------------------
+
+For non-RBF kernels and mixtures, ``results.plot_nodes()``,
+``results.plot_connectivity()``, ``results.plot_network()`` and
+``results.animate_network()`` show each component as a separate spatial lobe.
+The BrainNet functions accept fitted estimators directly as well. A factor
+connection is repeated between every pair of components belonging to the two
+factors, with the **same connection value** on every copy. Components within
+one factor are not connected to each other. Mixing weights affect lobe opacity,
+not connectivity. For example::
+
+    results.plot_connectivity(subject=0)  # signed nilearn glass-brain projections
+    results.plot_network(subject=0)       # component isosurfaces, BrainNet style
+    results.plot_network(subject=0, node_mode="summary")  # one sphere per factor
+
+``node_mode="auto"`` keeps the historical sphere/centroid view for single RBFs
+and uses component lobes for other kernels and mixtures. ``"components"`` forces
+lobes for any kernel. ``lobe_level=0.05`` draws the 5% contour of each component's
+unmasked peak. Both signs use that same level: Mexican-hat negative surrounds
+are preserved. In BrainNet, positive lobes use ``node_color`` and negative lobes
+use ``lobe_negative_color="teal"``; nilearn uses red for positive and blue for
+negative spatial loadings. These are spatial signs, separate from edge signs.
+The component's mixing weight sets opacity to ``0.2 + 0.6 * weight``. BrainNet
+negative shells use 35% of that opacity so the positive core remains visible. Contour
+sizes remain in coordinate units, without sphere-radius rescaling.
+
+Lobes are evaluated on the supplied mask grid; low-resolution masks can miss
+narrow components. NIfTI masks retain their native affine. Coordinate masks
+must form a regular axis-aligned grid; use a NIfTI mask for rotated grids.
+``snap`` adjusts connectivity anchors only, never moves the fields. Templates
+and group templates use their own components, with the relevant subjects' mask.
+Glass-brain projections and overlapping translucent surfaces can hide parts
+of a lobe; rotate a BrainNet animation or examine other projections to inspect
+occluded structure. The display shows the **individual weighted components**,
+not their sum (which may cancel for signed kernels).
+
+.. image:: _static/tutorials/12_component_networks.png
+   :alt: Component lobes and repeated connections for RBF, Laplace and Mexican-hat mixtures, with a centroid summary for comparison.

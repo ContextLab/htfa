@@ -181,8 +181,9 @@ def test_group_tree_accepts_numpy_and_integer_labels():
     assert all(type(p[0]) is int for p in tree.paths[1:])
     tree = group_tree(np.array([["a", "a", "b"], ["x", "y", "z"]]), 3)
     assert tree.paths[-1] == ("b", "z")
-    # repeated runs of one subject in one group are allowed
-    group_tree(["a", "a", "b"], 3, subject_ids=["p1", "p1", "p2"])
+    # Repeated runs are not independent exchangeable subjects.
+    with pytest.raises(ValueError, match="one independent entry per subject"):
+        group_tree(["a", "a", "b"], 3, subject_ids=["p1", "p1", "p2"])
 
 
 # ---------------------------------------------------------- the estimator

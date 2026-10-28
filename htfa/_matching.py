@@ -38,3 +38,34 @@ def match_factors(true_centers: Array, est_centers: Array) -> NDArray[np.intp]:
     perm = np.empty(len(rows), dtype=np.intp)
     perm[rows] = cols
     return perm
+
+
+def match_components(template_centers: Array, est_centers: Array) -> NDArray[np.intp]:
+    """Match each factor's components to a template's, by their centers.
+
+    Parameters
+    ----------
+    template_centers, est_centers : ndarray, shape (K, M, D)
+        Component centers of K factors with M components each, the factors
+        already matched (`match_factors`).
+
+    Returns
+    -------
+    perm : ndarray of int, shape (K, M)
+        ``est_centers[k, perm[k]]`` corresponds to ``template_centers[k]``
+        (Hungarian, per factor).
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from htfa._matching import match_components
+    >>> t = np.array([[[0.0, 0.0], [5.0, 5.0]]])
+    >>> match_components(t, t[:, ::-1])
+    array([[1, 0]])
+    """
+    return np.stack(
+        [
+            match_factors(t, e)
+            for t, e in zip(template_centers, est_centers, strict=True)
+        ]
+    )

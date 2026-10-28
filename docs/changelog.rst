@@ -9,6 +9,12 @@ in BrainIAK. It does not import BrainIAK and has no C++ or MPI code.
 
 Added:
 
+- Component-aware network plots: separate spatial lobes for mixture components,
+  signed kernel profiles, identical factor edges repeated between component
+  pairs, and ``node_mode='summary'`` for one sphere/centroid per factor.
+  Static BrainNet plots, animations and nilearn glass-brain plots share the
+  component geometry; group templates retain their component parameters.
+
 - :class:`htfa.TFA` and :class:`htfa.HTFA` estimators, and :func:`htfa.fit`.
 - A bounded Levenberg-Marquardt solver for the centers and widths
   (``nlss_method='bounded-lm'``), built on the factor structure of
@@ -117,6 +123,21 @@ Added:
   (:doc:`validation`). :class:`htfa.HTFAResults` gains ``group_centers``,
   ``group_widths``, ``group_subjects`` and ``group=`` on its node and network
   plots; :func:`htfa.make_group_data` simulates groups; tutorial 13.
+
+- Kernel shapes and mixtures: ``kernel`` (``'rbf'``, the default;
+  ``'laplace'``; ``'mexican_hat'``, the D-dimensional negative Laplacian of a
+  Gaussian) and ``n_components`` (default 1) on :class:`htfa.TFA`,
+  :class:`htfa.HTFA` and :func:`htfa.fit`. With ``n_components > 1`` each
+  factor is a mixture of components of that shape, each with its own center
+  and width, and softmax mixing weights fitted in the nonlinear solve. Exact
+  derivatives in every solver (``'varpro'``, ``'bounded-lm'``, ``'trf'``,
+  ``'dogbox'``) and both modes; HTFA priors and updates for every component
+  and the mixing weights; shapes and mixtures in :func:`htfa.make_tfa_data`,
+  :func:`htfa.make_htfa_data` and the effective nodes of the plots;
+  :func:`htfa.tfa.component_factors`. ``'rbf'`` with one component gives the
+  same results as before, bit for bit. Checked against a dense sympy oracle
+  over 240 generated scenarios, by finite differences and by recovery from
+  synthetic data (see :doc:`validation`); tutorial 12.
 
 BrainIAK behavior that differs from BrainIAK's code (each has a regression test):
 

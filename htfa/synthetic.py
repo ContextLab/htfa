@@ -1,7 +1,8 @@
 """Synthetic TFA/HTFA data with known ground truth.
 
 Widths follow the BrainIAK convention ``w = 2 sigma**2``. All generators are
-deterministic given ``random_state`` and return float64 arrays.
+deterministic given ``random_state`` and return float64 arrays. Factors can
+have any shape of `htfa._kernels.Kernel` and several components.
 """
 
 from collections.abc import Sequence
@@ -10,14 +11,57 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from htfa._kernels import factors
+from htfa._kernels import Kernel, factors
 from htfa._matching import match_factors as match_factors  # public re-export
+from htfa.tfa import component_factors
 
 Array = NDArray[np.float64]
 
 SIGMA_RANGE = (0.06, 0.12)  # fraction of the largest axis extent
 CENTER_MARGIN = 0.1  # centers are drawn in the central 80% of each axis
 MAX_TRIES = 1000
+# Mixtures (n_components = M > 1): component m >= 1 of a factor is offset from
+# the factor's drawn center by N(0, COMPONENT_OFFSET**2 sigma**2) per axis and
+# has COMPONENT_WIDTH_RANGE (uniform) times the previous component's width;
+# the mixing weights are Dirichlet(MIXING_CONCENTRATION, ..., ...).
+COMPONENT_OFFSET = 0.75
+COMPONENT_WIDTH_RANGE = (0.2, 0.5)
+MIXING_CONCENTRATION = 3.0
+
+
+def _draw_components(
+    rng: np.random.Generator, centers: Array, widths: Array, M: int, extent: Array
+) -> tuple[Array, Array, Array]:
+    """Component centers (K, M, D), widths (K, M) and mixing weights (K, M)
+    around factor centers and widths (the first component at the drawn center
+    with the drawn width; one component: the factors themselves). Component
+    centers are clipped to the grid ``[0, extent]``."""
+    K, D = centers.shape
+    if M == 1:
+        return centers[:, None, :].copy(), widths[:, None].copy(), np.ones((K, 1))
+    sigma = np.sqrt(widths / 2.0)
+    offsets = COMPONENT_OFFSET * sigma[:, None, None] * rng.standard_normal((K, M, D))
+    offsets[:, 0] = 0.0
+    ratios = rng.uniform(*COMPONENT_WIDTH_RANGE, size=(K, M))
+    ratios[:, 0] = 1.0
+    pi = rng.dirichlet(np.full(M, MIXING_CONCENTRATION), size=K)
+    comp = np.clip(centers[:, None, :] + offsets, 0.0, extent)
+    return comp, widths[:, None] * np.cumprod(ratios, 1), pi
+
+
+def _shape_factors(
+    R: Array, kernel: Kernel, centers: Array, widths: Array, pi: Array
+) -> Array:
+    """Factors (V, K) of components (K, M, D), (K, M), (K, M); `factors` for
+    one RBF component."""
+    if kernel.plain_rbf:
+        return factors(R, centers[:, 0], widths[:, 0])
+    return component_factors(R, centers, widths, pi, kernel)
+
+
+def _summary(centers: Array, widths: Array, pi: Array) -> tuple[Array, Array]:
+    """Factor centers and widths: the mixing-weighted means (as `htfa.TFA`)."""
+    return np.einsum("km,kmd->kd", pi, centers), np.sum(pi * widths, axis=1)
 
 
 def _grid(grid_shape: Sequence[int], spacing: float) -> tuple[Array, Array]:
@@ -76,7 +120,9 @@ def make_tfa_data(
     spacing: float = 1.0,
     min_separation: float = 2.0,
     random_state: int | None = None,
-) -> tuple[Array, Array, dict[str, Array]]:
+    kernel: str = "rbf",
+    n_components: int = 1,
+) -> tuple[Array, Array, dict[str, Any]]:
     """Simulate single-subject TFA data ``X = F W + noise``.
 
     Parameters
@@ -96,6 +142,16 @@ def make_tfa_data(
         ``min_separation * sqrt(mean(w) / 2)``.
     random_state : int, optional
         Seed for ``numpy.random.default_rng``.
+    kernel : {'rbf', 'laplace', 'mexican_hat'}, default='rbf'
+        Factor shape (see `htfa.TFA`).
+    n_components : int, default=1
+        Components per factor. With M > 1 the first component of each factor
+        sits at the drawn center with the drawn width; component m >= 1 is
+        offset by ``N(0, (0.75 sigma)**2)`` per axis (clipped to the grid)
+        and has a uniform 0.2 to 0.5 times the previous component's width,
+        and the mixing weights are
+        ``Dirichlet(3, ..., 3)``. The draws for one RBF component are those
+        of earlier versions.
 
     Returns
     -------
@@ -107,7 +163,11 @@ def make_tfa_data(
         ``centers`` (K, D), ``widths`` (K,) with ``w = 2 sigma**2``, and
         ``weights`` (K, T). Centers lie in the central 80% of each axis and are at
         least ``min_separation`` mean sigmas apart; sigma is uniform in
-        [0.06, 0.12] times the largest axis extent.
+        [0.06, 0.12] times the largest axis extent. Also
+        ``component_centers`` (K, M, D), ``component_widths`` (K, M),
+        ``mixing_weights`` (K, M) and ``kernel``; with M > 1, ``centers`` and
+        ``widths`` are the mixing-weighted means of the components' (as
+        `htfa.TFA` reports them).
 
     Raises
     ------
@@ -122,13 +182,29 @@ def make_tfa_data(
     ((512, 20), (512, 3), (3, 3))
     """
     _validate(grid_shape, n_samples, K, noise, spacing)
+    shape = Kernel(kernel, n_components)
     rng = np.random.default_rng(random_state)
     R, extent = _grid(grid_shape, spacing)
     centers, widths = _draw_centers_widths(rng, extent, K, min_separation)
+    Cc, wc, pi = _draw_components(rng, centers, widths, n_components, extent)
     weights = rng.standard_normal((K, n_samples))
-    X = factors(R, centers, widths) @ weights
+    X = _shape_factors(R, shape, Cc, wc, pi) @ weights
     X += noise * rng.standard_normal(X.shape)
-    return X, R, {"centers": centers, "widths": widths, "weights": weights}
+    if n_components > 1:
+        centers, widths = _summary(Cc, wc, pi)
+    return (
+        X,
+        R,
+        {
+            "centers": centers,
+            "widths": widths,
+            "weights": weights,
+            "component_centers": Cc,
+            "component_widths": wc,
+            "mixing_weights": pi,
+            "kernel": kernel,
+        },
+    )
 
 
 def make_htfa_data(
@@ -142,6 +218,8 @@ def make_htfa_data(
     spacing: float = 1.0,
     min_separation: float = 2.0,
     random_state: int | None = None,
+    kernel: str = "rbf",
+    n_components: int = 1,
 ) -> tuple[list[Array], list[Array], dict[str, Any]]:
     """Simulate multi-subject HTFA data around a global template.
 
@@ -149,13 +227,17 @@ def make_htfa_data(
     (clipped to the grid) and its widths are the global widths times
     ``exp(N(0, width_jitter))``. Weights and noise are drawn independently per
     subject. Clipped subject centers are not re-checked for separation. Global
-    centers and widths are drawn as in `make_tfa_data`.
+    centers and widths are drawn as in `make_tfa_data`. With ``n_components``
+    M > 1 the global components are drawn as in `make_tfa_data`; each
+    subject's component centers and widths are jittered the same way per
+    component, and its mixing logits ``log(pi_m / pi_1)`` get
+    ``N(0, width_jitter**2)``.
 
     Parameters
     ----------
     n_subjects : int
         Number of subjects.
-    grid_shape, n_samples, K, noise, spacing, random_state
+    grid_shape, n_samples, K, noise, spacing, random_state, kernel, n_components
         As in `make_tfa_data` (``min_separation`` applies to the global centers);
         every subject shares the same grid.
     center_jitter : float
@@ -171,7 +253,10 @@ def make_htfa_data(
         Coordinates per subject.
     truth : dict
         ``global_centers`` (K, D), ``global_widths`` (K,), and per-subject lists
-        ``centers``, ``widths``, ``weights``.
+        ``centers``, ``widths``, ``weights``; also ``global_component_centers``,
+        ``global_component_widths``, ``global_mixing_weights`` and per-subject
+        lists ``component_centers``, ``component_widths``, ``mixing_weights``
+        (as in `make_tfa_data`), and ``kernel``.
 
     Raises
     ------
@@ -190,23 +275,49 @@ def make_htfa_data(
     if n_subjects < 1:
         raise ValueError(f"n_subjects must be >= 1, got {n_subjects}")
     _validate(grid_shape, n_samples, K, noise, spacing)
+    shape = Kernel(kernel, n_components)
+    M = n_components
     rng = np.random.default_rng(random_state)
     R, extent = _grid(grid_shape, spacing)
     g_centers, g_widths = _draw_centers_widths(rng, extent, K, min_separation)
-    Xs: list[Array] = []
-    Rs: list[Array] = []
+    gC, gw, gpi = _draw_components(rng, g_centers, g_widths, M, extent)
+    if M > 1:
+        g_centers, g_widths = _summary(gC, gw, gpi)
+    Xs, Rs = [], []
     truth: dict[str, Any] = {
         "global_centers": g_centers,
         "global_widths": g_widths,
         "centers": [],
         "widths": [],
         "weights": [],
+        "global_component_centers": gC,
+        "global_component_widths": gw,
+        "global_mixing_weights": gpi,
+        "component_centers": [],
+        "component_widths": [],
+        "mixing_weights": [],
+        "kernel": kernel,
     }
     for _ in range(n_subjects):
-        _add_subject(
-            rng, R, extent, g_centers, g_widths, n_samples, noise, center_jitter,
-            width_jitter, Xs, Rs, truth,
-        )  # fmt: skip
+        Cc = np.clip(gC + center_jitter * rng.standard_normal(gC.shape), 0, extent)
+        wc = gw * np.exp(width_jitter * rng.standard_normal((K, M)))
+        if M > 1:
+            a = Kernel.logits(gpi) + width_jitter * rng.standard_normal((K, M - 1))
+            pi = Kernel.mixing(a)
+        else:
+            pi = gpi
+        weights = rng.standard_normal((K, n_samples))
+        X = _shape_factors(R, shape, Cc, wc, pi) @ weights
+        X += noise * rng.standard_normal(X.shape)
+        Xs.append(X)
+        Rs.append(R.copy())
+        centers, widths = (Cc[:, 0], wc[:, 0]) if M == 1 else _summary(Cc, wc, pi)
+        truth["centers"].append(centers)
+        truth["widths"].append(widths)
+        truth["weights"].append(weights)
+        truth["component_centers"].append(Cc)
+        truth["component_widths"].append(wc)
+        truth["mixing_weights"].append(pi)
     return Xs, Rs, truth
 
 

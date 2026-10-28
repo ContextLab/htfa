@@ -163,8 +163,9 @@ def group_tree(
     n_subjects : int
         Number of subjects.
     subject_ids : sequence, optional
-        One identifier per subject (per entry of ``X``). An identifier in two
-        innermost groups raises ``ValueError``.
+        One unique identifier per subject (per entry of ``X``). Repeated
+        identifiers raise ``ValueError``: repeated runs are not independent
+        subjects and must be combined before fitting.
 
     Returns
     -------
@@ -225,6 +226,12 @@ def group_tree(
                     "only nested designs are supported (each subject in one group), "
                     "not crossed ones such as pre/post on the same people"
                 )
+        if len(seen) != n_subjects:
+            raise ValueError(
+                "subject IDs are repeated; groups require one independent "
+                "entry per subject "
+                "(combine repeated runs before fitting)"
+            )
     parent = np.array([-1] + [index[p[:-1]] for p in paths[1:]], dtype=np.intp)
     A = np.zeros((len(paths), len(paths)))
     for v in range(1, len(paths)):
@@ -373,7 +380,7 @@ def _between(values: Array, sizes: Array, parents: Sequence[Hashable]) -> Array:
     """Per-factor weighted RMS spread of group ``values`` (G, K, ...) about their
     weighted mean under each parent (see `GroupTest`)."""
     total = np.zeros(values.shape[1])
-    for p in set(parents):
+    for p in dict.fromkeys(parents):
         idx = np.array([q == p for q in parents])
         n = sizes[idx].reshape((-1,) + (1,) * (values.ndim - 1))
         v = values[idx]
@@ -480,12 +487,20 @@ def group_permutation_test(
     tree = getattr(model, "group_tree_", None)
     if tree is None:
         raise ValueError("model was fitted without groups; pass groups to HTFA.fit")
-    if not 0 <= level < len(tree.labels):
+    if (
+        isinstance(level, (bool, np.bool_))
+        or not isinstance(level, (int, np.integer))
+        or not 0 <= level < len(tree.labels)
+    ):
         raise ValueError(
             f"level must be in [0, {len(tree.labels) - 1}] for groups with "
             f"{len(tree.labels)} level(s); got {level}"
         )
-    if n_permutations < 1:
+    if (
+        isinstance(n_permutations, (bool, np.bool_))
+        or not isinstance(n_permutations, (int, np.integer))
+        or n_permutations < 1
+    ):
         raise ValueError(f"n_permutations must be >= 1, got {n_permutations}")
     children: dict[tuple[Hashable, ...], int] = {}
     for p in tree.paths[1:]:

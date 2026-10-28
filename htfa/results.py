@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
+from ._kernels import Kernel
 from ._kernels import factors as _factors
 from ._lazy import lazy_import
+from ._spatial import ComponentNodes, check_level, component_mode
 from .brainnet import animate_network, effective_nodes, plot_network
 from .connectivity import dynamic_connectivity, isfc, static_connectivity
 from .groups import GroupTest, group_permutation_test
 from .htfa import HTFA
 from .io import Subject
-from .tfa import TFA, standardize_data
+from .tfa import TFA, component_factors, standardize_data
 
 Array = np.ndarray
 
@@ -102,6 +105,14 @@ class HTFAResults:
         deeper ones, as in ``HTFA.group_keys_``; the plotting methods take
         them as ``group=``.
 
+    kernel : htfa._kernels.Kernel
+        The fit's ``kernel`` and ``n_components`` (``'rbf'`` and 1 for a model
+        without them).
+    component_centers, component_widths, mixing_weights : list or None
+        Per-subject components (K, M, D), (K, M) and (K, M) of a fit with
+        another kernel or several components; ``None`` for single RBFs, whose
+        ``centers`` and ``widths`` define the factors.
+
     Examples
     --------
     >>> import numpy as np
@@ -134,6 +145,18 @@ class HTFAResults:
         )
         self.group_centers = {k: model.group_centers_[i] for i, k in enumerate(keys)}
         self.group_widths = {k: model.group_widths_[i] for i, k in enumerate(keys)}
+
+        self.kernel = Kernel(
+            getattr(model, "kernel", "rbf"), getattr(model, "n_components", 1)
+        )
+        self.component_centers: list[Array] | None = None
+        self.component_widths: list[Array] | None = None
+        self.mixing_weights: list[Array] | None = None
+        if not self.kernel.plain_rbf:
+            many = isinstance(model, HTFA)
+            for name in ("component_centers", "component_widths", "mixing_weights"):
+                value = getattr(model, name + "_")
+                setattr(self, name, list(value) if many else [value])
         if len(self.centers) != len(subjects):
             raise ValueError(
                 f"model has {len(self.centers)} subjects but {len(subjects)} given"
@@ -162,8 +185,45 @@ class HTFAResults:
         >>> res.factors().shape
         (216, 2)
         """
-        return _factors(
-            self.subjects[subject].coords, self.centers[subject], self.widths[subject]
+        coords = self.subjects[subject].coords
+        if self.component_centers is None:
+            return _factors(coords, self.centers[subject], self.widths[subject])
+        assert self.component_widths is not None and self.mixing_weights is not None
+        return component_factors(
+            coords,
+            self.component_centers[subject],
+            self.component_widths[subject],
+            self.mixing_weights[subject],
+            self.kernel,
+        )
+
+    def _shape(self, subject: Any) -> tuple[str, Array, Array, Array] | None:
+        """Kernel name and components of ``subject`` (``'global'``: the
+        template) for the effective nodes; None for single RBFs."""
+        if self.component_centers is None:
+            return None
+        assert self.component_widths is not None and self.mixing_weights is not None
+        if isinstance(subject, _Group):
+            i = subject.index
+            return (
+                self.kernel.name,
+                self.model.group_component_centers_[i],
+                self.model.group_component_widths_[i],
+                self.model.group_mixing_weights_[i],
+            )
+        if subject == "global" and isinstance(self.model, HTFA):
+            return (
+                self.kernel.name,
+                self.model.global_component_centers_,
+                self.model.global_component_widths_,
+                self.model.global_mixing_weights_,
+            )
+        s = 0 if subject == "global" else subject
+        return (
+            self.kernel.name,
+            self.component_centers[s],
+            self.component_widths[s],
+            self.mixing_weights[s],
         )
 
     def reconstruct(self, subject: int = 0) -> Array:
@@ -392,9 +452,10 @@ class HTFAResults:
         >>> res.group_subjects("b")
         [2, 3]
         """
+        index = self._group_index(group)
         tree = self.model.group_tree_
         assert tree is not None
-        return [int(s) for s in tree.members(self._group_index(group) + 1)]
+        return [int(s) for s in tree.members(index + 1)]
 
     def group_permutation_test(
         self,
@@ -444,6 +505,137 @@ class HTFAResults:
             raise ValueError(f"plotting supports 2D and 3D coordinates; got {D}D")
         return D
 
+    def _component_nodes(self, subject: Any, mode: str) -> ComponentNodes | None:
+        shape = self._shape(subject)
+        if not component_mode(mode, shape is not None):
+            return None
+        if shape is None:
+            c, w = self._fitted_nodes(subject)
+            shape = ("rbf", c[:, None], w[:, None], np.ones((len(c), 1)))
+        return ComponentNodes.from_shape(shape)
+
+    def _lobe_mask(self, subject: Any) -> Any:
+        """Preserve native voxel affines when subjects share an image grid."""
+        members = (
+            self._members(subject)
+            if isinstance(subject, _Group) or subject == "global"
+            else [subject]
+        )
+        subjects = [self.subjects[i] for i in members]
+        first = subjects[0]
+        if first.affine is not None and all(
+            s.affine is not None
+            and s.mask is not None
+            and s.image_shape == first.image_shape
+            and np.array_equal(s.affine, first.affine)
+            for s in subjects
+        ):
+            return (
+                np.any(np.asarray([s.mask for s in subjects]), axis=0),
+                first.affine,
+            )
+        return self._display_mask(subject)
+
+    def _plot_components(
+        self,
+        subject: Any,
+        components: ComponentNodes,
+        connectivity: Any,
+        threshold: Any,
+        ax: Any,
+        snap: bool,
+        mask: Any,
+        lobe_level: float,
+        kwargs: dict,
+    ) -> Any:
+        """Shared glass-brain/2D component plots; edges repeat factor values."""
+        level = check_level(lobe_level)
+        mask = self._lobe_mask(subject) if mask is None else mask
+        centers = components.centers
+        if snap:
+            centers, _, _ = effective_nodes(
+                centers, components.widths, mask, components.kernel
+            )
+        conn = None
+        if connectivity is not None:
+            original = np.asarray(connectivity)
+            cut = threshold
+            if isinstance(cut, str) and cut.endswith("%"):
+                edges = np.abs(original[np.triu_indices(len(original), 1)])
+                cut = np.percentile(edges, float(cut[:-1])) if len(edges) else 0.0
+            conn = components.connectivity(original)
+        if self._dim() == 3:
+            plotting = lazy_import("nilearn.plotting", "plot", "3D component plotting")
+            disp = plotting.plot_glass_brain(
+                None, axes=ax, plot_abs=False, colorbar=False, **kwargs
+            )
+            try:
+                for i, img in components.images(mask):
+                    peak = float(components.mixing[i])
+                    if float(np.max(np.abs(np.asarray(img.dataobj)))) >= level * peak:
+                        disp.add_overlay(
+                            img,
+                            threshold=level * peak,
+                            cmap="RdBu_r",
+                            vmin=-peak,
+                            vmax=peak,
+                            colorbar=False,
+                            **{
+                                "transparency"
+                                if "transparency"
+                                in inspect.signature(disp.add_overlay).parameters
+                                else "alpha": float(0.2 + 0.6 * components.mixing[i])
+                            },
+                        )
+                if conn is not None:
+                    disp.add_graph(
+                        conn,
+                        centers,
+                        node_size=0,
+                        edge_threshold=cut,
+                        edge_kwargs={"linewidth": 1.0, "alpha": 0.7},
+                    )
+            except BaseException:
+                disp.close()
+                raise
+            return disp
+        plt = lazy_import("matplotlib.pyplot", "plot", "component plotting")
+        fig, ax = (ax.figure, ax) if ax is not None else plt.subplots()
+        from .brainnet import _mask_coords
+
+        coords = _mask_coords(mask, 2)[0]
+        for i in range(len(centers)):
+            v = components.values(coords, i)
+            peak = float(components.mixing[i])
+            if np.any(np.abs(v) >= level * peak):
+                keep = np.abs(v) >= level * peak
+                ax.scatter(
+                    coords[keep, 1],
+                    coords[keep, 0],
+                    c=v[keep],
+                    marker="s",
+                    s=12,
+                    cmap="RdBu_r",
+                    vmin=-peak,
+                    vmax=peak,
+                    alpha=0.2 + 0.6 * components.mixing[i],
+                )
+        if conn is not None:
+            cmap = plt.get_cmap("coolwarm")
+            for row, col in zip(*np.triu_indices_from(conn, 1), strict=True):
+                i, j = int(row), int(col)
+                if conn[i, j] != 0 and abs(conn[i, j]) >= float(cut):
+                    ax.plot(
+                        centers[[i, j], 1],
+                        centers[[i, j], 0],
+                        color=cmap((conn[i, j] + 1) / 2),
+                        lw=1 + 3 * abs(conn[i, j]),
+                    )
+        ax.set_aspect("equal")
+        if not ax.yaxis_inverted():
+            ax.invert_yaxis()
+        return fig
+
     def plot_nodes(
         self,
         subject: Any = "global",
@@ -451,9 +643,11 @@ class HTFAResults:
         snap: bool = True,
         mask: Any = None,
         group: Any = None,
+        node_mode: str = "auto",
+        lobe_level: float = 0.05,
         **kwargs: Any,
     ) -> Any:
-        """Plot factor centers.
+        """Plot factor centers or spatial component lobes.
 
         Parameters
         ----------
@@ -465,6 +659,21 @@ class HTFAResults:
             A key of ``group_centers``: draws that group template in black and
             its subjects' centers in distinct colors (``subject`` must then be
             ``'global'``).
+        node_mode : {'auto', 'components', 'summary'}
+            ``'auto'`` draws non-RBF kernels and mixtures as signed spatial
+            component lobes; single RBFs retain the centroid view.
+            ``'components'`` always draws lobes and ``'summary'`` draws one
+            center per factor. A template's component view draws that
+            template's lobes, without overlaying the subjects' profiles.
+            Connectivity edges repeat the factor value between every pair
+            of components in different factors, without within-factor edges.
+        lobe_level : float
+            Hide spatial loadings below this fraction of each component's
+            unmasked peak (default 0.05). Blue is negative, red positive;
+            opacity is 0.2 + 0.6 times the mixing weight. Glass-brain views
+            use signed maximum-absolute projections: overlapping lobes along
+            a viewing ray can obscure one another. ``snap`` moves edge
+            anchors, never the fitted fields.
         ax : matplotlib Axes, optional
             Axes to draw on (2D coordinates, or the nilearn display's axes in 3D).
         snap : bool
@@ -506,6 +715,11 @@ class HTFAResults:
         """
         D = self._dim()
         subject = self._target(subject, group)
+        components = self._component_nodes(subject, node_mode)
+        if components is not None:
+            return self._plot_components(
+                subject, components, None, 0, ax, snap, mask, lobe_level, kwargs
+            )
         glob = isinstance(subject, _Group) or (
             subject == "global" and self.global_centers is not None
         )
@@ -560,6 +774,8 @@ class HTFAResults:
         ax: Any = None,
         snap: bool = True,
         mask: Any = None,
+        node_mode: str = "auto",
+        lobe_level: float = 0.05,
     ) -> Any:
         """Plot factor connectivity as edges between factor centers.
 
@@ -571,6 +787,21 @@ class HTFAResults:
             A percentage string such as ``'75%'`` keeps the edges whose absolute
             correlation is at or above that percentile; a number keeps edges
             with absolute correlation at least that large.
+        node_mode : {'auto', 'components', 'summary'}
+            ``'auto'`` draws non-RBF kernels and mixtures as signed spatial
+            component lobes; single RBFs retain the centroid view.
+            ``'components'`` always draws lobes and ``'summary'`` draws one
+            center per factor. A template's component view draws that
+            template's lobes, without overlaying the subjects' profiles.
+            Connectivity edges repeat the factor value between every pair
+            of components in different factors, without within-factor edges.
+        lobe_level : float
+            Hide spatial loadings below this fraction of each component's
+            unmasked peak (default 0.05). Blue is negative, red positive;
+            opacity is 0.2 + 0.6 times the mixing weight. Glass-brain views
+            use signed maximum-absolute projections: overlapping lobes along
+            a viewing ray can obscure one another. ``snap`` moves edge
+            anchors, never the fitted fields.
         ax : matplotlib Axes, optional
             Axes to draw on.
         snap : bool
@@ -609,6 +840,11 @@ class HTFAResults:
         D = self._dim()
         conn = self.connectivity(subject)
         np.fill_diagonal(conn, 0)
+        components = self._component_nodes(subject, node_mode)
+        if components is not None:
+            return self._plot_components(
+                subject, components, conn, threshold, ax, snap, mask, lobe_level, {}
+            )
         centers = self._plotted_centers(subject, snap, mask)
         if D == 3:
             plotting = lazy_import("nilearn.plotting", "plot", "3D plotting")
@@ -833,7 +1069,12 @@ class HTFAResults:
         ``group`` (a key of ``group_centers``; ``subject`` must then be
         ``'global'``) draws that group template, with the `isfc` of the
         group's subjects by default and its subjects' voxels as the mask.
-        Node sizes are the factor widths unless ``sizes`` is given. Nodes are
+        Non-RBF kernels and mixtures default to spatial component lobes,
+        repeating each factor edge from every component with the same value.
+        ``node_mode='summary'`` restores one sphere per factor; see
+        `htfa.brainnet.plot_network` for ``lobe_level`` and sign colors.
+        Node sizes in summary mode are the factor widths unless ``sizes`` is given.
+        Nodes are
         drawn as their in-brain parts by default (``snap=True``; see
         `display_nodes`, which returns the drawn centers and widths): the
         mask defaults to the subject's voxels, or all subjects' voxels for
@@ -842,9 +1083,11 @@ class HTFAResults:
         ``brain3d`` extra.
         """
         subject = self._target(subject, group)
+        if subject == "global" and self.global_centers is None:
+            subject = 0
         centers, widths, conn = self._network_inputs(subject, connectivity)
         self._network_defaults(subject, widths, kwargs)
-        return plot_network(centers, conn, **kwargs)
+        return plot_network(self, conn, subject=subject, **kwargs)
 
     def animate_network(
         self,
@@ -872,17 +1115,22 @@ class HTFAResults:
         ...                     spin=(0, 0, 1))  # doctest: +SKIP
         """
         subject = self._target(subject, group)
+        if subject == "global" and self.global_centers is None:
+            subject = 0
         centers, widths, conn = self._network_inputs(subject, connectivity, window)
         self._network_defaults(subject, widths, kwargs)
-        return animate_network(centers, conn, out, **kwargs)
+        return animate_network(self, conn, out, subject=subject, **kwargs)
 
     def _network_defaults(
         self, subject: Any, widths: Array, kwargs: dict[str, Any]
     ) -> None:
         """Default widths and, when snapping, mask for the network wrappers."""
-        kwargs.setdefault("widths", widths)
         if kwargs.get("snap", True) and kwargs.get("mask") is None:
-            kwargs["mask"] = self._display_mask(subject)
+            kwargs["mask"] = (
+                self._lobe_mask(subject)
+                if self._shape(subject) is not None
+                else self._display_mask(subject)
+            )
 
     def _display_mask(self, subject: Any = "global") -> Array:
         """Voxels nodes snap into: the subject's, or all (the group's) subjects'
@@ -923,7 +1171,9 @@ class HTFAResults:
         ``lambda_eff = 2 * sigma_eff**2`` from the weighted spread (see
         `htfa.brainnet.effective_nodes`). The fit is not changed. This
         returns what a plot with the default ``snap=True`` drew, and works on
-        any fit, including one saved before snapping existed.
+        any fit, including one saved before snapping existed. Fits with
+        another ``kernel`` or several components use their own profiles
+        (see `htfa.brainnet.effective_nodes`).
 
         Parameters
         ----------
@@ -963,4 +1213,8 @@ class HTFAResults:
         centers, widths = self._fitted_nodes(subject)
         if mask is None:
             mask = self._display_mask(subject)
+        shape = self._shape(subject)
+        if shape is not None:
+            name, comp_c, comp_w, pi = shape
+            return effective_nodes(comp_c, comp_w, mask, name, pi)
         return effective_nodes(centers, widths, mask)
