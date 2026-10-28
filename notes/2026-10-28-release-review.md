@@ -72,4 +72,4 @@ Completion evidence for this stage:
 - Existing macOS 3.13/3.14 CI failures both isolate to pixel-exact screenshot
   comparison; geometry plus bounded rendering comparison is awaiting final CI.
 - Read-only checks: no remote v0.1.0 tag; PyPI/TestPyPI project endpoints return
-  404. Inactive publication example in release/; no index configuration/upload.
+  404. Inactive publication example in release-preparation/; no index configuration/upload.
