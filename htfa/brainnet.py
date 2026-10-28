@@ -836,6 +836,8 @@ def effective_nodes(
     if c.ndim not in (2, 3):
         raise ValueError(f"centers must be (K, D) or (K, M, D), got {c.shape}")
     shape = Kernel(kernel, 1 if c.ndim == 2 else c.shape[1])
+    if c.ndim == 2 and mixing_weights is not None:
+        raise ValueError("mixing_weights need component centers (K, M, D)")
     comps = None
     if c.ndim == 3:
         if widths is None:

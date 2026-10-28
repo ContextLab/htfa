@@ -369,3 +369,53 @@ def test_fit_passes_kernel_and_n_components():
                           res.model.component_widths_[0],
                           res.model.mixing_weights_[0], "mexican_hat")  # fmt: skip
     np.testing.assert_array_equal(res.factors(0), F)
+
+
+def test_component_matching_keeps_logits_in_the_box():
+    """Reordering three components makes another one the logits' reference:
+    weights (1e-3, 1, 1e3) / sum reordered to put the smallest first would
+    give a logit of log(1e6); the matched logits stay within the bounds,
+    and in-box mixtures keep their weights exactly."""
+    from htfa._kernels import MIXING_LOGIT_BOUND
+    from htfa.htfa import _match_params
+
+    kernel = Kernel("rbf", 3)
+    C = np.array([[[0.0, 0.0], [5.0, 0.0], [10.0, 0.0]]])
+    pi = np.array([[1e-3, 1.0, 1e3]]) / 1001.001
+    tmpl = (C.reshape(3, 2), np.ones(3), Kernel.logits(np.array([[1 / 3] * 3])))
+    est = (C[:, ::-1].copy(), np.ones((1, 3)), pi[:, ::-1].copy())
+    _, comp, (Cc, _, pi_m) = _match_params(*tmpl, est, kernel)
+    np.testing.assert_array_equal(comp, [[2, 1, 0]])
+    np.testing.assert_array_equal(Cc, C)
+    a = Kernel.logits(pi_m)
+    assert np.all(np.abs(a) <= MIXING_LOGIT_BOUND * (1 + 1e-12))
+    pi2 = np.array([[0.2, 0.3, 0.5]])
+    est2 = (C[:, ::-1].copy(), np.ones((1, 3)), pi2[:, ::-1].copy())
+    _, _, (_, _, kept) = _match_params(*tmpl, est2, kernel)
+    np.testing.assert_array_equal(kept, pi2)
+
+
+def test_generated_components_lie_on_the_grid():
+    for seed in range(5):
+        _, R, t = make_tfa_data((10, 10), 5, K=4, random_state=seed, n_components=3,
+                                min_separation=1.0)  # fmt: skip
+        assert np.all(t["component_centers"] >= R.min(0))
+        assert np.all(t["component_centers"] <= R.max(0))
+        _, Rs, t = make_htfa_data(2, (10, 10), 5, K=4, random_state=seed,
+                                  n_components=3, min_separation=1.0)  # fmt: skip
+        assert np.all(t["global_component_centers"] >= 0)
+        assert np.all(t["global_component_centers"] <= Rs[0].max(0))
+
+
+def test_shape_input_validation():
+    grid = np.stack(np.meshgrid(np.arange(5.0), np.arange(5.0)), -1).reshape(-1, 2)
+    with pytest.raises(ValueError, match="mixing_weights need component centers"):
+        effective_nodes([[2.0, 2.0]], [3.0], grid, mixing_weights=[[1.0]])
+    X, R, t = make_tfa_data((12, 12), 10, K=2, random_state=0, n_components=2)
+    from htfa._kernels import Prior
+
+    prior = Prior(t["component_centers"].reshape(4, 2), np.ones(2),
+                  np.tile(np.eye(2), (4, 1, 1)), np.ones(4), 1.0,
+                  np.zeros((2, 1)), np.ones((2, 1)))  # fmt: skip
+    with pytest.raises(ValueError, match=r"prior.widths must have shape \(4,\)"):
+        TFA(K=2, n_components=2).fit(X, R, prior=prior)

@@ -30,11 +30,12 @@ MIXING_CONCENTRATION = 3.0
 
 
 def _draw_components(
-    rng: np.random.Generator, centers: Array, widths: Array, M: int
+    rng: np.random.Generator, centers: Array, widths: Array, M: int, extent: Array
 ) -> tuple[Array, Array, Array]:
     """Component centers (K, M, D), widths (K, M) and mixing weights (K, M)
     around factor centers and widths (the first component at the drawn center
-    with the drawn width; one component: the factors themselves)."""
+    with the drawn width; one component: the factors themselves). Component
+    centers are clipped to the grid ``[0, extent]``."""
     K, D = centers.shape
     if M == 1:
         return centers[:, None, :].copy(), widths[:, None].copy(), np.ones((K, 1))
@@ -44,7 +45,8 @@ def _draw_components(
     ratios = rng.uniform(*COMPONENT_WIDTH_RANGE, size=(K, M))
     ratios[:, 0] = 1.0
     pi = rng.dirichlet(np.full(M, MIXING_CONCENTRATION), size=K)
-    return centers[:, None, :] + offsets, widths[:, None] * np.cumprod(ratios, 1), pi
+    comp = np.clip(centers[:, None, :] + offsets, 0.0, extent)
+    return comp, widths[:, None] * np.cumprod(ratios, 1), pi
 
 
 def _shape_factors(
@@ -145,8 +147,9 @@ def make_tfa_data(
     n_components : int, default=1
         Components per factor. With M > 1 the first component of each factor
         sits at the drawn center with the drawn width; component m >= 1 is
-        offset by ``N(0, (0.75 sigma)**2)`` per axis and has a uniform 0.2 to
-        0.5 times the previous component's width, and the mixing weights are
+        offset by ``N(0, (0.75 sigma)**2)`` per axis (clipped to the grid)
+        and has a uniform 0.2 to 0.5 times the previous component's width,
+        and the mixing weights are
         ``Dirichlet(3, ..., 3)``. The draws for one RBF component are those
         of earlier versions.
 
@@ -183,7 +186,7 @@ def make_tfa_data(
     rng = np.random.default_rng(random_state)
     R, extent = _grid(grid_shape, spacing)
     centers, widths = _draw_centers_widths(rng, extent, K, min_separation)
-    Cc, wc, pi = _draw_components(rng, centers, widths, n_components)
+    Cc, wc, pi = _draw_components(rng, centers, widths, n_components, extent)
     weights = rng.standard_normal((K, n_samples))
     X = _shape_factors(R, shape, Cc, wc, pi) @ weights
     X += noise * rng.standard_normal(X.shape)
@@ -277,7 +280,7 @@ def make_htfa_data(
     rng = np.random.default_rng(random_state)
     R, extent = _grid(grid_shape, spacing)
     g_centers, g_widths = _draw_centers_widths(rng, extent, K, min_separation)
-    gC, gw, gpi = _draw_components(rng, g_centers, g_widths, M)
+    gC, gw, gpi = _draw_components(rng, g_centers, g_widths, M, extent)
     if M > 1:
         g_centers, g_widths = _summary(gC, gw, gpi)
     Xs, Rs = [], []

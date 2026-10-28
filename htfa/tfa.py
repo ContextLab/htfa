@@ -958,11 +958,20 @@ class TFA(BaseEstimator):
                 f"prior.centers must have shape ({K * M}, {D}), "
                 f"got {np.shape(prior.centers)}"
             )
-        if prior is not None and M > 1 and np.shape(prior.logits) != (K, M - 1):
-            raise ValueError(
-                f"prior.logits must have shape ({K}, {M - 1}), "
-                f"got {np.shape(prior.logits)}"
-            )
+        if prior is not None and M > 1:
+            expected = {
+                "widths": (K * M,),
+                "widths_var": (K * M,),
+                "centers_cov": (K * M, D, D),
+                "logits": (K, M - 1),
+                "logits_var": (K, M - 1),
+            }
+            for field, shape in expected.items():
+                if np.shape(getattr(prior, field)) != shape:
+                    raise ValueError(
+                        f"prior.{field} must have shape {shape}, "
+                        f"got {np.shape(getattr(prior, field))}"
+                    )
         rng = np.random.default_rng(self.random_state)
         sample_seed = int(rng.integers(np.iinfo(np.int32).max))
         sizes = (

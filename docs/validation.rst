@@ -1047,8 +1047,11 @@ measured on a grid is 6.00 w (D = 2) and 7.97 w (D = 3) for ``'laplace'``
 (6.02 and 8.01 by radial integration) and 0.281 w and 0.352 w for
 ``'mexican_hat'`` (0.282 and 0.351), with mass fractions within 0.2% of 1.
 
-**Linux.** The four test files above (250 tests) pass in a ``python:3.12-slim``
-container (aarch64, scipy-openblas 0.3.34).
+**Linux.** ``tests/test_kernel_shapes.py``, ``test_shape_equivalence.py``,
+``test_shape_fits.py`` and ``test_fit_equivalence.py`` pass in a
+``python:3.12-slim`` container (aarch64, scipy-openblas 0.3.34). There, too,
+35 of the 36 one-component recovery cases count; the excluded one is the same
+3D mexican hat dataset.
 
 **Tutorial 12** (2D, 30 x 30, K = 5, T = 120, noise 0.3; fit on 60 samples,
 factors kept for the other 60). Held-out variance explained, data (rows) by
@@ -1089,5 +1092,5 @@ fitted kernel:
      - 0.463
 
 Each single-component kernel fits its own data best; on the mixture data the
-two-component fit is within 0.001 of the true factors. Its 16 fits took 2.3 s
-and the whole notebook 20 s (Apple M2 Max).
+two-component fit is within 0.001 of the true factors. Its 16 fits took 2.4 s
+and the whole notebook 21 s (Apple M2 Max).
