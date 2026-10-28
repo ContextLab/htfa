@@ -6,7 +6,7 @@ template at the top, one template per group below it (level by level), and the
 subjects below their innermost group. Every node's prior is a Gaussian centred on
 its parent with the subject-level covariance ``Sigma`` of the HTFA fit (the same
 covariance at every level), and the global template has a flat prior. Given the
-subjects' matched local estimates ``x_s``, the templates minimizing
+subjects' matched local estimates ``x_s``, the templates minimizing::
 
     sum_s (x_s - c_group(s))^T Sigma^-1 (x_s - c_group(s))
     + sum_groups (c_g - c_parent(g))^T Sigma^-1 (c_g - c_parent(g))

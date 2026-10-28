@@ -140,6 +140,7 @@ template (with the group's subjects, or the ISFC of the group's subjects).
    :toctree: generated/
    :nosignatures:
 
+   htfa.groups
    htfa.group_permutation_test
    htfa.groups.GroupTest
    htfa.groups.group_tree
