@@ -165,3 +165,8 @@ BrainIAK behavior that differs from BrainIAK's code (each has a regression test)
 8. ``utils.from_tri_2_sym`` fills only the upper triangle of the (co)variance
    matrix and never mirrors it, so the HTFA center prior uses ``triu(Sigma)^-1``
    instead of ``Sigma^-1``. Full symmetric covariances are used here.
+
+* Add ``htfa.stats`` with pooled voxel-baseline R², Gaussian plug-in likelihood,
+  AIC/AICc/BIC and explicit conditional reconstruction parameter counts.
+* Add tutorials 14 (statistics assumptions and usage) and 15 (real multi-subject
+  fMRI comparison across all three kernels, with one and two components).

@@ -382,3 +382,23 @@ not their sum (which may cancel for signed kernels).
 
 .. image:: _static/tutorials/12_component_networks.png
    :alt: Component lobes and repeated connections for RBF, Laplace and Mexican-hat mixtures, with a centroid summary for comparison.
+
+Reconstruction statistics
+-------------------------
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+
+   htfa.stats.FitStatistics
+   htfa.stats.gaussian_fit_statistics
+   htfa.stats.parameter_count
+   htfa.stats.reconstruction_statistics
+
+See :doc:`tutorials/14_fit_statistics` for the likelihood and parameter-count
+conventions and :doc:`tutorials/15_real_fmri_kernel_comparison` for a real
+multi-subject comparison. These are nominal conditional Gaussian criteria,
+not hierarchical marginal evidence. They include subject spatial parameters,
+temporal weights and a shared residual variance, conditioning on templates
+and prior dispersions. They do not correct for residual dependence, shrinkage
+or nonidentifiable mixture components.
