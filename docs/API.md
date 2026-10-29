@@ -1,6 +1,6 @@
 # htfa API guide
 
-The API guide has moved into the Sphinx documentation in this folder:
+The Sphinx documentation describes the API in these pages:
 
 - [Inputs](inputs.rst): how folders, BIDS lists, masks, arrays and images are read
 - [API reference](api.rst): `htfa.fit`, the estimators, results, connectivity and synthetic data, with model parameters

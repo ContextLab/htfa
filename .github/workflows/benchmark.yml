@@ -1,10 +1,6 @@
 name: isolated CPU benchmark
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - scripts/benchmark_release.py
-      - .github/workflows/benchmark.yml
 permissions:
   contents: read
 jobs:

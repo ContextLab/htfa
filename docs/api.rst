@@ -62,7 +62,7 @@ with them; the factor's time series are fitted for the whole mixture.
 HTFA's template then carries every component and the mixing weights, each with
 a prior and update analogous to the widths' (``global_component_centers_``,
 ``global_component_widths_``, ``global_mixing_weights_``). ``kernel='rbf'`` with
-one component is the original model, bit for bit. :func:`htfa.make_tfa_data` and
+one component represents a Gaussian spatial factor. :func:`htfa.make_tfa_data` and
 :func:`htfa.make_htfa_data` generate data from any shape and number of
 components. See :doc:`tutorials/12_kernel_shapes` and :doc:`validation`.
 
@@ -221,23 +221,24 @@ need the ``brain3d`` extra (pyvista, imageio, imageio-ffmpeg, pillow). The brain
 meshes come from BrainNet Viewer 1.43, which is not bundled: the first call downloads
 it from NITRC, checks its SHA-256 checksums and caches the meshes.
 
-A fitted center can lie outside the brain (its RBF still reaches in). The built-in
-node plots (:func:`htfa.plot_network`, :func:`htfa.animate_network`, and the
-:class:`htfa.HTFAResults` methods ``plot_network``, ``animate_network``,
-``plot_nodes`` and ``plot_connectivity``) therefore draw each node as the part of its
-RBF inside the brain: the RBF-weighted centroid of the in-brain voxels, sized by
-``lambda_eff = 2 * sigma_eff**2`` from the weighted spread
-(:func:`htfa.brainnet.effective_nodes`). Interior nodes are unchanged; nodes near the
-edge move inward and shrink. The fit itself is not changed. ``snap=False`` draws the
-fitted centers and widths. The mask (``mask=``) defaults to the subject's voxels (all
-subjects' voxels for the template) for an :class:`htfa.HTFAResults`, and to the
-MNI152 brain mask (:func:`htfa.brainnet.mni_mask`) for bare MNI centers or a fitted
-estimator. ``HTFAResults.display_nodes(subject)`` returns the drawn centers, widths and
-per-node details (distance moved, snapped and ambiguous flags, in-brain mass
-fraction, ``sigma_eff``, ``lambda_eff / lambda``), also for fits made before this
-existed. Fits with another ``kernel`` or several components are drawn from their
-own profiles (the positive part for ``'mexican_hat'``), with ``lambda_eff`` the
-width of the RBF with the same spread:
+A fitted center can lie outside the brain while part of its spatial profile
+lies inside. In the sphere/centroid view, ``snap=True`` places the display node
+at the profile-weighted centroid of the in-mask voxels and sizes it by
+``lambda_eff = 2 * sigma_eff**2`` from their weighted spread
+(:func:`htfa.brainnet.effective_nodes`). For Mexican-hat kernels, the positive
+part of the profile defines this summary. ``snap=False`` uses the fitted
+centers and widths directly. Neither setting changes the fit.
+
+The mask (``mask=``) defaults to the subject's voxels (all subjects' voxels for
+the global template) for an :class:`htfa.HTFAResults`, and to the MNI152 brain
+mask (:func:`htfa.brainnet.mni_mask`) for bare MNI centers or a fitted estimator.
+``HTFAResults.display_nodes(subject)`` returns the summary centers, widths and
+per-node details: distance moved, snapped and ambiguous flags, in-brain mass
+fraction, ``sigma_eff`` and ``lambda_eff / lambda``.
+
+Non-RBF kernels and mixtures use spatial lobes by default, as described under
+"Component network views" below. For those views, snapping adjusts the edge
+anchors but does not move or resize the spatial fields.
 
 .. code-block:: python
 
@@ -298,7 +299,7 @@ and confounds, ready for :func:`htfa.fit`:
    htfa.datasets.regress_confounds
 
 :func:`htfa.datasets.fetch_tutorial_fit` downloads the saved HTFA fit of a
-tutorial (09, 10 or 11) from the ``tutorial-data-v1`` pre-release of the htfa
+tutorial (09, 10, 11 or 13) from the ``tutorial-data-v1`` pre-release of the htfa
 repository, checks its SHA-256 and returns its arrays; the tutorials use it unless
 ``REFIT = True``.
 
@@ -359,7 +360,7 @@ not connectivity. For example::
     results.plot_network(subject=0)       # component isosurfaces, BrainNet style
     results.plot_network(subject=0, node_mode="summary")  # one sphere per factor
 
-``node_mode="auto"`` keeps the historical sphere/centroid view for single RBFs
+``node_mode="auto"`` uses the sphere/centroid view for single RBFs
 and uses component lobes for other kernels and mixtures. ``"components"`` forces
 lobes for any kernel. ``lobe_level=0.05`` draws the 5% contour of each component's
 unmasked peak. Both signs use that same level: Mexican-hat negative surrounds

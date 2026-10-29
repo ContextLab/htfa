@@ -4,12 +4,14 @@ htfa
 .. include:: _cover.inc
 
 htfa is a Python implementation of topographic factor analysis (TFA) and
-hierarchical topographic factor analysis (HTFA), written from scratch after the
-algorithm in `BrainIAK <https://brainiak.org>`_. It does not import BrainIAK.
+hierarchical topographic factor analysis (HTFA). It is a standalone package;
+`BrainIAK <https://brainiak.org>`_ is a numerical validation reference, not a
+runtime dependency.
 
 TFA models a data matrix ``X`` (locations by samples) as ``X = F W + noise``.
-Each of the ``K`` factors is a radial basis function with a center and a width in
-coordinate space, and ``W`` holds the factors' weights over samples. HTFA fits TFA
+Each of the ``K`` factors is a spatial kernel or a mixture of kernels with
+fitted centers and widths in coordinate space. ``W`` holds the factors'
+weights over samples. HTFA fits TFA
 to several subjects at once, tying each subject's factors to a global template.
 
 .. code-block:: python

@@ -20,6 +20,10 @@ After approval:
 3. Only after explicit PyPI approval, publish the same validated artifacts. Record
    their SHA-256s and confirm the index serves those files. Tag the approved source,
    finalize the GitHub release notes, and verify README links and RTD stable.
+4. As the final step, after review and the release is live, obtain the release DOI
+   from https://zenodo.org/account/settings/github/repository/ContextLab/htfa.
+   Verify that its archive targets the approved release, then add the DOI badge.
+   Do not mint or insert a provisional DOI during preparation.
 
 Configure index identity carefully: project name is `htfa`, version `0.1.0`.
 GitHub environment protection and index trusted-publisher setup are NOT complete
