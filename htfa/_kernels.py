@@ -1267,6 +1267,39 @@ def _check_finite(cost: float, g: Array, gn: Array, x: Array) -> None:
         )
 
 
+def _finite_lm_scale(scale: Array, g: Array, gn: Array, hess: Array) -> Array:
+    """Use unit scaling only where the scaled local model is unrepresentable.
+
+    Vanishing mixture components can have tiny nonzero data-Jacobian norms
+    while a center prior contributes finite curvature at its zero residual.
+    Their inverse norms then overflow the scaled curvature. The scale changes
+    the optimization metric, not the model, bounds, or mixture weights.
+    """
+    with np.errstate(over="ignore", invalid="ignore"):
+        bad = ~np.isfinite(scale * g)
+        for matrix in (gn, hess):
+            if not np.isfinite(matrix).all():
+                continue  # The solver separately handles nonfinite raw curvature.
+            scaled = scale[:, None] * matrix * scale[None, :]
+            bad |= ~np.isfinite(scaled).all(axis=0) | ~np.isfinite(scaled).all(axis=1)
+    reset = bad & (scale > 1)
+    if np.any(reset):
+        scale = scale.copy()
+        scale[reset] = 1.0
+    return scale
+
+
+def _lm_initial_damping(scale: Array, gn: Array) -> float:
+    """Initial damping, without overflowing an otherwise finite scale² * Hjj."""
+    diagonal = np.diag(gn)
+    with np.errstate(over="ignore", invalid="ignore"):
+        scaled = scale**2 * diagonal
+        bad = ~np.isfinite(scaled)
+        # Preserve ordinary arithmetic exactly; reorder only failed products.
+        scaled[bad] = scale[bad] * (diagonal[bad] * scale[bad])
+    return LM_TAU * max(float(np.max(scaled)), EPS)
+
+
 def bounded_lm(
     problem: "ResidualProblem | ProjectedProblem",
     x0: Array,
@@ -1350,9 +1383,13 @@ def bounded_lm(
     ftol = ftol_for(problem.engine.eps)
     cost, g, gn, hess = problem.cost_grad_hess(x, loss, mode=mode)
     nfev, nu = 1, 2.0
-    lam = LM_TAU * max(float(np.max(scale**2 * np.diag(gn))), EPS)
+    lam = 0.0
     while True:
         _check_finite(cost, g, gn, x)
+        adjusted = _finite_lm_scale(scale, g, gn, hess)
+        if nfev == 1 or adjusted is not scale:
+            scale = adjusted
+            lam, nu = _lm_initial_damping(scale, gn), 2.0
         free = ~(((x <= lb) & (g > 0)) | ((x >= ub) & (g < 0)))
         if not free.any() or np.max(np.abs(g[free])) < GTOL:
             return x, cost, 1, nfev
