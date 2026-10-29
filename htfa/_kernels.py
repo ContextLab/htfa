@@ -1300,6 +1300,20 @@ def _lm_initial_damping(scale: Array, gn: Array) -> float:
     return LM_TAU * max(float(np.max(scaled)), EPS)
 
 
+def _vector_norm(vector: Array) -> float:
+    """Euclidean norm with a scaled BLAS fallback for overflowing dot products."""
+    with np.errstate(over="ignore", invalid="ignore"):
+        try:
+            value = float(np.linalg.norm(vector))
+        except FloatingPointError:
+            value = np.inf
+    if not np.isfinite(value):
+        # BLAS nrm2 scales its accumulation, avoiding intermediate squares
+        # outside float64 range when the norm itself remains representable.
+        value = float(scipy.linalg.norm(vector))
+    return value
+
+
 def bounded_lm(
     problem: "ResidualProblem | ProjectedProblem",
     x0: Array,
@@ -1442,7 +1456,7 @@ def bounded_lm(
             # Relative to the full objective: the compressed problem's cost
             # excludes cost_offset.
             ftol_ok = actual < ftol * (cost + problem.cost_offset) and ratio > 0.25
-            xtol_ok = np.linalg.norm(step) < XTOL * (XTOL + np.linalg.norm(x))
+            xtol_ok = _vector_norm(step) < XTOL * (XTOL + _vector_norm(x))
             accepted = ratio > 0
             if accepted and trace is not None:
                 trace.append(

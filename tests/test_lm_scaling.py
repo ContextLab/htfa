@@ -11,6 +11,7 @@ from htfa._kernels import (
     ResidualProblem,
     _finite_lm_scale,
     _lm_initial_damping,
+    _vector_norm,
     bounds,
     solve_centers_widths,
     x_factors,
@@ -92,3 +93,24 @@ def test_scaling_guard_checks_both_ends_of_overflowing_cross_terms():
     with np.errstate(over="raise", invalid="raise"):
         assert np.isfinite(adjusted[:, None] * hess * adjusted[None, :]).all()
     assert _finite_lm_scale(adjusted, np.zeros(2), gn, hess) is adjusted
+
+
+@pytest.mark.parametrize("behavior", ["native", "raise", "inf"])
+def test_vector_norm_avoids_intermediate_square_overflow(monkeypatch, behavior):
+    vector = np.array([3e200, 4e200])
+    if behavior == "raise":
+
+        def strict_dot_norm(value):
+            with np.errstate(over="raise"):
+                return np.sqrt(np.sum(value * value))
+
+        monkeypatch.setattr(np.linalg, "norm", strict_dot_norm)
+    elif behavior == "inf":
+        monkeypatch.setattr(np.linalg, "norm", lambda value: np.inf)
+    with np.errstate(over="raise", invalid="raise"):
+        assert _vector_norm(vector) == pytest.approx(5e200)
+
+
+def test_vector_norm_preserves_ordinary_arithmetic():
+    vector = np.random.default_rng(42).normal(size=57)
+    assert _vector_norm(vector) == np.linalg.norm(vector)
