@@ -31,6 +31,7 @@ import numpy as np
 from numpy.typing import NDArray
 from sklearn.base import clone
 
+from htfa._kernels import Kernel
 from htfa._matching import match_factors
 from htfa.connectivity import static_connectivity
 
@@ -453,7 +454,7 @@ def _permutation_reference(
     reference = (
         centers.copy()
         if centers.ndim == 2
-        else np.einsum("km,kmd->kd", free_fit[2], centers)
+        else np.einsum("km,kmd->kd", Kernel.mixing(Kernel.logits(free_fit[2])), centers)
     )
     return reference, match_factors(global_centers, reference)
 
@@ -487,8 +488,11 @@ def group_permutation_test(
     Any caller-supplied ``starts`` must be independent of the tested labels;
     label-informed initialization invalidates this conditional permutation
     procedure. Group labels must be exchangeable within the specified units
-    under the null. Per-factor hypotheses should be specified before examining
-    their effects; use max-statistic correction for selection across factors.
+    under the null. Subject order, and thus the first-subject reference, must
+    be fixed independently of the tested labels and before inspecting effects;
+    the reference is not generally invariant to reordering subjects. Per-factor
+    hypotheses should be specified before examining their effects; use
+    max-statistic correction for selection across factors.
 
     Parameters
     ----------

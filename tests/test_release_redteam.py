@@ -215,8 +215,27 @@ def test_permutation_reference_uses_mixture_weighted_stage_zero_centers():
     reference, order = _permutation_reference(
         (components, np.ones((2, 2)), mixing), expected[::-1]
     )
-    np.testing.assert_array_equal(reference, expected)
+    np.testing.assert_allclose(reference, expected, rtol=0, atol=1e-14)
     np.testing.assert_array_equal(order, [1, 0])
+
+
+@pytest.mark.parametrize("scale", [0.1, 10.0, 1e-100, 1e100])
+def test_permutation_reference_normalizes_custom_start_weights(scale):
+    from htfa.groups import _permutation_reference
+
+    centers = np.array([[[0.0, 0.0], [4.0, 0.0]], [[0.0, 4.0], [4.0, 4.0]]])
+    mixing = np.array([[0.75, 0.25], [0.25, 0.75]])
+    global_centers = np.array([[3.0, 4.0], [1.0, 0.0]])
+    reference, order = _permutation_reference(
+        (centers, np.ones((2, 2)), mixing), global_centers
+    )
+    scaled_reference, scaled_order = _permutation_reference(
+        (centers, np.ones((2, 2)), mixing * [[scale], [1 / scale]]), global_centers
+    )
+    # Custom starts use relative positive weights. Normalization must match the
+    # estimator's logit/softmax path, including row-specific scaling.
+    np.testing.assert_allclose(scaled_reference, reference, rtol=0, atol=1e-12)
+    np.testing.assert_array_equal(scaled_order, order)
 
 
 def test_group_refit_statistics_share_reference_across_observed_labelings(tmp_path):
