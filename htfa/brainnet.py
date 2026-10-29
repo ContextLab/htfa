@@ -4,8 +4,7 @@ Nodes are drawn as gray spheres inside a translucent brain surface, and edges
 whose absolute weight exceeds a threshold as tubes (red for positive weights,
 blue for negative ones). The drawing rules follow BrainNet Viewer 1.43
 (Xia, Wang & He, 2013, PLoS ONE 8: e68910; https://www.nitrc.org/projects/bnv/)
-with the settings of the 2014 directed-forgetting network movies: white
-background, mesh color 0.95 gray at opacity 0.2, node radii scaled linearly
+with a white background, mesh color 0.95 gray at opacity 0.2, node radii scaled linearly
 onto 2-7 mm, edge diameter ``|E|`` mm at opacity 0.7, and an orthographic left
 lateral view.
 
@@ -389,8 +388,8 @@ def fetch_mesh(name: str = "ch2") -> Path:
     Parameters
     ----------
     name : {"ch2", "icbm152", "icbm152_smoothed"}
-        ``"ch2"`` is ``BrainMesh_Ch2withCerebellum.nv`` (used for the 2014
-        movies); the ICBM152 meshes have no cerebellum.
+        ``"ch2"`` is ``BrainMesh_Ch2withCerebellum.nv`` and includes the
+        cerebellum; the ICBM152 meshes have no cerebellum.
 
     Raises
     ------
@@ -1613,11 +1612,10 @@ def plot_network(
     out : path, optional
         Save the image there: PNG, or JPEG for a ``.jpg``/``.jpeg`` suffix
         (quality ``jpeg_quality``, default 75, 4:2:0 chroma, like MATLAB's
-        export of the 2014 frames).
+        export).
     jpeg_quality : int, optional
         If given, the image is JPEG-compressed at this quality before it is
-        returned or saved. JPEG at 75 makes thin edges paler, as in the 2014
-        BrainNet frames.
+        returned or saved. JPEG at 75 makes thin edges paler.
     **style
         ``threshold`` (0.25; edges with ``|E| > threshold`` are drawn),
         ``view`` (``"lateral"`` = ``"left"``, ``"right"``, ``"dorsal"``,
@@ -1835,7 +1833,7 @@ def animate_network(
         with ``jpeg_quality``).
     jpeg_quality : int, optional
         JPEG-compress each frame at this quality before it goes into the
-        movie (75 reproduces the look of the 2014 frames).
+        movie. Lower quality values increase compression artifacts.
 
     Returns
     -------

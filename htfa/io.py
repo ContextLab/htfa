@@ -12,6 +12,8 @@ import numpy as np
 
 from htfa._lazy import lazy_import
 
+from ._validation import real_array
+
 NIFTI_EXTS = (".nii.gz", ".nii")
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif")
 TIFF_EXTS = (".tif", ".tiff")
@@ -77,7 +79,7 @@ class Subject:
         """
         if self.image_shape is None or self.mask is None:
             raise ValueError("subject has no image space (loaded from (V, T) + coords)")
-        values = np.asarray(values, dtype=np.float64)
+        values = real_array(values, "values")
         if values.ndim not in (1, 2) or values.shape[0] != self.data.shape[0]:
             raise ValueError(
                 f"values must have shape ({self.data.shape[0]},) or "
@@ -110,6 +112,8 @@ def _ext(name: str, exts: tuple[str, ...]) -> bool:
 
 
 def _from_nifti(img: Any, source: str | None) -> _Grid:
+    if np.issubdtype(img.get_data_dtype(), np.complexfloating):
+        raise ValueError("NIfTI data must be real-valued")
     values = np.asarray(img.get_fdata(dtype=np.float64))
     if values.ndim == 3:
         values = values[..., None]
@@ -120,7 +124,7 @@ def _from_nifti(img: Any, source: str | None) -> _Grid:
 
 def _to_samples(arr: np.ndarray, channels: str) -> np.ndarray:
     """Image array ``(H, W[, C])`` to float64 ``(H, W, T)``."""
-    arr = np.asarray(arr, dtype=np.float64)
+    arr = real_array(arr, "data")
     if arr.ndim == 2:
         return arr[..., None]
     if channels == "separate":
@@ -168,9 +172,9 @@ def _read_file(path: str, channels: str) -> _Grid:
 
 
 def _from_array(arr: Any, coords: Any) -> _Grid:
-    arr = np.asarray(arr, dtype=np.float64)
+    arr = real_array(arr, "data")
     if coords is not None:
-        coords = np.asarray(coords, dtype=np.float64)
+        coords = real_array(coords, "coords")
         if arr.ndim == 1:
             arr = arr[:, None]
         if arr.ndim != 2 or coords.ndim != 2 or coords.shape[0] != arr.shape[0]:
@@ -216,7 +220,7 @@ def _ijk(mask: np.ndarray) -> np.ndarray:
 def _spacing(spacing: Any, ndim: int) -> np.ndarray:
     if spacing is None:
         return np.ones(ndim)
-    sp = np.asarray(spacing, dtype=np.float64)
+    sp = real_array(spacing, "spacing")
     if sp.ndim == 0:
         return np.full(ndim, float(sp))
     if sp.shape != (ndim,):
@@ -226,7 +230,12 @@ def _spacing(spacing: Any, ndim: int) -> np.ndarray:
     return sp
 
 
-def _mask_from_image(img: Any) -> np.ndarray:
+def _mask_from_image(img: Any, affine: np.ndarray | None = None) -> np.ndarray:
+    if affine is not None and not np.allclose(img.affine, affine, rtol=0, atol=1e-5):
+        raise ValueError(
+            "mask affine does not match data affine; resample the mask to the "
+            "data grid before loading"
+        )
     data = np.asarray(img.get_fdata())
     if data.ndim == 4 and data.shape[-1] == 1:
         data = data[..., 0]
@@ -249,15 +258,17 @@ def _resolve_mask(mask: Any, grid: _Grid) -> np.ndarray | None:
             if mask == "epi"
             else masking.compute_background_mask
         )
-        out = _mask_from_image(func(nib.Nifti1Image(grid.values, grid.affine)))
+        out = _mask_from_image(
+            func(nib.Nifti1Image(grid.values, grid.affine)), grid.affine
+        )
     elif isinstance(mask, (str, os.PathLike)):
-        out = _mask_from_image(nib.load(os.fspath(mask)))
+        out = _mask_from_image(nib.load(os.fspath(mask)), grid.affine)
     elif hasattr(mask, "fit") and hasattr(mask, "transform"):
         if getattr(mask, "mask_img_", None) is None:
             raise ValueError("the NiftiMasker must be fitted (mask_img_ is missing)")
-        out = _mask_from_image(mask.mask_img_)
+        out = _mask_from_image(mask.mask_img_, grid.affine)
     elif isinstance(mask, nib.spatialimages.SpatialImage):
-        out = _mask_from_image(mask)
+        out = _mask_from_image(mask, grid.affine)
     else:
         out = np.asarray(mask).astype(bool)
     if out.shape != spatial:
@@ -295,6 +306,16 @@ def _stack(grids: list[_Grid]) -> _Grid:
             )
         if (g.coords is None) != (first.coords is None):
             raise ValueError("cannot stack image data with (V, T) + coords data")
+        if (g.affine is None) != (first.affine is None):
+            raise ValueError("cannot stack inputs with and without a NIfTI affine")
+        if g.affine is not None and not np.allclose(
+            g.affine, first.affine, rtol=0, atol=1e-5
+        ):
+            raise ValueError(
+                "cannot stack inputs with different affines; resample to one grid"
+            )
+        if g.coords is not None and not np.array_equal(g.coords, first.coords):
+            raise ValueError("cannot stack inputs with different coordinates")
     return _Grid(
         np.concatenate([g.values for g in grids], axis=-1),
         first.affine,
@@ -331,9 +352,13 @@ def load(
         finite pixel, since black pixels are data there.
         Otherwise nonzero voxels of the mask are kept; ``'epi'`` and
         ``'background'`` use nilearn's automatic masks (NIfTI input only).
+        A NIfTI mask must share the data's affine (absolute tolerance 1e-5);
+        resample mismatched masks to the data grid before loading.
     stack : bool
         Treat every 3D volume / 2D image (all files, folder contents and list
-        elements) as samples of ONE subject's time series.
+        elements) as samples of ONE subject's time series. All inputs must
+        share spatial shape and coordinates or NIfTI affine; no resampling
+        is performed. NIfTI affines allow absolute roundoff up to 1e-5.
     channels : {'gray', 'separate'}
         Color images become ITU-R 601 grayscale, or each channel becomes a sample.
     spacing : float or sequence of float, optional

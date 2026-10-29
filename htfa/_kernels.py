@@ -216,7 +216,7 @@ class Kernel:
 
     @property
     def plain_rbf(self) -> bool:
-        """One RBF component per factor: the original code paths."""
+        """Whether each factor is a single RBF component."""
         return self.name == "rbf" and self.n_components == 1
 
     def n_params(self, K: int, D: int) -> int:

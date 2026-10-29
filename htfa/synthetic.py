@@ -150,8 +150,7 @@ def make_tfa_data(
         offset by ``N(0, (0.75 sigma)**2)`` per axis (clipped to the grid)
         and has a uniform 0.2 to 0.5 times the previous component's width,
         and the mixing weights are
-        ``Dirichlet(3, ..., 3)``. The draws for one RBF component are those
-        of earlier versions.
+        ``Dirichlet(3, ..., 3)``. A single component has mixing weight one.
 
     Returns
     -------

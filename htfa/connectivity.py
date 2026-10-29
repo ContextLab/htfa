@@ -6,6 +6,8 @@ from collections.abc import Sequence
 
 import numpy as np
 
+from ._validation import real_array
+
 Array = np.ndarray
 
 __all__ = ["static_connectivity", "dynamic_connectivity", "isfc"]
@@ -14,7 +16,7 @@ _FISHER_CLIP = 1.0 - 1e-7
 
 
 def _weights(weights: Array) -> Array:
-    w = np.asarray(weights, dtype=np.float64)
+    w = real_array(weights, "weights")
     if w.ndim != 2:
         raise ValueError(f"weights must have shape (K, T); got {w.shape}")
     return w

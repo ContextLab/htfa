@@ -33,6 +33,8 @@ from htfa._kernels import (
 )
 from htfa._matching import match_factors
 
+from ._validation import real_array
+
 Array = NDArray[np.float64]
 
 INIT_METHODS = ("ncorr", "power", "kmeans")
@@ -129,7 +131,7 @@ def standardize_data(X: ArrayLike, mode: str | bool) -> Array:
     is_bool = isinstance(mode, (bool, np.bool_))
     if not is_bool and mode != "auto":
         raise ValueError(f"standardize must be 'auto', True or False, got {mode!r}")
-    X = np.asarray(X, dtype=np.float64)
+    X = real_array(X, "X")
     if is_bool and not mode:
         return X
     if X.shape[1] > 1:
@@ -169,7 +171,7 @@ def _sample_size(n: int, ratio: float, cap: int | None) -> int:
 
 def _check_coords(coords: ArrayLike, V: int | None, D: int | None) -> Array:
     """Validate coordinates (V, D): 2D, matching shape, D in {2, 3}, finite."""
-    R = np.asarray(coords, dtype=np.float64)
+    R = real_array(coords, "coords")
     if R.ndim != 2 or (V is not None and R.shape[0] != V):
         raise ValueError(
             f"coords must have shape ({V if V is not None else 'V'}, D), got {R.shape}"
@@ -281,9 +283,7 @@ def _initial_starts(
 
 
 def _kw(kernel: Kernel) -> dict[str, Any]:
-    """``kernel=kernel`` for the kernel functions, or nothing for one RBF
-    component: the plain RBF fit then calls them exactly as before the kernel
-    shapes (tests/test_fit_equivalence.py runs it on the 3298278 kernels)."""
+    """Kernel keyword arguments; single RBFs use the specialized default path."""
     return {} if kernel.plain_rbf else {"kernel": kernel}
 
 
@@ -442,14 +442,13 @@ class TFA(BaseEstimator):
         method on the explicit K (D + 1)-square Gauss-Newton system, assembled
         from the factor structure of the Jacobian (`htfa._kernels.bounded_lm`).
         ``'trf'`` and ``'dogbox'`` run ``scipy.optimize.least_squares`` with a
-        matrix-free Jacobian (BrainIAK's solver; much slower). All minimize the
+        matrix-free Jacobian. All minimize the
         same objective with scipy's default tolerances, for weights held fixed
         within an outer iteration. ``'varpro'`` (linear loss only) runs the
         same solver on the variable-projection objective, with the ridge
         weights eliminated (`htfa._kernels.ProjectedProblem`): its stationary
-        points are the fixed points of the alternation, which it reaches in a
-        few outer iterations instead of hundreds on real data (BrainIAK uses
-        ``'trf'`` with ``'soft_l1'``).
+        points are the fixed points of the alternation. BrainIAK uses
+        ``'trf'`` with ``'soft_l1'``.
     nlss_loss : {'linear', 'soft_l1', 'huber', 'cauchy', 'arctan', \
 'linear+soft_l1'}, default='linear'
         Loss of the data residual, as in ``least_squares``. ``'linear'`` is
@@ -462,12 +461,8 @@ class TFA(BaseEstimator):
         ``cost_``, ``converged_reason_`` and ``objective_history_`` are the
         second stage's; when the first stage ends at ``max_iter`` the second does
         not run and the fit ends on ``'max_iter'``.
-        The robust losses (``'soft_l1'``, BrainIAK's, or the two-stage fit at
-        about half its cost) are for
-        heavy-tailed noise: with Student-t(3) noise added to `make_tfa_data`
-        they recovered centers about 10% more closely than the linear loss
-        (docs/validation.rst), while on real fMRI the linear loss held out as
-        well (held-out R^2 0.0424 vs 0.0423) at about a tenth of the time.
+        Robust losses reduce the influence of large residuals and can be useful
+        for heavy-tailed noise.
     x_scale : 'jac' or ndarray, default='jac'
         Variable scaling (``least_squares``' ``x_scale``; the damping scale of
         ``'bounded-lm'``); ``'jac'`` uses the inverse Jacobian column norms at the
@@ -680,7 +675,7 @@ class TFA(BaseEstimator):
         return Kernel(self.kernel, self.n_components)
 
     def _validate(self, X: ArrayLike, coords: ArrayLike) -> tuple[Array, Array]:
-        X = np.asarray(X, dtype=np.float64)
+        X = real_array(X, "X")
         if X.ndim != 2:
             raise ValueError(f"X must be 2D (voxels, samples), got shape {X.shape}")
         R = _check_coords(coords, X.shape[0], None)
@@ -1115,7 +1110,7 @@ class TFA(BaseEstimator):
         kernel = Kernel(
             getattr(self, "kernel", "rbf"), getattr(self, "n_components", 1)
         )
-        if kernel.plain_rbf:  # also fits saved before the kernel shapes
+        if kernel.plain_rbf:
             result: Array = factors(R, self.centers_, self.widths_)
             return result
         return component_factors(
