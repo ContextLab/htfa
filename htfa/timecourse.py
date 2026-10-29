@@ -1,9 +1,8 @@
 """Connectivity time courses: per-frame summaries, smoothing and a slide-style plot.
 
-`plot_timecourse` draws conditions as mean +/- SEM ribbons over subjects in
-the style of the 2015 directed-forgetting talk slides: light-gray background,
-red / blue conditions, a dark shared pre-event curve, magenta event lines,
-tan shaded periods, bold in-plot labels instead of a legend, and large
+`plot_timecourse` draws conditions as mean +/- SEM ribbons over subjects with
+a light-gray background, red / blue conditions, a dark shared pre-event curve,
+magenta event lines, tan shaded periods, bold in-plot labels, and large
 sentence-case fonts.
 """
 
@@ -19,6 +18,7 @@ from typing import Any
 import numpy as np
 
 from ._lazy import lazy_import
+from ._validation import real_array
 
 Array = np.ndarray
 
@@ -30,7 +30,7 @@ __all__ = [
     "plot_timecourse",
 ]
 
-#: Colors of the 2015 slides.
+#: Default colors for condition curves, event markers, and shaded periods.
 SLIDE_COLORS = {
     "red": "#E8202A",
     "blue": "#3A52A4",
@@ -42,7 +42,7 @@ SLIDE_COLORS = {
 
 
 def _frames(frames: Any) -> Array:
-    f = np.asarray(frames, dtype=np.float64)
+    f = real_array(frames, "frames")
     if f.ndim != 3 or f.shape[1] != f.shape[2]:
         raise ValueError(f"frames must be (T, K, K), got {f.shape}")
     return f
@@ -51,8 +51,7 @@ def _frames(frames: Any) -> Array:
 def global_connectivity(frames: Any) -> Array:
     """Mean edge per frame over the upper triangle including the diagonal.
 
-    This definition reproduces the "global connectivity" curves of the 2014
-    directed-forgetting movies. Frames containing NaN give NaN.
+    Diagonal values contribute to the mean. Frames containing NaN give NaN.
 
     Parameters
     ----------
@@ -89,12 +88,10 @@ def moving_average(y: Any, window: int) -> Array:
 
     Like MATLAB's ``smooth(y, window)``: an odd ``window``, shrinking
     symmetrically near the ends (the first and last points are unchanged).
-    A centered 5-point average of `global_connectivity` reproduces the curves
-    plotted in the 2014 movies.
     """
     if window < 1 or window % 2 == 0:
         raise ValueError(f"window must be a positive odd integer, got {window}")
-    y = np.asarray(y, dtype=np.float64)
+    y = real_array(y, "time course")
     T = y.shape[-1]
     out = np.empty_like(y)
     h = window // 2
@@ -132,6 +129,12 @@ def plot_timecourse(
 ) -> Any:
     """Plot condition time courses as mean +/- SEM ribbons (slide style).
 
+    Labels and annotations describe the supplied analysis. For example, a
+    stimulus-response experiment might plot one curve per condition, mark
+    stimulus onset with ``events``, and shade its response interval with
+    ``periods``. These annotations are optional and do not require a particular
+    experimental task. All annotation positions use the units of ``x``.
+
     Parameters
     ----------
     conditions : mapping of label -> array of shape (S, T) or (T,)
@@ -144,13 +147,15 @@ def plot_timecourse(
         Window of a centered moving average (`moving_average`) applied to
         each subject's curve before averaging.
     shared_before : float, optional
-        Before this x value all conditions are one period: the mean of the
-        conditions is drawn as one dark curve there, and the conditions start
-        one sample before it.
+        Draw the mean of the conditions as one dark curve before this x value;
+        individual condition curves begin one sample before it. This optional
+        display choice can represent a shared baseline interval; it does not
+        test whether the conditions are equal there.
     events : sequence of float
-        x positions of magenta vertical lines (e.g. a cue).
+        x positions of magenta vertical lines, for example stimulus onsets.
     periods : sequence of (start, end)
-        x ranges shaded tan (e.g. a critical period).
+        x ranges shaded tan, for example intervals in which a response is
+        measured.
     xlabel, ylabel, title : str, optional
     ax : matplotlib Axes, optional
     fontsize : float
@@ -165,7 +170,7 @@ def plot_timecourse(
         raise ValueError("no conditions to plot")
     curves = {}
     for label, y in conditions.items():
-        y = np.asarray(y, dtype=np.float64)
+        y = real_array(y, "time course")
         if y.ndim not in (1, 2):
             raise ValueError(f"{label!r}: expected (S, T) or (T,), got {y.shape}")
         curves[label] = moving_average(y, smooth) if smooth else y
@@ -173,7 +178,7 @@ def plot_timecourse(
     if len(T) != 1:
         raise ValueError(f"conditions have different lengths: {sorted(T)}")
     n = T.pop()
-    xs = np.arange(n, dtype=np.float64) if x is None else np.asarray(x, float)
+    xs = np.arange(n, dtype=np.float64) if x is None else real_array(x, "x")
     if xs.shape != (n,):
         raise ValueError(f"x has shape {xs.shape}, expected ({n},)")
     cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]

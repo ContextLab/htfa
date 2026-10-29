@@ -5,15 +5,17 @@ Loading different kinds of input
 :func:`htfa.load` turns files, folders, nibabel images and numpy arrays into
 :class:`htfa.Subject` objects, each holding a ``(V, T)`` data matrix and ``(V, D)``
 coordinates. This example builds two small synthetic subjects in a real brain shape:
-nilearn's bundled MNI152 template and brain mask (shipped with nilearn, so nothing is
-downloaded) are averaged into 8 mm voxels, giving a 24 x 29 x 23 grid with the MNI
-affine. Each subject has 10 volumes: the template intensity inside the brain, two
+nilearn's bundled MNI152 anatomical reference and brain mask (a standard brain
+coordinate space, shipped with nilearn so nothing is downloaded) are averaged
+into 8 mm voxels, giving a 24 x 29 x 23 grid with the MNI affine. Each subject has
+10 volumes: the template intensity inside the brain, two
 smooth blobs whose amplitudes change over time, and a little noise; voxels outside
 the brain are zero. The example writes these as NIfTI files, together with a PNG
 image, to a temporary directory, loads them in each supported way and prints what
 comes back. It then fits the folder with :func:`htfa.fit`, as a quick check that
-loaded data go straight into a fit (10 volumes are far too few for a meaningful
-model). Automatic installation of optional packages is switched off with
+loaded data go straight into a fit. This short simulated series demonstrates the
+input workflow; it does not validate an inference about brain activity.
+Automatic installation of optional packages is switched off with
 :func:`htfa.set_autoinstall` so that the build never calls pip. The printed numbers
 come from the code below.
 """

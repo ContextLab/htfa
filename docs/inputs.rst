@@ -49,15 +49,20 @@ Folders of NIfTI files
 - Voxel coordinates are world coordinates computed from each file's affine, so
   they are in mm for standard NIfTI files.
 - Subjects can have different numbers of voxels and of time points.
-  ``ValueError`` is raised only when they differ in coordinate dimensionality, for
-  example 2D images mixed with NIfTI.
+  They must share coordinate dimensionality; for
+  example, mixing 2D images with NIfTI raises ``ValueError``.
 - ``stack=True`` treats every 3D volume in the folder as one sample of a single
-  subject's time series.
+  subject's time series. Stacked volumes must share shape and affine;
+  explicit coordinate arrays must also have identical row order. Inputs with
+  and without world-coordinate affines cannot be stacked together.
 
 BIDS datasets
 -------------
 
-A BIDS dataset is a nested folder tree, so pass a list of paths:
+The Brain Imaging Data Structure (BIDS) organizes imaging files in a nested
+folder tree. Pass a list of paths rather than the dataset root. For example,
+this pattern selects resting-state runs (``task-rest``); change the pattern
+for your task and preprocessed files:
 
 .. code-block:: python
 
@@ -67,6 +72,12 @@ A BIDS dataset is a nested folder tree, so pass a list of paths:
 
    runs = sorted(Path("bids_root").glob("sub-*/func/*_task-rest_bold.nii.gz"))
    res = htfa.fit([str(p) for p in runs], K=50, random_state=0)
+
+Each selected file is treated as a separate subject. If a participant has
+multiple runs, combine those runs appropriately before an analysis that assumes
+independent subjects, such as a group permutation test. For anatomical
+interpretation across participants, coordinates must refer to a shared space;
+equal coordinate dimensionality alone does not establish anatomical alignment.
 
 Masks
 -----
@@ -85,7 +96,9 @@ drop them. ``mask=`` chooses voxels explicitly:
   subject (NIfTI input only).
 
 If a NaN or infinite value falls inside an explicit mask, :func:`htfa.load` raises
-``ValueError``.
+``ValueError``. An image-based mask must match both the image shape and affine
+(with tolerance for header rounding). The loader does not implicitly resample
+a mismatched mask; resample it onto the data grid explicitly.
 
 Arrays
 ------
@@ -124,6 +137,9 @@ Standardization
 The estimators z-score each location over samples by default
 (``standardize='auto'``, applied when ``T > 1``). Keep this on for fMRI: without it
 the fit is dominated by anatomical intensity differences. Synthetic data from
-:func:`htfa.make_tfa_data` and :func:`htfa.make_htfa_data` are already on a
-z-scored scale; fit them with ``standardize=False``.
-:meth:`htfa.HTFAResults.reconstruct` returns values in the standardized space.
+:func:`htfa.make_tfa_data` and :func:`htfa.make_htfa_data` use their generating
+scale; fit them with ``standardize=False`` when comparing recovered parameters
+with the known truth. :meth:`htfa.HTFAResults.reconstruct` returns values in
+the space used for fitting: standardized values when standardization is enabled,
+and the input scale otherwise. Complex-valued data and coordinates are rejected
+rather than converted silently to real values.

@@ -6,6 +6,8 @@ from collections.abc import Sequence
 
 import numpy as np
 
+from ._validation import real_array
+
 Array = np.ndarray
 
 __all__ = ["static_connectivity", "dynamic_connectivity", "isfc"]
@@ -14,7 +16,7 @@ _FISHER_CLIP = 1.0 - 1e-7
 
 
 def _weights(weights: Array) -> Array:
-    w = np.asarray(weights, dtype=np.float64)
+    w = real_array(weights, "weights")
     if w.ndim != 2:
         raise ValueError(f"weights must have shape (K, T); got {w.shape}")
     return w
@@ -83,7 +85,11 @@ def isfc(weights: Sequence[Array], window: int | None = None) -> Array:
 
     For each subject, its factor time courses are correlated with the mean of the
     other subjects' time courses; the result is symmetrized as ``(C + C.T) / 2`` and
-    averaged over subjects in Fisher-z space.
+    averaged over subjects in Fisher-z space. Factor rows and sample columns
+    must correspond across subjects. For example, movie-viewing data can align
+    samples to the same moments of a shared film. Equal array shapes alone do
+    not establish temporal correspondence; this alignment requirement belongs
+    to ISFC, not to HTFA fitting in general.
 
     Parameters
     ----------

@@ -8,8 +8,9 @@ and compare one sample with the model's reconstruction
 noiseless signal as a third panel (``truth=``) on the same color scale. The
 reconstruction is
 ``factors @ weights`` in the space the model was fitted in (here the raw values,
-because ``standardize=False``). The example also prints the fraction of variance
-explained, shows what :func:`htfa.tfa.standardize_data` does to the data, and
+because ``standardize=False``). The example also reports reconstruction R²
+relative to each voxel's temporal mean using :mod:`htfa.stats`, shows what
+:func:`htfa.tfa.standardize_data` does to the data, and
 maps results back to image space with :meth:`htfa.HTFAResults.to_image` and
 :meth:`htfa.Subject.to_image`.
 """
@@ -20,6 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import htfa
+from htfa.stats import reconstruction_statistics
 from htfa.tfa import standardize_data
 
 X, R, truth = htfa.make_tfa_data((24, 24), n_samples=6, K=4, noise=0.2, random_state=1)
@@ -31,11 +33,10 @@ res = htfa.fit(images, K=4, stack=True, standardize=False, random_state=0)
 elapsed = time.perf_counter() - start
 
 raw = res.subjects[0].data
-Z = standardize_data(raw, False)  # False leaves the data unchanged
 print("row std after 'auto' z-scoring:", standardize_data(raw, "auto").std(axis=1)[:3])
 recon = res.reconstruct(0)
-r2 = 1 - np.sum((Z - recon) ** 2) / np.sum((Z - Z.mean()) ** 2)
-print(f"fit time: {elapsed:.1f} s, variance explained: {r2:.3f}")
+r2 = reconstruction_statistics(res).r2
+print(f"fit time: {elapsed:.1f} s, reconstruction R²: {r2:.3f}")
 print("factor images:", res.factors(0).shape, "(V, K)")
 print("reconstruction in image space:", res.to_image(0).shape)
 print("one sample as an image:", res.subjects[0].to_image(recon[:, 0]).shape)

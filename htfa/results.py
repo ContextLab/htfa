@@ -37,6 +37,44 @@ def _scatter_field(ax: Any, coords: Array, values: Array, **kwargs: Any) -> Any:
     return sc
 
 
+def _space_connectome_ticks(display: Any) -> None:
+    """Keep color limits and zero legible when threshold ticks crowd them.
+
+    Nilearn exposes no tick-location argument for ``plot_connectome``. Access
+    its Matplotlib colorbar in this one guarded helper, then use the colorbar's
+    public tick API. Displays without that optional attribute are unaffected.
+    Only labels change: the threshold, color normalization and edges stay fixed.
+    """
+    cbar = getattr(display, "_cbar", None)
+    if cbar is None or not all(
+        hasattr(cbar, name) for name in ("get_ticks", "set_ticks", "ax", "norm")
+    ):
+        return
+    lower, upper = cbar.norm.vmin, cbar.norm.vmax
+    if lower is None or upper is None or not np.isfinite([lower, upper]).all():
+        return
+    span = upper - lower
+    if span <= 0:
+        return
+    selected = [float(lower), float(upper)]
+    if lower < 0 < upper:
+        selected.append(0.0)
+    # A fractional floor handles ordinary figures; font size and axes height
+    # make the margin more conservative for a compact user-supplied axes.
+    labels = cbar.ax.get_yticklabels()
+    font_points = max((label.get_fontsize() for label in labels), default=10.0)
+    height = cbar.ax.get_window_extent().height
+    label_pixels = font_points * cbar.ax.figure.dpi / 72
+    fraction = max(0.1, 1.5 * label_pixels / max(height, 1.0))
+    for tick in cbar.get_ticks():
+        if (
+            lower < tick < upper
+            and min(abs(tick - x) for x in selected) >= fraction * span
+        ):
+            selected.append(float(tick))
+    cbar.set_ticks(sorted(selected))
+
+
 def _symmetric_limit(values: list[Array]) -> float:
     """Shared color limit: the 99th percentile of ``|values|`` over all panels.
 
@@ -229,8 +267,8 @@ class HTFAResults:
     def reconstruct(self, subject: int = 0) -> Array:
         """Reconstruction ``factors(subject) @ weights[subject]``.
 
-        The result is in the standardized (z-scored) space the model was fitted
-        in, not in the units of the raw input.
+        The result uses the space fitted by the model: z-scored values when
+        standardization is enabled, or the input scale otherwise.
 
         Parameters
         ----------
@@ -387,6 +425,10 @@ class HTFAResults:
 
     def isfc(self, window: int | None = None) -> Array:
         """Inter-subject factor correlation across all subjects.
+
+        Samples must refer to matching events or times across subjects, such as
+        the same moments of a shared film; equal series lengths alone are not
+        sufficient. The fitted HTFA template supplies the common factor order.
 
         Parameters
         ----------
@@ -849,7 +891,9 @@ class HTFAResults:
         if D == 3:
             plotting = lazy_import("nilearn.plotting", "plot", "3D plotting")
             if ax is None:
-                return plotting.plot_connectome(conn, centers, edge_threshold=threshold)
+                disp = plotting.plot_connectome(conn, centers, edge_threshold=threshold)
+                _space_connectome_ticks(disp)
+                return disp
             # In a given (often small) axes, scale the L/R labels with the
             # axes width (nilearn uses 12 pt) so they clear the outlines.
             disp = plotting.plot_connectome(
@@ -857,6 +901,7 @@ class HTFAResults:
             )
             width_pt = ax.get_position().width * ax.figure.get_figwidth() * 72
             disp.annotate(size=float(np.clip(width_pt / 30, 6, 12)))
+            _space_connectome_ticks(disp)
             return disp
         plt = lazy_import("matplotlib.pyplot", "plot", "plotting")
         fig, ax = (ax.figure, ax) if ax is not None else plt.subplots()
@@ -887,7 +932,7 @@ class HTFAResults:
         view: str = "auto",
         cmap: str = "RdBu_r",
     ) -> Any:
-        """Original (standardized) data next to the reconstruction of one sample.
+        """Input data in the fitting scale next to one reconstructed sample.
 
         All panels share one symmetric color range, ``[-vmax, vmax]`` with
         ``vmax`` the 99th percentile of the absolute values over all panels
@@ -1170,8 +1215,8 @@ class HTFAResults:
         RBF-weighted centroid of the in-brain voxels and the width
         ``lambda_eff = 2 * sigma_eff**2`` from the weighted spread (see
         `htfa.brainnet.effective_nodes`). The fit is not changed. This
-        returns what a plot with the default ``snap=True`` drew, and works on
-        any fit, including one saved before snapping existed. Fits with
+        returns the node geometry of a plot with the default ``snap=True``.
+        Fits with
         another ``kernel`` or several components use their own profiles
         (see `htfa.brainnet.effective_nodes`).
 

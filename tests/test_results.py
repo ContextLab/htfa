@@ -313,7 +313,7 @@ def test_2d_node_plots_draw_display_nodes(res2d):
 
 
 def test_3d_glass_brain_draws_display_nodes(res3d, tmp_path):
-    """The 3D glass-brain plot equals plot_connectome at display_nodes."""
+    """Node/edge geometry equals plot_connectome at display_nodes exactly."""
     from nilearn import plotting
 
     r = res3d
@@ -331,8 +331,17 @@ def test_3d_glass_brain_draws_display_nodes(res3d, tmp_path):
         ),
     }.items():
         paths[name] = tmp_path / f"{name}.png"
-        make().savefig(paths[name])
-        plt.close("all")
+        display = make()
+        try:
+            # HTFA spaces threshold ticks for readability. Colorbar layout has
+            # dedicated render tests; compare node/edge geometry here without
+            # those intentionally different labels, keeping exact pixels.
+            colorbar = getattr(display, "_cbar", None)
+            if colorbar is not None:
+                colorbar.ax.set_visible(False)
+            display.savefig(paths[name])
+        finally:
+            display.close()
     arr = {k: np.asarray(Image.open(p).convert("RGB")) for k, p in paths.items()}
     np.testing.assert_array_equal(arr["snap"], arr["ref_snap"])
     np.testing.assert_array_equal(arr["raw"], arr["ref_raw"])

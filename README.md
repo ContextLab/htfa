@@ -1,29 +1,32 @@
 # htfa
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/_static/cover_dark.png">
-  <img alt="HTFA factor network: 50 template factors drawn as spheres inside a translucent brain, with the strongest inter-subject correlations as edges" src="docs/_static/cover_light.png" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ContextLab/htfa/main/docs/_static/cover_dark.png">
+  <img alt="HTFA factor network: 50 template factors drawn as spheres inside a translucent brain, with the strongest inter-subject correlations as edges" src="https://raw.githubusercontent.com/ContextLab/htfa/main/docs/_static/cover_light.png" width="100%">
 </picture>
 
-<sub>HTFA template (K = 50) fitted to 12 adults watching a movie (nilearn's <code>development_fmri</code>), from the left, above and right. Edges: the strongest 5% of factor pairs by inter-subject functional correlation (|ISFC| &ge; 0.137; red positive, blue negative). Node size: factor width; colour: ISFC community. Made with <code>scripts/make_cover.py</code>.</sub>
+<sub>Illustrative movie-viewing analysis: an HTFA template (K = 50) fitted to 12 adults watching Pixar's <i>Partly Cloudy</i>, from Nilearn's <code>development_fmri</code> dataset, viewed from the left, above and right. Inter-subject functional correlation (ISFC) measures correlations between participants' factor time courses at matching moments of the film. Edges show the strongest 5% of factor pairs (|ISFC| &ge; 0.137; red positive, blue negative). Node size represents factor width; node colour identifies communities in the positive-ISFC graph. See the <a href="https://htfa.readthedocs.io/en/latest/tutorials/10_dynamic_isfc_animation.html">ISFC tutorial</a> for the analysis workflow.</sub>
 
+[![PyPI version](https://img.shields.io/pypi/v/htfa.svg)](https://pypi.org/project/htfa/)
 [![tests](https://github.com/ContextLab/htfa/actions/workflows/tests.yml/badge.svg)](https://github.com/ContextLab/htfa/actions/workflows/tests.yml)
 [![Documentation Status](https://readthedocs.org/projects/htfa/badge/?version=latest)](https://htfa.readthedocs.io/en/latest/?badge=latest)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-
-> **Pre-release.** htfa is not on PyPI and has no tagged release yet, so the API may change. See [Status](#status).
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ContextLab/htfa/blob/main/LICENSE)
 
 ## Overview
 
-Topographic factor analysis (TFA) models a data matrix `X` (voxels by time points) as `X ≈ F W + noise`. Each of the `K` factors is a radial basis function with a center and a width in coordinate space, and `W` holds the factors' weights over time [1]. Hierarchical TFA (HTFA) fits TFA to several subjects at once, with a global template that the per-subject factors are tied to [2, 3, 4].
+Topographic factor analysis (TFA) models a data matrix `X` (voxels by time points) as `X ≈ F W + noise`. Each of the `K` factors is a spatial kernel, or a mixture of kernels, with fitted centers and widths in coordinate space. `W` holds the factors' weights over time [1]. Hierarchical TFA (HTFA) fits TFA to several subjects at once, with a global template that the per-subject factors are tied to [2, 3, 4].
 
-htfa is a from-scratch Python implementation of these algorithms, ported from the algorithm in [BrainIAK](https://brainiak.org). It does not import BrainIAK.
+The examples use simulated data, movie-viewing fMRI, a word-viewing experiment, and ordinary 2D images to illustrate different parts of the API. TFA and HTFA do not require a particular task: the inputs are observations at spatial coordinates. HTFA fits can have different time-series lengths across subjects; analyses that correlate subjects at matching time points, such as ISFC, additionally require aligned samples.
 
-- No MPI and no compiler: the core dependencies are pure Python wheels (numpy, scipy, scikit-learn, nibabel, joblib).
+htfa is a standalone Python implementation of these algorithms. Its numerical validation includes comparisons with [BrainIAK](https://brainiak.org); BrainIAK is not a runtime dependency.
+
+- No MPI or local compilation is needed when installing the prebuilt dependency wheels for a supported platform.
 - Analytic Jacobian for the center/width least-squares problem (`htfa/_kernels.py`).
 - A NumPy engine and a torch engine (CUDA, Apple Metal, CPU), chosen with the estimators' `backend` argument; `auto` uses a GPU only for large problems when torch is already installed.
-- Two solver modes: `mode='fast'` (the default) and `mode='exact'`, the reference that the equivalence tests and the BrainIAK cross-checks use. On real fMRI the fast mode fitted TFA 2.8 (K = 50) and 5.2 (K = 100) times faster and can end at a different local minimum of the same objective; its HTFA template differs from the exact one by 15.8 mm (median center distance) on 12 adults (see the Performance and Validation pages of the docs).
+- Two solver modes: `mode='fast'` (the default) and `mode='exact'` (the reference for numerical equivalence and BrainIAK checks). The modes optimize the same objective but can reach different local minima; see [Performance](https://htfa.readthedocs.io/en/latest/performance.html) and [Validation](https://htfa.readthedocs.io/en/latest/validation.html).
 - Factor shapes: Gaussian (`kernel='rbf'`, the default), `'laplace'` and `'mexican_hat'`, and mixtures of several components per factor (`n_components`).
+- Nested subject groups with group-level templates and permutation comparisons.
+- Reconstruction R² and nominal conditional Gaussian AIC, AICc and BIC (`htfa.stats`).
 - Inputs: NIfTI files and folders, nilearn/nibabel objects, numpy arrays and 2D images.
 - Synthetic data with ground truth (`htfa.synthetic`), factor-level connectivity, a results object, and BrainNet Viewer-style 3D network plots (`htfa.brainnet`).
 
@@ -63,14 +66,14 @@ For real data, pass a folder with one `.nii` / `.nii.gz` file per subject:
 res = htfa.fit("path/to/folder", K=50, random_state=0)
 ```
 
-The inputs `htfa.fit` accepts, its parameters and the results object are described in the [documentation](https://htfa.readthedocs.io/en/latest/) and in [docs/API.md](docs/API.md).
+The inputs `htfa.fit` accepts, its parameters and the results object are described in the [documentation](https://htfa.readthedocs.io/en/latest/) and in [docs/API.md](https://github.com/ContextLab/htfa/blob/main/docs/API.md).
 
 ## Installation
 
-htfa is not on PyPI yet. Install from GitHub:
+Install the [PyPI release](https://pypi.org/project/htfa/):
 
 ```bash
-pip install git+https://github.com/ContextLab/htfa.git
+pip install htfa
 ```
 
 For development, using [uv](https://docs.astral.sh/uv/):
@@ -93,7 +96,7 @@ make install
 | `gpu` | torch |
 | `brain3d` | pyvista, imageio, imageio-ffmpeg, pillow (BrainNet Viewer-style network plots and animations, `htfa.brainnet`) |
 | `tutorials` | hypertools, sentence-transformers (only to re-execute the word-decoding tutorial) |
-| `dev` | pytest, pytest-cov, ruff, mypy, build, twine, plus the optional libraries above |
+| `dev` | test, lint, type-checking and packaging tools, plus plotting and image dependencies |
 | `docs` | sphinx, furo, numpydoc, sphinx-gallery, nbsphinx, and others |
 
 Optional dependencies are installed with pip the first time they are needed, using the versions declared for the extra. To turn this off, set the environment variable `HTFA_AUTO_INSTALL=0` or call:
@@ -115,32 +118,13 @@ The Sphinx site is built from `docs/` with `make docs` (output in `docs/_build/h
 - [Example gallery](https://htfa.readthedocs.io/en/latest/auto_examples/index.html)
 - [API reference](https://htfa.readthedocs.io/en/latest/api.html)
 
-The hosted site at htfa.readthedocs.io is not live yet (Read the Docs is not configured); until it is, build the docs locally.
-
-## Status
-
-Done:
-
-- Tasks 1 to 11 of the [rewrite plan](docs/superpowers/plans/2026-10-23-htfa-rewrite.md): packaging, numerical kernels, NumPy and torch engines, on-demand dependencies, synthetic data, the `TFA` and `HTFA` estimators, input loading, connectivity, results and `htfa.fit`, the BrainIAK cross-check (`pytest -m brainiak`, run in CI), and benchmarks.
-- Task 14: BrainNet Viewer-style network plots (`htfa.brainnet`).
-- The Sphinx documentation site and example gallery (Tasks 12a and 12b).
-
-In progress:
-
-- Tutorials.
-- A faster solver.
-
-Not done:
-
-- Release workflow and PyPI publication (Task 13).
-
 ## Testing
 
 ```bash
 make test
 ```
 
-By default, tests marked `brainiak` or `network` are skipped. Markers:
+By default, tests marked `brainiak` or `network` are deselected. Markers:
 
 - `brainiak`: compares against the reference BrainIAK implementation (requires brainiak)
 - `network`: requires network access (downloads data)
@@ -158,8 +142,8 @@ For example, `.venv/bin/pytest -m brainiak` runs the BrainIAK comparison tests.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](https://github.com/ContextLab/htfa/blob/main/CONTRIBUTING.md).
 
 ## License
 
-MIT; see [LICENSE](LICENSE). `htfa/brainnet.py` and `htfa/timecourse.py` adapt code from ContextLab/directed-forgetting-network-dynamics (commit 31a2b66; MIT License, Copyright (c) 2019 Contextual Dynamics Laboratory). The BrainNet Viewer brain meshes used by `htfa.brainnet` are not included; they are downloaded from NITRC on first use (BrainNet Viewer is distributed under the GNU GPL).
+MIT; see [LICENSE](https://github.com/ContextLab/htfa/blob/main/LICENSE). `htfa/brainnet.py` and `htfa/timecourse.py` adapt code from ContextLab/directed-forgetting-network-dynamics (commit 31a2b66; MIT License, Copyright (c) 2019 Contextual Dynamics Laboratory). The BrainNet Viewer brain meshes used by `htfa.brainnet` are not included; they are downloaded from NITRC on first use (BrainNet Viewer is distributed under the GNU GPL).

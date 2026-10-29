@@ -45,11 +45,9 @@ def curvature_operand(a: Array, mode: str) -> NDArray[np.floating]:
     products: a float32 copy in mode ``'fast'``, ``a`` itself otherwise.
 
     Only the curvature is affected; costs and gradients stay in float64, so the
-    solver minimizes the same objective. Measured on development_fmri: float32
-    ``G G^T``, ``F G^T`` and ``G X`` (V = 25079, T = 168, K = 100) took 4.4,
-    2.5 and 2.7 ms against 10.6, 7.5 and 7.1 ms in float64; a Hessian assembly
-    took 9% to 17% less time (K = 50 and 100), with relative errors of 5e-6 to
-    1e-5 in the Gauss-Newton matrix and the Hessian.
+    solver minimizes the same objective. Float32 curvature products trade
+    numerical precision for computation cost; the resulting step can differ
+    even though the cost and gradient calculations use float64.
     """
     return a.astype(np.float32) if mode == "fast" else a
 
@@ -216,7 +214,7 @@ class Kernel:
 
     @property
     def plain_rbf(self) -> bool:
-        """One RBF component per factor: the original code paths."""
+        """Whether each factor is a single RBF component."""
         return self.name == "rbf" and self.n_components == 1
 
     def n_params(self, K: int, D: int) -> int:
@@ -436,8 +434,9 @@ def factors(
 
     With ``grid`` (`axis_grid` of ``R``) each factor is the product over the axes
     of ``exp(-(r_vj - c_kj)**2 / w_k)``, evaluated on the distinct coordinates and
-    gathered. The two forms agree to rounding (measured on development_fmri:
-    8.7e-14 relative per entry at most). Where the product underflows, the
+    gathered. The product and exponential-of-sum forms are mathematically
+    equivalent but can differ by floating-point rounding. Where the product
+    underflows, the
     exponential of the sum is below the smallest normal number too.
     `kernel_factors` evaluates the other kernels and mixtures.
     """
@@ -456,12 +455,10 @@ def gram_solve(F: Array, X: Array, beta: float) -> tuple[Array, Array, Array]:
     and ``F^T X`` (K, T).
 
     Eigenvalues below `GRAM_RCOND` times the largest, or below `GRAM_FLOOR`,
-    are dropped (only possible with ``beta = 0`` or constant data: a vanishing
-    or a near-duplicate factor). Their directions would otherwise give weights
-    of order ``1 / gap`` that cancel in ``F W``, and the residual sums would
-    then differ by more than the solver's tolerance between evaluation orders
-    (measured: 1.9e-7 relative for two factors 1e-6 apart). The weights are
-    then the minimum-norm minimizer on the kept eigenvectors (0 where every
+    are dropped. Small eigenvalues, for example from vanishing or nearly
+    duplicate factors, can produce large weights that cancel in ``F W`` and
+    make the residual sensitive to floating-point evaluation order. The weights
+    are the minimum-norm minimizer on the retained eigenvectors (0 where every
     factor vanishes).
     """
     vals, vecs = np.linalg.eigh(F.T @ F + beta * np.eye(F.shape[1]))
@@ -1267,6 +1264,53 @@ def _check_finite(cost: float, g: Array, gn: Array, x: Array) -> None:
         )
 
 
+def _finite_lm_scale(scale: Array, g: Array, gn: Array, hess: Array) -> Array:
+    """Use unit scaling only where the scaled local model is unrepresentable.
+
+    Vanishing mixture components can have tiny nonzero data-Jacobian norms
+    while a center prior contributes finite curvature at its zero residual.
+    Their inverse norms then overflow the scaled curvature. The scale changes
+    the optimization metric, not the model, bounds, or mixture weights.
+    """
+    with np.errstate(over="ignore", invalid="ignore"):
+        bad = ~np.isfinite(scale * g)
+        for matrix in (gn, hess):
+            if not np.isfinite(matrix).all():
+                continue  # The solver separately handles nonfinite raw curvature.
+            scaled = scale[:, None] * matrix * scale[None, :]
+            bad |= ~np.isfinite(scaled).all(axis=0) | ~np.isfinite(scaled).all(axis=1)
+    reset = bad & (scale > 1)
+    if np.any(reset):
+        scale = scale.copy()
+        scale[reset] = 1.0
+    return scale
+
+
+def _lm_initial_damping(scale: Array, gn: Array) -> float:
+    """Initial damping, without overflowing an otherwise finite scale² * Hjj."""
+    diagonal = np.diag(gn)
+    with np.errstate(over="ignore", invalid="ignore"):
+        scaled = scale**2 * diagonal
+        bad = ~np.isfinite(scaled)
+        # Preserve ordinary arithmetic exactly; reorder only failed products.
+        scaled[bad] = scale[bad] * (diagonal[bad] * scale[bad])
+    return LM_TAU * max(float(np.max(scaled)), EPS)
+
+
+def _vector_norm(vector: Array) -> float:
+    """Euclidean norm with a scaled BLAS fallback for overflowing dot products."""
+    with np.errstate(over="ignore", invalid="ignore"):
+        try:
+            value = float(np.linalg.norm(vector))
+        except FloatingPointError:
+            value = np.inf
+    if not np.isfinite(value):
+        # BLAS nrm2 scales its accumulation, avoiding intermediate squares
+        # outside float64 range when the norm itself remains representable.
+        value = float(scipy.linalg.norm(vector))
+    return value
+
+
 def bounded_lm(
     problem: "ResidualProblem | ProjectedProblem",
     x0: Array,
@@ -1281,7 +1325,7 @@ def bounded_lm(
 
     Minimizes ``problem.cost(x, loss)`` over the box ``bounds`` from ``x0``
     (clipped into the box). Every iteration assembles the gradient ``g`` and the
-    Hessian ``H`` (`ResidualProblem.cost_grad_hess`, P = K (D + 1) unknowns),
+    Hessian ``H`` (`ResidualProblem.cost_grad_hess`, P = len(x0) unknowns),
     fixes the variables at a bound whose gradient points out of the box, and
     solves ``(H_ff + lam diag(1 / scale_f**2)) p = -g_f`` on the free ones by
     Cholesky (``scale`` plays scipy's ``x_scale`` role; where the damped
@@ -1304,13 +1348,8 @@ def bounded_lm(
     ``mode`` (see `SOLVER_MODES`) chooses the step model where the Hessian is
     not positive definite on the free variables. ``'exact'`` then takes the
     Gauss-Newton step, damped by ``lam``. ``'fast'`` keeps the Hessian and
-    raises ``lam`` until the damped matrix is positive definite. On
-    development_fmri the Hessian was indefinite at 96% to 100% of the accepted
-    points of a solve (6 solves, K = 50 and 100), where Gauss-Newton steps
-    converge linearly: one solve from the K-means start (K = 100) took 466
-    steps to a cost of 990024.95 with ``'exact'`` and 155 steps to 988678.64
-    with a float64 prototype of the ``'fast'`` step. ``'fast'`` also forms
-    the largest curvature products of the linear loss in float32
+    raises ``lam`` until the damped matrix is positive definite. ``'fast'``
+    also forms the largest curvature products of the linear loss in float32
     (`curvature_operand`). Both modes minimize the same cost, in float64; they
     can end at different local minima.
 
@@ -1350,9 +1389,13 @@ def bounded_lm(
     ftol = ftol_for(problem.engine.eps)
     cost, g, gn, hess = problem.cost_grad_hess(x, loss, mode=mode)
     nfev, nu = 1, 2.0
-    lam = LM_TAU * max(float(np.max(scale**2 * np.diag(gn))), EPS)
+    lam = 0.0
     while True:
         _check_finite(cost, g, gn, x)
+        adjusted = _finite_lm_scale(scale, g, gn, hess)
+        if nfev == 1 or adjusted is not scale:
+            scale = adjusted
+            lam, nu = _lm_initial_damping(scale, gn), 2.0
         free = ~(((x <= lb) & (g > 0)) | ((x >= ub) & (g < 0)))
         if not free.any() or np.max(np.abs(g[free])) < GTOL:
             return x, cost, 1, nfev
@@ -1405,7 +1448,7 @@ def bounded_lm(
             # Relative to the full objective: the compressed problem's cost
             # excludes cost_offset.
             ftol_ok = actual < ftol * (cost + problem.cost_offset) and ratio > 0.25
-            xtol_ok = np.linalg.norm(step) < XTOL * (XTOL + np.linalg.norm(x))
+            xtol_ok = _vector_norm(step) < XTOL * (XTOL + _vector_norm(x))
             accepted = ratio > 0
             if accepted and trace is not None:
                 trace.append(

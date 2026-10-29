@@ -25,7 +25,7 @@ These extras are declared in ``pyproject.toml``:
    * - ``gpu``
      - torch (``backend='torch'``, ``'cuda'`` or ``'mps'``)
    * - ``dev``
-     - pytest, pytest-cov, ruff, mypy, build, twine, plus the optional libraries above
+     - pytest, pytest-cov, ruff, mypy, build, twine, plus plotting and image dependencies
    * - ``docs``
      - sphinx, furo, numpydoc, sphinx-gallery, nbsphinx, and others
 

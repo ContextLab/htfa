@@ -62,7 +62,7 @@ with them; the factor's time series are fitted for the whole mixture.
 HTFA's template then carries every component and the mixing weights, each with
 a prior and update analogous to the widths' (``global_component_centers_``,
 ``global_component_widths_``, ``global_mixing_weights_``). ``kernel='rbf'`` with
-one component is the original model, bit for bit. :func:`htfa.make_tfa_data` and
+one component represents a Gaussian spatial factor. :func:`htfa.make_tfa_data` and
 :func:`htfa.make_htfa_data` generate data from any shape and number of
 components. See :doc:`tutorials/12_kernel_shapes` and :doc:`validation`.
 
@@ -123,7 +123,7 @@ Common model parameters
      - Step model of the center/width solver: ``'fast'`` keeps the Hessian where it is indefinite, ``'exact'`` (the reference, used by the equivalence tests and BrainIAK cross-checks) takes Gauss-Newton steps there; see :doc:`performance`
    * - ``n_jobs`` (HTFA)
      - ``None``
-     - joblib workers for the per-subject fits (NumPy backend)
+     - Concurrent subject fits; NumPy fits use threads in one process
    * - ``verbose``
      - ``False``
      - Print per-iteration progress
@@ -136,10 +136,14 @@ Groups of subjects
 ------------------
 
 ``HTFA.fit(X, coords, groups=...)`` (and ``htfa.fit(..., groups=...)``) fits
-one template per group of subjects under the global template, for example
-children and adults under a template of people in general. ``groups`` is one
-label (``str`` or ``int``) per subject, or a list of label sequences for deeper
-nesting, top level first (``[site, diagnosis]``). Each subject's prior is
+one template per group of subjects under the global template. For an
+illustrative developmental comparison, child and adult participants can have
+separate templates under one shared global template. These labels are examples;
+the API accepts any valid nested grouping of independent subjects. ``groups``
+is one label (``str`` or ``int``) per subject, or a list of label sequences for
+deeper nesting, top level first. For example, ``[site, subgroup]`` can describe
+participants grouped first by acquisition site and then by a subgroup within
+that site; subgroup labels must be distinct across sites. Each subject's prior is
 centred on its group's template, each group's prior on its parent's, with the
 subject-level covariance of the fit at every level; the templates jointly
 minimize the summed penalties given the subjects' local estimates
@@ -148,13 +152,18 @@ posterior covariances. Groups need ``template_update='fixed'`` or
 ``'empirical'``. Only nested designs are supported: a label under two parents,
 or (with ``subject_ids``) a subject in two groups, raises ``ValueError``.
 
+This schematic example assumes ``Xs``, ``Rs``, and ``subject_ids`` follow a
+prespecified dataset-identifier order, chosen independently of group labels or
+effects. ``group_labels`` contains the corresponding child/adult metadata
+label for each participant:
+
 .. code-block:: python
 
    import htfa
 
    model = htfa.HTFA(K=30, template_update="fixed", random_state=0)
-   model.fit(Xs, Rs, groups=["child"] * 10 + ["adult"] * 10)
-   model.group_keys_          # ['child', 'adult']
+   model.fit(Xs, Rs, groups=group_labels, subject_ids=subject_ids)
+   model.group_keys_          # fitted group labels
    model.group_centers_       # (2, K, D), factor k = global factor k
    model.group_centers_cov_   # (2, K, D, D)
 
@@ -198,7 +207,12 @@ Loading
 Connectivity
 ------------
 
-These functions work on any ``(K, T)`` weight matrices.
+These functions summarize Pearson correlations of ``(K, T)`` factor-weight
+matrices, either over all samples or within sliding windows. Inter-subject
+functional correlation (ISFC) additionally compares each participant with the
+other participants. For that comparison, factor rows and sample columns must
+correspond across subjects. Watching the same film at aligned time points is
+one example; merely having equal-length recordings is not sufficient.
 
 .. autosummary::
    :toctree: generated/
@@ -221,23 +235,24 @@ need the ``brain3d`` extra (pyvista, imageio, imageio-ffmpeg, pillow). The brain
 meshes come from BrainNet Viewer 1.43, which is not bundled: the first call downloads
 it from NITRC, checks its SHA-256 checksums and caches the meshes.
 
-A fitted center can lie outside the brain (its RBF still reaches in). The built-in
-node plots (:func:`htfa.plot_network`, :func:`htfa.animate_network`, and the
-:class:`htfa.HTFAResults` methods ``plot_network``, ``animate_network``,
-``plot_nodes`` and ``plot_connectivity``) therefore draw each node as the part of its
-RBF inside the brain: the RBF-weighted centroid of the in-brain voxels, sized by
-``lambda_eff = 2 * sigma_eff**2`` from the weighted spread
-(:func:`htfa.brainnet.effective_nodes`). Interior nodes are unchanged; nodes near the
-edge move inward and shrink. The fit itself is not changed. ``snap=False`` draws the
-fitted centers and widths. The mask (``mask=``) defaults to the subject's voxels (all
-subjects' voxels for the template) for an :class:`htfa.HTFAResults`, and to the
-MNI152 brain mask (:func:`htfa.brainnet.mni_mask`) for bare MNI centers or a fitted
-estimator. ``HTFAResults.display_nodes(subject)`` returns the drawn centers, widths and
-per-node details (distance moved, snapped and ambiguous flags, in-brain mass
-fraction, ``sigma_eff``, ``lambda_eff / lambda``), also for fits made before this
-existed. Fits with another ``kernel`` or several components are drawn from their
-own profiles (the positive part for ``'mexican_hat'``), with ``lambda_eff`` the
-width of the RBF with the same spread:
+A fitted center can lie outside the brain while part of its spatial profile
+lies inside. In the sphere/centroid view, ``snap=True`` places the display node
+at the profile-weighted centroid of the in-mask voxels and sizes it by
+``lambda_eff = 2 * sigma_eff**2`` from their weighted spread
+(:func:`htfa.brainnet.effective_nodes`). For Mexican-hat kernels, the positive
+part of the profile defines this summary. ``snap=False`` uses the fitted
+centers and widths directly. Neither setting changes the fit.
+
+The mask (``mask=``) defaults to the subject's voxels (all subjects' voxels for
+the global template) for an :class:`htfa.HTFAResults`, and to the MNI152 brain
+mask (:func:`htfa.brainnet.mni_mask`) for bare MNI centers or a fitted estimator.
+``HTFAResults.display_nodes(subject)`` returns the summary centers, widths and
+per-node details: distance moved, snapped and ambiguous flags, in-brain mass
+fraction, ``sigma_eff`` and ``lambda_eff / lambda``.
+
+Non-RBF kernels and mixtures use spatial lobes by default, as described under
+"Component network views" below. For those views, snapping adjusts the edge
+anchors but does not move or resize the spatial fields.
 
 .. code-block:: python
 
@@ -276,9 +291,13 @@ Example data
 ------------
 
 :func:`htfa.datasets.fetch_development_fmri` downloads nilearn's
-``development_fmri`` dataset (children and adults watching a short film) on first
-use and returns its runs masked to in-brain voxels and cleaned of a linear trend
-and confounds, ready for :func:`htfa.fit`:
+``development_fmri`` dataset on first use. In this example experiment, children
+and adults watch Pixar's *Partly Cloudy* while 168 fMRI volumes are acquired
+two seconds apart. The common stimulus supports the tutorials' aligned-time
+connectivity examples. This convenience loader is specific to that dataset;
+use :func:`htfa.load` or arrays for other studies. It returns runs masked to
+in-brain voxels and cleaned of a linear trend and confounds, ready for
+:func:`htfa.fit`:
 
 .. code-block:: python
 
@@ -298,7 +317,7 @@ and confounds, ready for :func:`htfa.fit`:
    htfa.datasets.regress_confounds
 
 :func:`htfa.datasets.fetch_tutorial_fit` downloads the saved HTFA fit of a
-tutorial (09, 10 or 11) from the ``tutorial-data-v1`` pre-release of the htfa
+tutorial (09, 10, 11 or 13) from the ``tutorial-data-v1`` data release of the htfa
 repository, checks its SHA-256 and returns its arrays; the tutorials use it unless
 ``REFIT = True``.
 
@@ -311,8 +330,11 @@ repository, checks its SHA-256 and returns its arrays; the tutorials use it unle
 Synthetic data
 --------------
 
-The synthetic generators return data already on a z-scored scale, so fit them with
-``standardize=False``.
+The synthetic generators simulate spatial factors and their sample weights,
+then add noise. Their returned ground truth makes them useful for recovery
+checks without an experimental dataset. Fit on the generating scale with
+``standardize=False`` when comparing estimates with that truth; the generated
+data are not necessarily voxel-wise z-scored.
 
 .. autosummary::
    :toctree: generated/
@@ -359,7 +381,7 @@ not connectivity. For example::
     results.plot_network(subject=0)       # component isosurfaces, BrainNet style
     results.plot_network(subject=0, node_mode="summary")  # one sphere per factor
 
-``node_mode="auto"`` keeps the historical sphere/centroid view for single RBFs
+``node_mode="auto"`` uses the sphere/centroid view for single RBFs
 and uses component lobes for other kernels and mixtures. ``"components"`` forces
 lobes for any kernel. ``lobe_level=0.05`` draws the 5% contour of each component's
 unmasked peak. Both signs use that same level: Mexican-hat negative surrounds

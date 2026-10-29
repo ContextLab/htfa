@@ -1,11 +1,12 @@
 Installation
 ============
 
-htfa requires Python 3.10 or newer. It is not on PyPI yet; install it from GitHub:
+htfa requires Python 3.10 or newer. Install the
+`PyPI release <https://pypi.org/project/htfa/>`_:
 
 .. code-block:: bash
 
-   pip install git+https://github.com/ContextLab/htfa.git
+   pip install htfa
 
 For development, using `uv <https://docs.astral.sh/uv/>`_:
 
@@ -24,9 +25,11 @@ Apple Silicon Macs (``sys_platform == 'darwin'`` and ``platform_machine ==
 'arm64'``), torch is also a core dependency, so that the Apple GPU (MPS) backend
 is available without an extra install step.
 
-The lower bounds in ``pyproject.toml`` (numpy 1.24, scipy 1.10, scikit-learn
-1.3, nibabel 5, joblib 1.3, threadpoolctl 3, torch 2.2) are the versions the
-test suite is run against in CI (``uv pip install --resolution lowest-direct``).
+The Linux minimum-dependency CI job uses
+``uv pip install --resolution lowest-direct`` for its selected direct
+dependencies, including numpy, scipy, scikit-learn, nibabel, joblib and
+threadpoolctl. This does not validate every optional dependency floor or
+the Apple Silicon torch requirement against its minimum version.
 scikit-learn 1.3 is the first release whose k-means++ seeding uses
 ``sample_weight``, which the ``'ncorr'`` and ``'power'`` starts rely on; older
 releases ignore the weights during seeding. torch's own metadata requires a

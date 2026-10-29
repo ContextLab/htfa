@@ -2,8 +2,11 @@
 
 `fetch_development_fmri` downloads (on first use) nilearn's ``development_fmri``
 dataset (Richardson et al., 2018, Nature Communications 9: 1027): 155 children and
-adults watching the Pixar short "Partly Cloudy", 168 volumes at TR = 2 s in 4 mm
-MNI space, with fMRIPrep confounds. Each run is masked with the MNI152 brain mask
+adults watching the Pixar short "Partly Cloudy", with 168 brain volumes sampled
+every two seconds (the repetition time, TR) in 4 mm MNI anatomical reference
+space, with fMRIPrep confounds. This is an illustrative movie-viewing dataset,
+not an input requirement of HTFA; other studies can use `htfa.load` or arrays.
+Each run is masked with the MNI152 brain mask
 resampled to the data grid, minus voxels outside the subject's own brain (mean
 intensity below 10% of the median) and voxels nearly constant over any quarter of
 the run, and cached as ``.npz``. `regress_confounds` then removes a linear trend
@@ -54,8 +57,8 @@ TUTORIAL_FITS = {
         "01a094f618466ae4400c4d3583342f64496e84a4733028a95399131b1bd9b468",
     ),
     "development_fmri_children_adults_null_100": (
-        "htfa_development_fmri_children_adults_null_100-d7c05c55f4a9.npz",
-        "d7c05c55f4a90e6e8fb0cf528afb7a490ecaed3327703a3139364daf8214fac1",
+        "htfa_development_fmri_children_adults_null_100-5bf2ae0b61f7.npz",
+        "5bf2ae0b61f729f10be2820ba84cdd5f00448f5b51910024b66d7cca821b30eb",
     ),
     "mitchell2008_K100": (
         "htfa_mitchell2008_K100-de0427fbc847.npz",
@@ -303,6 +306,11 @@ def fetch_development_fmri(
     cache_dir: str | os.PathLike | None = None,
 ) -> DevelopmentFMRI:
     """nilearn's development_fmri runs, masked and cleaned for HTFA.
+
+    In this example dataset, children and adults watch Pixar's "Partly Cloudy"
+    during fMRI acquisition. Each run contains 168 brain volumes sampled two
+    seconds apart. This convenience loader is specific to that study; use
+    `htfa.load` or arrays for other experimental datasets.
 
     Downloads the runs that are not yet in nilearn's data directory (about
     25 MB each), masks each one (`load_development_fmri_subject`, cached) and,

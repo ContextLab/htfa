@@ -1,0 +1,28 @@
+name: isolated CPU benchmark
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install ".[nilearn]" psutil
+      - name: Matched fits on a dedicated runner
+        run: python scripts/benchmark_release.py benchmark.json
+        env:
+          PYTHONPATH: .
+          OMP_NUM_THREADS: '2'
+          OPENBLAS_NUM_THREADS: '2'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: isolated-cpu-benchmark
+          path: benchmark.json

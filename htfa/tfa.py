@@ -33,6 +33,8 @@ from htfa._kernels import (
 )
 from htfa._matching import match_factors
 
+from ._validation import real_array
+
 Array = NDArray[np.float64]
 
 INIT_METHODS = ("ncorr", "power", "kmeans")
@@ -129,7 +131,7 @@ def standardize_data(X: ArrayLike, mode: str | bool) -> Array:
     is_bool = isinstance(mode, (bool, np.bool_))
     if not is_bool and mode != "auto":
         raise ValueError(f"standardize must be 'auto', True or False, got {mode!r}")
-    X = np.asarray(X, dtype=np.float64)
+    X = real_array(X, "X")
     if is_bool and not mode:
         return X
     if X.shape[1] > 1:
@@ -169,7 +171,7 @@ def _sample_size(n: int, ratio: float, cap: int | None) -> int:
 
 def _check_coords(coords: ArrayLike, V: int | None, D: int | None) -> Array:
     """Validate coordinates (V, D): 2D, matching shape, D in {2, 3}, finite."""
-    R = np.asarray(coords, dtype=np.float64)
+    R = real_array(coords, "coords")
     if R.ndim != 2 or (V is not None and R.shape[0] != V):
         raise ValueError(
             f"coords must have shape ({V if V is not None else 'V'}, D), got {R.shape}"
@@ -281,9 +283,7 @@ def _initial_starts(
 
 
 def _kw(kernel: Kernel) -> dict[str, Any]:
-    """``kernel=kernel`` for the kernel functions, or nothing for one RBF
-    component: the plain RBF fit then calls them exactly as before the kernel
-    shapes (tests/test_fit_equivalence.py runs it on the 3298278 kernels)."""
+    """Kernel keyword arguments; single RBFs use the specialized default path."""
     return {} if kernel.plain_rbf else {"kernel": kernel}
 
 
@@ -392,10 +392,11 @@ class TFA(BaseEstimator):
     exp(-||r_v - c_k||**2 / w_k)`` are radial basis factors with centers ``c_k``
     and widths ``w_k = 2 sigma_k**2`` (BrainIAK's convention), or factors of
     another shape or mixtures of several components (``kernel``,
-    ``n_components``). The fit alternates
-    ridge-regression weights with a bounded nonlinear least-squares solve for the
-    centers and widths, from one or more candidate starts (see ``init``), and keeps
-    the candidate with the lowest final objective.
+    ``n_components``). The default linear-loss variable-projection solver
+    eliminates the temporal weights analytically while optimizing spatial
+    parameters. Other spatial solvers alternate weight and spatial updates.
+    The fit evaluates one or more candidate starts (see ``init``), keeping the
+    candidate with the lowest final objective.
 
     On macOS, a standalone TFA fit and HTFA's stage-0 fit of the same subject
     can differ at rounding level, because HTFA runs subject fits on one BLAS
@@ -407,27 +408,16 @@ class TFA(BaseEstimator):
         Number of factors; must be smaller than the number of voxels.
     max_iter : int, default=100
         Maximum number of outer iterations per candidate start. ``0`` evaluates
-        the start itself (no iterations). BrainIAK's default of 10 together with
-        its 1.0 threshold stops after about 3 iterations with roughly 10% width
-        error, so both defaults depart from BrainIAK.
+        the start itself without spatial optimization; temporal weights are
+        still fitted at that starting point.
     threshold : float, default=1e-3
         Convergence threshold on the scaled change between iterations,
         ``max(max|dc| / L, max|dw| / w)`` with ``L = sqrt(max_sigma(R) / 2)``.
-        BrainIAK instead thresholds the raw largest change at 1.0. With subsampling
-        (any ratio < 1 or a cap below the data size) the fresh sample of every
-        iteration keeps the change from settling: it has a noise floor, the
-        difference between two subsample optima. Measured on real fMRI data
-        (V = 69597, T = 1137, K = 100, six independent solves per row):
+        With subsampling (any ratio < 1 or a cap below the data size), fresh
+        samples can produce different spatial optima, so successive changes
+        need not settle below this threshold.
 
-        ===========  =============  =================  ======================
-        caps (V, T)  scaled change  center noise (mm)  width noise (median/90%)
-        ===========  =============  =================  ======================
-        3000, 300    0.56           2.1                5.6% / 23%
-        10000, 300   0.31           1.3                4.3% / 15%
-        30000, 300   0.31           0.85               2.5% / 14%
-        ===========  =============  =================  ======================
-
-        So with subsampling the fit also evaluates the objective after every
+        With subsampling the fit also evaluates the objective after every
         iteration, on one fixed random subsample of ``max(2 Vs, 6000)`` voxels
         (``Vs`` the per-iteration voxel count, at most V) and all samples
         (``max_trs`` if set), and stops when its lowest value so far has fallen
@@ -442,14 +432,13 @@ class TFA(BaseEstimator):
         method on the explicit K (D + 1)-square Gauss-Newton system, assembled
         from the factor structure of the Jacobian (`htfa._kernels.bounded_lm`).
         ``'trf'`` and ``'dogbox'`` run ``scipy.optimize.least_squares`` with a
-        matrix-free Jacobian (BrainIAK's solver; much slower). All minimize the
+        matrix-free Jacobian. All minimize the
         same objective with scipy's default tolerances, for weights held fixed
         within an outer iteration. ``'varpro'`` (linear loss only) runs the
         same solver on the variable-projection objective, with the ridge
         weights eliminated (`htfa._kernels.ProjectedProblem`): its stationary
-        points are the fixed points of the alternation, which it reaches in a
-        few outer iterations instead of hundreds on real data (BrainIAK uses
-        ``'trf'`` with ``'soft_l1'``).
+        points are the fixed points of the alternation. BrainIAK uses
+        ``'trf'`` with ``'soft_l1'``.
     nlss_loss : {'linear', 'soft_l1', 'huber', 'cauchy', 'arctan', \
 'linear+soft_l1'}, default='linear'
         Loss of the data residual, as in ``least_squares``. ``'linear'`` is
@@ -462,12 +451,8 @@ class TFA(BaseEstimator):
         ``cost_``, ``converged_reason_`` and ``objective_history_`` are the
         second stage's; when the first stage ends at ``max_iter`` the second does
         not run and the fit ends on ``'max_iter'``.
-        The robust losses (``'soft_l1'``, BrainIAK's, or the two-stage fit at
-        about half its cost) are for
-        heavy-tailed noise: with Student-t(3) noise added to `make_tfa_data`
-        they recovered centers about 10% more closely than the linear loss
-        (docs/validation.rst), while on real fMRI the linear loss held out as
-        well (held-out R^2 0.0424 vs 0.0423) at about a tenth of the time.
+        Robust losses reduce the influence of large residuals and can be useful
+        for heavy-tailed noise.
     x_scale : 'jac' or ndarray, default='jac'
         Variable scaling (``least_squares``' ``x_scale``; the damping scale of
         ``'bounded-lm'``); ``'jac'`` uses the inverse Jacobian column norms at the
@@ -504,14 +489,10 @@ class TFA(BaseEstimator):
     n_screen_iter : int, default=0
         With several candidate starts and ``n_screen_iter > 0``, run each start
         for this many iterations, keep the one with the lowest full-data
-        objective and continue only that one to convergence (about 1/3 to 2/3 of
-        the time of full fits). ``0`` fits every candidate to convergence and
-        compares final objectives. Measured with 3 and 5 (`make_tfa_data` 3D
-        20^3, K=8 and 2D 40^2, K=6, T=100, seeds 0-5): on raw data screening
-        kept the full fits' winner every time, with identical final centers; on
-        per-voxel z-scored data it picked a different start in 6 of 12 cases,
-        where two starts had reached the same optimum (objectives within 1e-5
-        relative, matched centers within 0.03).
+        objective and continue only that candidate. ``0`` runs every candidate
+        until its stopping rule or iteration limit and compares final objectives.
+        Screening reduces work on discarded starts but can select a different
+        candidate than fully fitting every start.
     backend : {'auto', 'numpy', 'cpu', 'torch', 'cuda', 'mps'}, default='auto'
         Compute engine for the data-term products; see
         `htfa._engines.select_engine`.
@@ -525,13 +506,10 @@ class TFA(BaseEstimator):
         reference behavior, in which the equivalence tests and the BrainIAK
         cross-checks run. ``'fast'`` keeps the Hessian there and raises the
         damping instead, and forms the largest curvature products of the
-        linear loss in float32. On real fMRI the Hessian is indefinite at most
-        points of a solve, so ``'fast'`` takes fewer steps and can end at a
-        different local minimum. On six development_fmri adults it fitted
-        2.8 (K = 50) and 5.2 (K = 100) times faster; on twelve, its
-        objectives were within -4.7e-4 to +3.4e-4 (relative) of the exact
-        fits, and mean held-out R^2 0.0429 and 0.0507 against 0.0427 and
-        0.0506 (see docs/performance.rst and docs/validation.rst).
+        linear loss in float32. Different step models and floating-point
+        precision can lead to different local minima. Runtime and reconstruction
+        quality depend on the workload; see the Performance and Validation
+        guides for controlled comparisons and interpretation.
     random_state : None, int or numpy.random.Generator, default=None
         Seeds the K-means initializations and the subsampling.
     verbose : bool, default=False
@@ -680,7 +658,7 @@ class TFA(BaseEstimator):
         return Kernel(self.kernel, self.n_components)
 
     def _validate(self, X: ArrayLike, coords: ArrayLike) -> tuple[Array, Array]:
-        X = np.asarray(X, dtype=np.float64)
+        X = real_array(X, "X")
         if X.ndim != 2:
             raise ValueError(f"X must be 2D (voxels, samples), got shape {X.shape}")
         R = _check_coords(coords, X.shape[0], None)
@@ -1115,7 +1093,7 @@ class TFA(BaseEstimator):
         kernel = Kernel(
             getattr(self, "kernel", "rbf"), getattr(self, "n_components", 1)
         )
-        if kernel.plain_rbf:  # also fits saved before the kernel shapes
+        if kernel.plain_rbf:
             result: Array = factors(R, self.centers_, self.widths_)
             return result
         return component_factors(

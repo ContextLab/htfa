@@ -31,6 +31,7 @@ import numpy as np
 from numpy.typing import NDArray
 from sklearn.base import clone
 
+from htfa._kernels import Kernel
 from htfa._matching import match_factors
 from htfa.connectivity import static_connectivity
 
@@ -156,7 +157,9 @@ def group_tree(
     ----------
     groups : sequence of labels, or sequence of sequences of labels
         One label (``str`` or ``int``) per subject, or a list of such sequences,
-        one per level, top level first (for example ``[site, diagnosis]``).
+        one per level, top level first. For example, ``[site, subgroup]`` can
+        group participants first by acquisition site and then by a subgroup
+        within that site; these names illustrate nesting, not required labels.
         Groups must be nested: every label of a level belongs to one label of
         the level above (use distinct labels such as ``'A-patient'`` and
         ``'B-patient'`` for groups under different parents).
@@ -181,6 +184,9 @@ def group_tree(
 
     Examples
     --------
+    An illustrative age-group tree for four independent participants, with one
+    global template above separate child and adult templates:
+
     >>> tree = group_tree(["child", "adult", "child", "adult"], 4)
     >>> tree.paths
     [(), ('child',), ('adult',)]
@@ -250,7 +256,10 @@ def group_tree(
 class GroupTest:
     """Result of `group_permutation_test`.
 
-    The statistics are per factor (in global template order). For the groups
+    The statistics are per factor, displayed in the supplied model's global
+    template order. Matching across refits uses a fixed, label-independent
+    stage-0 reference; ``reference_indices`` identifies each column's reference
+    factor. For the groups
     compared (those of ``level``, against their siblings under the same parent),
     each is the subject-weighted root-mean-square distance of the group values
     from their subject-weighted mean, pooled over parents:
@@ -276,6 +285,13 @@ class GroupTest:
     random_state : int or None
     seconds : float
         Time taken by the refits.
+    reference_centers : ndarray, shape (K, D)
+        Label-independent factor centers from the first subject's stage-0 fit,
+        in its original order. Empty for saved results without this metadata.
+    reference_indices : ndarray, shape (K,)
+        Reference index for each statistic column. The same column permutation
+        is applied to the observed statistics and every null sample. Empty for
+        saved results without this metadata.
     """
 
     level: int
@@ -289,6 +305,12 @@ class GroupTest:
     permuted_labels: NDArray[np.str_]
     random_state: int | None
     seconds: float
+    reference_centers: Array = dataclasses.field(
+        default_factory=lambda: np.empty((0, 0), dtype=float)
+    )
+    reference_indices: NDArray[np.intp] = dataclasses.field(
+        default_factory=lambda: np.empty(0, dtype=np.intp)
+    )
 
     def pvalues(self, stat: str = "center", fwe: bool = False) -> Array:
         """Per-factor permutation p-values ``(1 + #{null >= observed}) / (1 + P)``.
@@ -300,10 +322,15 @@ class GroupTest:
             Family-wise over the K factors: compare each observed value with the
             largest statistic over factors of each permutation (max-statistic
             correction). Default ``False`` (per factor, uncorrected).
+            Uncorrected values concern prespecified reference factors; selecting
+            a factor after inspecting its effect requires multiplicity control.
 
         Returns
         -------
         ndarray, shape (K,)
+            NaN when the observed statistic or a required null statistic is
+            nonfinite. With ``fwe=True``, every null factor must be finite,
+            because each permutation contributes its maximum over all factors.
         """
         if stat not in ("center", "width", "connectivity"):
             raise ValueError(
@@ -312,7 +339,10 @@ class GroupTest:
         observed = getattr(self, stat)
         null = getattr(self, f"{stat}_null")
         ref = null.max(axis=1, keepdims=True) if fwe else null
-        return (1.0 + (ref >= observed[None, :]).sum(axis=0)) / (1.0 + len(null))
+        p = (1.0 + (ref >= observed[None, :]).sum(axis=0)) / (1.0 + len(null))
+        null_valid = np.isfinite(null).all() if fwe else np.isfinite(null).all(axis=0)
+        valid = np.isfinite(observed) & null_valid
+        return np.where(valid, p, np.nan)
 
     def to_arrays(self) -> dict[str, Array]:
         """The fields as NumPy arrays (``np.savez`` without pickling); the
@@ -338,7 +368,9 @@ class GroupTest:
         ``random_state`` of -1 as ``None``; other entries of ``arrays`` are
         ignored.
         """
-        kw = {f.name: arrays[f.name] for f in dataclasses.fields(cls)}
+        kw = {
+            f.name: arrays[f.name] for f in dataclasses.fields(cls) if f.name in arrays
+        }
         kw["level"] = int(kw["level"])
         kw["groups"] = [str(g) for g in kw["groups"]]
         seed = int(kw["random_state"])
@@ -419,6 +451,19 @@ def _statistics(
     )
 
 
+def _permutation_reference(
+    free_fit: Sequence[Array], global_centers: Array
+) -> tuple[Array, NDArray[np.intp]]:
+    """Label-independent stage-0 anchor and a common display permutation."""
+    centers = np.asarray(free_fit[0])
+    reference = (
+        centers.copy()
+        if centers.ndim == 2
+        else np.einsum("km,kmd->kd", Kernel.mixing(Kernel.logits(free_fit[2])), centers)
+    )
+    return reference, match_factors(global_centers, reference)
+
+
 def group_permutation_test(
     model: HTFA,
     X: Sequence[Any],
@@ -438,8 +483,21 @@ def group_permutation_test(
     do not depend on the labels. The observed statistics come from the same
     refit with the true labels (which, for an integer ``random_state`` and a
     fit made without ``starts`` or ``init_template``, reproduces ``model``).
-    Each refit's global template is matched to the observed one, so factor
-    ``k`` is the same factor in every refit. See `GroupTest` for the statistics.
+    Every refit's global template is matched to the first subject's fixed
+    stage-0 centers (mixture-weighted centers for mixture factors). This
+    reference does not depend on the group labels. A single common permutation
+    displays all statistics in the supplied model's global template order;
+    ``reference_indices`` records the underlying reference identity of each
+    column. See `GroupTest` for the statistics.
+
+    Any caller-supplied ``starts`` must be independent of the tested labels;
+    label-informed initialization invalidates this conditional permutation
+    procedure. Group labels must be exchangeable within the specified units
+    under the null. Subject order, and thus the first-subject reference, must
+    be fixed independently of the tested labels and before inspecting effects;
+    the reference is not generally invariant to reordering subjects. Per-factor
+    hypotheses should be specified before examining their effects; use
+    max-statistic correction for selection across factors.
 
     Parameters
     ----------
@@ -511,14 +569,16 @@ def group_permutation_test(
             f"level {level} has no two groups under one parent; nothing to compare"
         )
     rng = np.random.default_rng(random_state)
-    reference = model.global_centers_
+    reference, display_order = _permutation_reference(
+        model.free_fits_[0], model.global_centers_
+    )
     t0 = time.perf_counter()
 
     def refit(
         labels: list[list[Hashable]],
     ) -> tuple[list[Hashable], Array, Array, Array]:
         fitted = clone(model).fit(X, coords, starts=model.free_fits_, groups=labels)
-        perm = match_factors(reference, fitted.global_centers_)
+        perm = match_factors(reference, fitted.global_centers_)[display_order]
         return _statistics(fitted, level, perm)
 
     keys, center, width, conn = refit(tree.labels)
@@ -546,4 +606,6 @@ def group_permutation_test(
         permuted_labels=np.array(shuffled),
         random_state=random_state,
         seconds=time.perf_counter() - t0,
+        reference_centers=reference,
+        reference_indices=display_order,
     )

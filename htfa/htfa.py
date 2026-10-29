@@ -25,6 +25,8 @@ from htfa._matching import match_components, match_factors
 from htfa.groups import group_key, group_tree
 from htfa.tfa import TFA
 
+from ._validation import real_array
+
 Array = NDArray[np.float64]
 
 TEMPLATE_UPDATES = ("brainiak", "fixed", "empirical")
@@ -357,21 +359,11 @@ class HTFA(BaseEstimator):
         mixing-weighted centers, then each factor's components by their
         centers. The scaled change also covers the logits, unscaled.
     mode : {'fast', 'exact'}, default='fast'
-        Passed to each subject's `TFA` (see there). On the twelve
-        development_fmri adults (K = 50, defaults, 10 global iterations) the
-        fast fit took 233 s against 628 s, and its template is a different
-        map: its centers are 15.8 mm (median; 42.3 mm at most) from the exact
-        template's, while a 1e-12 change of the data moved the exact template
-        by 2.0 to 5.6 mm (median; 8.8 to 13.6 at most) in three trials. The
-        template subject's stage-0 fit is 16.4 mm (median) from the exact one
-        in fast mode and was unchanged by the perturbation in exact mode. The
-        summed objective was 9.5e-4 lower than the exact fit's (the perturbed
-        exact fits: -6.0e-4 to +1.1e-3), and the held-out R^2 of fits to the
-        training segments 0.04078 against 0.04127. Run on to the stopping
-        rule (14 to 17 global iterations) the templates were 15.8 mm apart
-        (median), a perturbed exact fit 2.3 mm from the exact one
-        (docs/validation.rst). Pass ``mode='exact'`` for the reference
-        template.
+        Passed to each subject's `TFA` (see there). The modes optimize the
+        same objective, but numerical differences can lead to different
+        local minima and templates. ``'exact'`` uses the reference solver;
+        ``'fast'`` reduces computational cost. See the Performance and
+        Validation guides for comparisons.
     n_jobs : int, optional
         Number of subject fits run at once (numpy engines only), as threads of
         this process (values as in joblib, e.g. -1 for all CPUs). The results
@@ -642,15 +634,17 @@ class HTFA(BaseEstimator):
         groups : sequence, optional
             Nested groups of subjects: one label (``str`` or ``int``) per
             subject, or a list of such sequences, one per level, top level
-            first (for example ``[site, diagnosis]``; a label must belong to one
-            label of the level above). Each subject's prior is then centred on
+            first. For example, ``[site, subgroup]`` can group participants by
+            acquisition site and then by a site-specific subgroup. These labels
+            are illustrative; each label must belong to one parent label.
+            Each subject's prior is then centred on
             its innermost group's template, each group's prior on its parent's
             template (with the same covariance), and the global template is at
             the top; the templates jointly minimize the summed penalties given
             the local estimates (`htfa.groups`). Needs
             ``template_update='fixed'`` or ``'empirical'`` (``'empirical'``
             estimates the dispersion from deviations from each innermost
-            group's median). Without ``groups`` the fit is unchanged.
+            group's median). Without ``groups`` subjects share one global template.
         subject_ids : sequence, optional
             One identifier per entry of ``X``, to check that no subject is in
             two groups (crossed designs, such as pre/post on the same people,
@@ -702,8 +696,8 @@ class HTFA(BaseEstimator):
                 f"X and coords must be non-empty lists of equal length, "
                 f"got {len(X)} and {len(coords)}"
             )
-        Xs = [np.asarray(x, dtype=np.float64) for x in X]
-        Rs = [np.asarray(r, dtype=np.float64) for r in coords]
+        Xs = [real_array(x, "X") for x in X]
+        Rs = [real_array(r, "coords") for r in coords]
         if len({R.shape[1] for R in Rs}) != 1:
             raise ValueError("all subjects' coords must have the same dimension D")
         n_subj, K, D = len(Xs), self.K, Rs[0].shape[1]
