@@ -4,6 +4,7 @@ import os
 import warnings
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from typing import Any
 
 import numpy as np
@@ -23,26 +24,17 @@ from htfa._engines import (
 from htfa._kernels import Kernel, Prior, max_sigma
 from htfa._matching import match_components, match_factors
 from htfa.groups import group_key, group_tree
-from htfa.tfa import TFA
+from htfa.tfa import TFA, _sample_size
 
 from ._validation import real_array
 
 Array = NDArray[np.float64]
 
 TEMPLATE_UPDATES = ("brainiak", "fixed", "empirical")
-# Global stopping: besides the scaled template change reaching ``threshold``,
-# stop when it has not fallen below PLATEAU_RATIO times its lowest value so far
-# in PLATEAU_PATIENCE consecutive global iterations ('plateau'; a plain "no new
-# minimum" rule never fires on a slow steady decrease such as the real-data one
-# below, which reached a new minimum almost every iteration), or when the summed final
-# local objectives changed by less than OBJECTIVE_RTOL (relative) in each of the
-# last OBJECTIVE_PATIENCE iterations ('objective'). Measured: on real data
-# (2014 DFFR, 23 subjects, K=100, 'brainiak') the change went 0.0039, 0.0036,
-# 0.0035, 0.0035, 0.0034 (each step < 10% lower: a plateau); on
-# make_htfa_data(3, (12, 12), 40, K=3) with 'brainiak' it fell by about 0.85x per
-# 3 iterations from iteration 13 on while the summed objective kept rising by
-# 5e-4 to 9e-4 per iteration (the prior tightens every iteration), and with
-# 'fixed' the summed objective changed by 7.7e-4, then < 1e-5.
+# Stop on the scaled parameter threshold, or when improvement stalls for
+# PLATEAU_PATIENCE iterations, or when successive summed local objectives differ
+# by less than OBJECTIVE_RTOL for OBJECTIVE_PATIENCE iterations. The plateau rule
+# compares each change with PLATEAU_RATIO times the best change so far.
 PLATEAU_RATIO = 0.9
 PLATEAU_PATIENCE = 3
 OBJECTIVE_RTOL = 1e-5
@@ -303,6 +295,54 @@ def _fit_subject(
         return TFA(**params, random_state=seed).fit(X, R, prior=prior, start=start)
 
 
+def _cuda_devices(indices: Sequence[int] | None, count: int | None) -> list[str]:
+    """Validate an explicit selection, or enumerate visible CUDA ordinals."""
+    if indices is None:
+        return [f"cuda:{i}" for i in range(count or 0)]
+    if isinstance(indices, (str, bytes)) or not isinstance(indices, Sequence):
+        raise ValueError("gpu_devices must be a non-empty sequence of CUDA indices")
+    if not indices or any(
+        isinstance(i, (bool, np.bool_)) or not isinstance(i, (int, np.integer)) or i < 0
+        for i in indices
+    ):
+        raise ValueError("gpu_devices must contain non-negative integer CUDA indices")
+    if len(set(indices)) != len(indices):
+        raise ValueError("gpu_devices must not contain duplicate CUDA indices")
+    if count is not None and any(i >= count for i in indices):
+        raise ValueError(
+            f"gpu_devices index is unavailable; {count} CUDA devices are visible"
+        )
+    return [f"cuda:{int(i)}" for i in indices]
+
+
+def _subject_batches(subject_indices: Sequence[int], n_workers: int) -> list[list[int]]:
+    """Fixed disjoint queues, with output indices independent of completion order."""
+    return [
+        [
+            i
+            for i, subject in enumerate(subject_indices)
+            if subject % n_workers == worker
+        ]
+        for worker in range(n_workers)
+    ]
+
+
+def _fit_subject_batch(
+    jobs: list[tuple[int, tuple]], cancelled: Event
+) -> list[tuple[int, TFA]]:
+    """Serial fits on one device, retaining original subject indices."""
+    results = []
+    try:
+        for i, job in jobs:
+            if cancelled.is_set():
+                break
+            results.append((i, _fit_subject(*job)))
+    except BaseException:
+        cancelled.set()
+        raise
+    return results
+
+
 class HTFA(BaseEstimator):
     """Hierarchical Topographic Factor Analysis.
 
@@ -365,9 +405,12 @@ class HTFA(BaseEstimator):
         ``'fast'`` reduces computational cost. See the Performance and
         Validation guides for comparisons.
     n_jobs : int, optional
-        Number of subject fits run at once (numpy engines only), as threads of
-        this process (values as in joblib, e.g. -1 for all CPUs). The results
-        do not depend on it: all fits share one process, and so one BLAS
+        Maximum concurrent subject fits, as threads of
+        this process (values as in joblib, e.g. -1 for all CPUs). CUDA fits
+        use at most one worker per selected GPU; ``None`` uses all selected
+        GPUs, and ``1`` uses only the first. MPS and torch CPU fits are serial.
+        For NumPy, ``None`` is serial and results do not depend on this count:
+        all fits share one process, and so one BLAS
         library state, and every subject fit, serial or parallel, runs BLAS on
         one thread
         (`htfa._engines.one_blas_thread`), since BLAS rounds differently with
@@ -389,6 +432,15 @@ class HTFA(BaseEstimator):
         at least 1 per worker. ``n_jobs`` workers times ``n_threads`` can
         therefore exceed the caller's limit when ``n_threads`` is given, or when
         there are more workers than allowed threads.
+    gpu_devices : sequence of int, optional
+        Visible CUDA device indices, e.g. ``[0, 1]``. Requires ``backend``
+        ``'cuda'``, ``'torch'`` or ``'auto'``; an explicit list forces CUDA
+        even for small workloads. By default, when CUDA is selected, HTFA
+        distributes independent subject fits across all visible CUDA GPUs.
+        ``backend='cuda:N'`` pins every fit to device N. Device indices follow
+        PyTorch's visible-device numbering (including ``CUDA_VISIBLE_DEVICES``).
+        This distributes subjects, not one subject's arrays or factor model;
+        every subject's working arrays must fit on its assigned device.
     random_state : int, optional
         Seed for the template subject choice and per-subject fits.
     verbose : bool
@@ -455,6 +507,11 @@ class HTFA(BaseEstimator):
     objective_history_ : list of float
         Summed final local objectives after each global iteration.
     engine_ : str
+        Engine of the first subject in the final local-fit round.
+    subject_engines_ : list of str
+        Engine of each subject in the final local-fit round, in input order.
+    gpu_devices_ : list of str
+        Selected CUDA devices (empty for NumPy, torch CPU, or MPS).
 
     Examples
     --------
@@ -497,6 +554,7 @@ class HTFA(BaseEstimator):
         mode: str = "fast",
         n_jobs: int | None = None,
         n_threads: int | None = None,
+        gpu_devices: Sequence[int] | None = None,
         random_state: int | None = None,
         verbose: bool = False,
         kernel: str = "rbf",
@@ -525,6 +583,7 @@ class HTFA(BaseEstimator):
         self.mode = mode
         self.n_jobs = n_jobs
         self.n_threads = n_threads
+        self.gpu_devices = gpu_devices
         self.random_state = random_state
         self.verbose = verbose
         self.kernel = kernel
@@ -561,6 +620,7 @@ class HTFA(BaseEstimator):
         starts: Sequence[tuple[Array, ...] | None],
         seeds: NDArray[np.int64],
         parallel: bool,
+        subject_indices: Sequence[int] | None = None,
     ) -> list[TFA]:
         """Fit every subject's TFA; seeds are fixed per subject, not per worker.
 
@@ -570,10 +630,27 @@ class HTFA(BaseEstimator):
         """
         params = self._tfa_params(max_iter)
         n = len(Xs)
-        n_workers = min(n, effective_n_jobs(self.n_jobs)) if parallel else 1
+        if n == 0:
+            return []
+        devices = self.gpu_devices_
+        if devices:
+            n_workers = self._gpu_worker_count_
+        else:
+            n_workers = min(n, effective_n_jobs(self.n_jobs)) if parallel else 1
         n_threads = self._subject_threads(n_workers)
+        indices = list(range(n)) if subject_indices is None else subject_indices
         jobs = [
-            (params, Xs[s], Rs[s], priors[s], starts[s], int(seeds[s]), n_threads)
+            (
+                dict(params, backend=devices[indices[s] % n_workers])
+                if devices
+                else params,
+                Xs[s],
+                Rs[s],
+                priors[s],
+                starts[s],
+                int(seeds[s]),
+                n_threads,
+            )
             for s in range(n)
         ]
         # Worker threads in this process, not worker processes: every fit then
@@ -593,10 +670,26 @@ class HTFA(BaseEstimator):
             # ones finish before the limits and filters above are restored:
             # a fit still running afterwards would leave its BLAS limits behind.
             pool = ThreadPoolExecutor(n_workers)
+            cancelled = Event()
             try:
+                if devices:
+                    # One queue per device: a fast GPU cannot start another
+                    # subject assigned to a GPU whose previous fit is running.
+                    batches = _subject_batches(indices, n_workers)
+                    batch_futures = [
+                        pool.submit(
+                            _fit_subject_batch, [(i, jobs[i]) for i in batch], cancelled
+                        )
+                        for batch in batches
+                    ]
+                    indexed = [
+                        item for future in batch_futures for item in future.result()
+                    ]
+                    return [fit for _, fit in sorted(indexed)]
                 futures = [pool.submit(_fit_subject, *job) for job in jobs]
                 return [future.result() for future in futures]
             finally:
+                cancelled.set()
                 pool.shutdown(wait=True, cancel_futures=True)
 
     def fit(
@@ -637,6 +730,9 @@ class HTFA(BaseEstimator):
             first. For example, ``[site, subgroup]`` can group participants by
             acquisition site and then by a site-specific subgroup. These labels
             are illustrative; each label must belong to one parent label.
+            A `htfa.groups.GroupTree` from ``GroupTree.from_paths`` also accepts
+            unequal path depths and repeated folder names under different
+            parents; full paths distinguish those groups.
             Each subject's prior is then centred on
             its innermost group's template, each group's prior on its parent's
             template (with the same covariance), and the global template is at
@@ -714,7 +810,7 @@ class HTFA(BaseEstimator):
         M = kernel.n_components
 
         def checked(pair: Sequence[ArrayLike], name: str) -> tuple[Array, ...]:
-            arrays = tuple(np.asarray(a, np.float64) for a in pair)
+            arrays = tuple(real_array(a, name) for a in pair)
             if M == 1:
                 expected = [(K, D), (K,)]
                 what = f"(centers ({K}, {D}), widths ({K},))"
@@ -739,12 +835,42 @@ class HTFA(BaseEstimator):
         rng = np.random.default_rng(self.random_state)
         seed_max = np.iinfo(np.int32).max
 
-        engine = select_engine(
-            self.backend,
-            max(x.shape[0] for x in Xs),
-            max(x.shape[1] for x in Xs),
-            K,
+        backend = self.backend
+        if self.gpu_devices is not None:
+            if backend not in ("auto", "cuda", "torch"):
+                raise ValueError(
+                    "gpu_devices requires backend='auto', 'cuda', or 'torch'"
+                )
+            # Validate shape and indices before importing an optional backend.
+            selected = _cuda_devices(self.gpu_devices, None)
+            # Even an empty CUDA tensor can initialize a device context. Probe
+            # the selected device, never the process default (possibly excluded).
+            backend = selected[0]
+        sizes = [
+            (
+                _sample_size(x.shape[0], self.voxel_ratio, self.max_voxels),
+                _sample_size(x.shape[1], self.tr_ratio, self.max_trs),
+            )
+            for x in Xs
+        ]
+        largest = max(sizes, key=lambda shape: shape[0] * shape[1])
+        engine = select_engine(backend, *largest, K)
+        self.gpu_devices_: list[str] = []
+        if engine.name.startswith("torch-cuda"):
+            import torch
+
+            if self.backend.startswith("cuda:"):
+                self.gpu_devices_ = [self.backend]
+            else:
+                self.gpu_devices_ = _cuda_devices(
+                    self.gpu_devices, torch.cuda.device_count()
+                )
+        requested_workers = (
+            len(self.gpu_devices_)
+            if self.n_jobs is None
+            else effective_n_jobs(self.n_jobs)
         )
+        self._gpu_worker_count_ = min(n_subj, len(self.gpu_devices_), requested_workers)
         parallel = engine.name == "numpy" and self.n_jobs not in (None, 1)
         none: list[tuple[Array, ...] | None] = [None] * n_subj
         no_priors: list[Prior | None] = [None] * n_subj
@@ -847,6 +973,7 @@ class HTFA(BaseEstimator):
                     [given[s] for s in others],
                     seeds[others],
                     parallel,
+                    subject_indices=others,
                 )
                 fits = list(from_template)
                 for s, b in zip(others, from_own, strict=True):
@@ -978,8 +1105,10 @@ class HTFA(BaseEstimator):
             G = tree.n_nodes - 1
             self.group_component_centers_ = nodes_C[1:].reshape(G, K, M, D)
             self.group_component_widths_ = nodes_w[1:].reshape(G, K, M)
-            self.group_mixing_weights_ = np.stack(
-                [Kernel.mixing(na) for na in nodes_a[1:]]
+            self.group_mixing_weights_ = (
+                np.stack([Kernel.mixing(na) for na in nodes_a[1:]])
+                if G
+                else np.empty((0, K, M))
             )
             pi = self.group_mixing_weights_
             self.group_centers_ = np.sum(
@@ -1024,5 +1153,6 @@ class HTFA(BaseEstimator):
         self.component_centers_ = [f.component_centers_ for f in fits]
         self.component_widths_ = [f.component_widths_ for f in fits]
         self.mixing_weights_ = [f.mixing_weights_ for f in fits]
+        self.subject_engines_ = [f.engine_ for f in fits]
         self.engine_ = fits[0].engine_
         return self

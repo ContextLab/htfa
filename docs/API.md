@@ -2,7 +2,7 @@
 
 The Sphinx documentation describes the API in these pages:
 
-- [Inputs](inputs.rst): how folders, BIDS lists, masks, arrays and images are read
+- [Inputs](inputs.rst): how recursive folders supply hierarchy names, and how BIDS lists, masks, arrays and images are read
 - [API reference](api.rst): `htfa.fit`, the estimators, results, connectivity and synthetic data, with model parameters
 - [Optional dependencies](optional_dependencies.rst): extras and installation on demand
 - [Performance](performance.rst): backends and benchmarks

@@ -25,7 +25,8 @@ Fitting
   Levenberg–Marquardt updates. ``'trf'`` and ``'dogbox'`` solvers use SciPy's
   ``least_squares`` with analytic, matrix-free Jacobians.
 - NumPy and torch backends support CPU, CUDA and Apple Metal. ``backend='auto'``
-  chooses a backend using the available devices and problem size.
+  chooses a backend using the available devices and problem size. HTFA can
+  distribute subjects across multiple CUDA GPUs.
 - ``mode='fast'`` is the default. ``mode='exact'`` is the numerical reference
   for equivalence and BrainIAK checks. Both modes optimize the same objective;
   their different step models can reach different local minima on real data.

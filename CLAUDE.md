@@ -12,7 +12,7 @@ Hierarchical Topographic Factor Analysis (HTFA) - A lightweight Python implement
 make install   # uv venv (.venv, Python 3.12) + pip install -e ".[dev,docs]"
 make test      # .venv/bin/pytest -q
 make lint      # ruff check, ruff format --check, mypy
-make docs      # sphinx-build -> docs/_build/html (needs docs/conf.py, added in a later task)
+make docs      # sphinx-build -> docs/_build/html
 
 # Run a specific test
 .venv/bin/pytest tests/test_package.py::test_version -xvs
@@ -23,12 +23,12 @@ Run `make lint` and `make test` before committing.
 
 ## Architecture
 
-Planned layout (modules land task by task during the rewrite; see docs/superpowers/plans/2026-10-23-htfa-rewrite.md):
+Package layout:
 
 ```
 htfa/
 ├── __init__.py       # public API, __version__
-├── _kernels.py       # numerical kernels (RBF factors, weights, objective)
+├── _kernels.py       # numerical kernels, factor mixtures, weights, objective
 ├── _engines.py       # compute engines (NumPy / torch)
 ├── _lazy.py          # lazy optional-dependency imports
 ├── tfa.py            # single-subject TFA
@@ -37,6 +37,8 @@ htfa/
 ├── fit.py            # main API entry point
 ├── results.py        # results container, plotting, export
 ├── connectivity.py   # factor-level connectivity
+├── groups.py         # nested templates and permutation comparisons
+├── stats.py          # reconstruction statistics and nominal parameter counts
 └── synthetic.py      # synthetic data generation
 tests/                # pytest suite (real implementations, no mocks)
 docs/                 # Sphinx documentation

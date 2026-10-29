@@ -38,6 +38,9 @@ class Subject:
         Shape of the image grid the data came from.
     source : str or None
         Path the data were read from, if any.
+    group_path : tuple of str
+        Folder-derived hierarchy, from outermost to innermost group. Empty
+        for individual files, arrays, flat folders, and stacked inputs.
 
     Examples
     --------
@@ -54,6 +57,7 @@ class Subject:
     mask: np.ndarray | None = None
     image_shape: tuple[int, ...] | None = None
     source: str | None = None
+    group_path: tuple[str, ...] = ()
 
     def to_image(self, values: np.ndarray) -> Any:
         """Place ``values`` back into image space, with NaN outside the mask.
@@ -101,6 +105,7 @@ class _Grid:
     # mask=None drops all-zero locations (out-of-brain screening for volumes);
     # False for 2D images, where black pixels are data.
     screen_zeros: bool = True
+    group_path: tuple[str, ...] = ()
 
 
 def _natural(name: str) -> list[Any]:
@@ -190,21 +195,34 @@ def _from_array(arr: Any, coords: Any) -> _Grid:
     return _Grid(arr[..., None] if arr.ndim < 4 else arr, None, None)
 
 
-def _grids(item: Any, coords: Any, channels: str) -> list[_Grid]:
+def _folder_grids(path: str, channels: str, prefix: tuple[str, ...]) -> list[_Grid]:
+    """Read a directory tree without following directory symlinks."""
+    grids = []
+    for name in sorted(os.listdir(path), key=lambda n: (_natural(n), n)):
+        if name.startswith("."):
+            continue
+        child = os.path.join(path, name)
+        if os.path.isdir(child):
+            if not os.path.islink(child):
+                grids.extend(_folder_grids(child, channels, (*prefix, name)))
+        elif _ext(name, NIFTI_EXTS + IMAGE_EXTS):
+            grid = _read_file(child, channels)
+            grid.group_path = prefix
+            grids.append(grid)
+    return grids
+
+
+def _grids(
+    item: Any, coords: Any, channels: str, folder_root: bool = False
+) -> list[_Grid]:
     if isinstance(item, (str, os.PathLike)):
         path = os.fspath(item)
         if os.path.isdir(path):
-            names = sorted(
-                (
-                    n
-                    for n in os.listdir(path)
-                    if not n.startswith(".") and _ext(n, NIFTI_EXTS + IMAGE_EXTS)
-                ),
-                key=_natural,
-            )
-            if not names:
+            prefix = (os.path.basename(os.path.abspath(path)),) if folder_root else ()
+            grids = _folder_grids(path, channels, prefix)
+            if not grids:
                 raise ValueError(f"no NIfTI or image files in folder {path}")
-            return [_read_file(os.path.join(path, n), channels) for n in names]
+            return grids
         if not os.path.exists(path):
             raise FileNotFoundError(path)
         return [_read_file(path, channels)]
@@ -282,7 +300,11 @@ def _subject(grid: _Grid, mask: Any, spacing: Any) -> Subject:
     keep = _resolve_mask(mask, grid)
     if grid.coords is not None:
         return Subject(
-            grid.values[keep], grid.coords[keep], mask=keep, source=grid.source
+            grid.values[keep],
+            grid.coords[keep],
+            mask=keep,
+            source=grid.source,
+            group_path=grid.group_path,
         )
     assert keep is not None
     spatial = grid.values.shape[:-1]
@@ -292,7 +314,13 @@ def _subject(grid: _Grid, mask: Any, spacing: Any) -> Subject:
     else:
         coords = ijk * _spacing(spacing, len(spatial))
     return Subject(
-        grid.values[keep], coords, grid.affine, keep, tuple(spatial), grid.source
+        grid.values[keep],
+        coords,
+        grid.affine,
+        keep,
+        tuple(spatial),
+        grid.source,
+        grid.group_path,
     )
 
 
@@ -338,10 +366,14 @@ def load(
     Parameters
     ----------
     data : path, folder, nibabel image, numpy.ndarray, or list of these
-        Each file or list element is one subject. A 4D NIfTI is one subject's time
+        Each file, image object, or array is one subject; folders in a list
+        expand recursively. A 4D NIfTI is one subject's time
         series; a 3D NIfTI, 3D array or 2D image is one subject with one sample. A
-        folder expands to its NIfTI/image files (natural filename order; other files
-        are ignored). Without ``coords``, arrays are image grids: ``(H, W)``,
+        folder recursively expands to its NIfTI/image files in natural order.
+        Subfolder names populate each Subject's ``group_path``; a list of
+        folders also includes each supplied folder's name. Hidden entries,
+        directory symlinks, and unsupported files are ignored. Without
+        ``coords``, arrays are image grids: ``(H, W)``,
         ``(X, Y, Z)`` or ``(X, Y, Z, T)``. With ``coords`` a 2D array is ``(V, T)``.
     coords : array_like or list of array_like, optional
         ``(V, D)`` coordinates for ``(V, T)`` arrays; a list gives one per element.
@@ -359,6 +391,7 @@ def load(
         elements) as samples of ONE subject's time series. All inputs must
         share spatial shape and coordinates or NIfTI affine; no resampling
         is performed. NIfTI affines allow absolute roundoff up to 1e-5.
+        Stacking clears folder-derived group paths.
     channels : {'gray', 'separate'}
         Color images become ITU-R 601 grayscale, or each channel becomes a sample.
     spacing : float or sequence of float, optional
@@ -392,7 +425,14 @@ def load(
     )
     grids: list[_Grid] = []
     for i, item in enumerate(items):
-        grids += _grids(item, coords[i] if per_item else coords, channels)
+        grids += _grids(
+            item,
+            coords[i] if per_item else coords,
+            channels,
+            folder_root=isinstance(data, (list, tuple)),
+        )
+    if not grids:
+        raise ValueError("data must contain at least one subject")
     if stack:
         grids = [_stack(grids)]
     subjects = [_subject(g, mask, spacing) for g in grids]

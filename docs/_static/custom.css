@@ -38,3 +38,29 @@ a:hover {
 pre {
     border-radius: 4px;
 }
+
+/* Tutorial cards link directly to the executed notebooks. */
+.tutorial-gallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0;
+}
+.tutorial-card {
+    border: 1px solid var(--color-background-border);
+    border-radius: 6px;
+    padding: 0.8rem;
+}
+.tutorial-card img {
+    width: 100%;
+    height: 170px;
+    object-fit: contain;
+    background: white;
+}
+.tutorial-card > p:nth-child(2) {
+    font-weight: 600;
+}
+.tutorial-card > p:last-child {
+    font-size: 0.9rem;
+    margin-bottom: 0;
+}

@@ -290,3 +290,34 @@ def test_group_refit_statistics_share_reference_across_observed_labelings(tmp_pa
         k: v for k, v in first.to_arrays().items() if not k.startswith("reference_")
     }
     assert GroupTest.from_arrays(legacy).reference_centers.size == 0
+
+
+@pytest.mark.parametrize("api", ["TFA", "HTFA-starts", "HTFA-template"])
+@pytest.mark.parametrize(
+    "components,which",
+    [(1, 0), (1, 1), (2, 0), (2, 1), (2, 2)],
+)
+def test_initialization_rejects_complex_arrays_before_cast(api, components, which):
+    import htfa
+
+    data = np.arange(12, dtype=float).reshape(4, 3)
+    coords = np.array([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=float)
+    if components == 1:
+        start = [np.array([[0.5, 0.5]]), np.ones(1)]
+    else:
+        start = [np.full((1, 2, 2), 0.5), np.ones((1, 2)), np.full((1, 2), 0.5)]
+    start[which] = start[which] + 1j
+    with pytest.raises(ValueError, match="real-valued"):
+        if api == "TFA":
+            htfa.TFA(K=1, n_components=components, backend="numpy").fit(
+                data, coords, start=tuple(start)
+            )
+        else:
+            options = (
+                {"starts": [tuple(start), tuple(start)]}
+                if api == "HTFA-starts"
+                else {"init_template": tuple(start)}
+            )
+            htfa.HTFA(K=1, n_components=components, backend="numpy").fit(
+                [data, data], [coords, coords], **options
+            )

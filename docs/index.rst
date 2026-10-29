@@ -38,6 +38,7 @@ the factor count for your analysis:
    :caption: User guide
 
    installation
+   quickstart
    inputs
    optional_dependencies
    performance

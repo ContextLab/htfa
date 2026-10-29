@@ -22,7 +22,7 @@ htfa is a standalone Python implementation of these algorithms. Its numerical va
 
 - No MPI or local compilation is needed when installing the prebuilt dependency wheels for a supported platform.
 - Analytic Jacobian for the center/width least-squares problem (`htfa/_kernels.py`).
-- A NumPy engine and a torch engine (CUDA, Apple Metal, CPU), chosen with the estimators' `backend` argument; `auto` uses a GPU only for large problems when torch is already installed.
+- A NumPy engine and a torch engine (CUDA, Apple Metal, CPU), chosen with the estimators' `backend` argument; `auto` uses a GPU only for large problems when torch is already installed. HTFA distributes independent subjects across visible CUDA GPUs; `gpu_devices` selects a subset.
 - Two solver modes: `mode='fast'` (the default) and `mode='exact'` (the reference for numerical equivalence and BrainIAK checks). The modes optimize the same objective but can reach different local minima; see [Performance](https://htfa.readthedocs.io/en/latest/performance.html) and [Validation](https://htfa.readthedocs.io/en/latest/validation.html).
 - Factor shapes: Gaussian (`kernel='rbf'`, the default), `'laplace'` and `'mexican_hat'`, and mixtures of several components per factor (`n_components`).
 - Nested subject groups with group-level templates and permutation comparisons.
@@ -31,6 +31,8 @@ htfa is a standalone Python implementation of these algorithms. Its numerical va
 - Synthetic data with ground truth (`htfa.synthetic`), factor-level connectivity, a results object, and BrainNet Viewer-style 3D network plots (`htfa.brainnet`).
 
 ## Quick tour
+
+The [quick-start guide](https://htfa.readthedocs.io/en/latest/quickstart.html) walks through fitting, inspecting, and plotting a model, then loading your own images.
 
 Generate synthetic data for three subjects with known factor parameters, fit HTFA, and compare the recovered centers with the truth:
 
@@ -65,6 +67,11 @@ For real data, pass a folder with one `.nii` / `.nii.gz` file per subject:
 ```python
 res = htfa.fit("path/to/folder", K=50, random_state=0)
 ```
+
+Nested folders supply group names and hierarchical templates from their paths.
+Use `groups=False` to ignore folder-derived grouping, or pass explicit `groups`
+to define the experimental hierarchy yourself. Each file remains one subject;
+repeated runs from one person are not independent subjects.
 
 The inputs `htfa.fit` accepts, its parameters and the results object are described in the [documentation](https://htfa.readthedocs.io/en/latest/) and in [docs/API.md](https://github.com/ContextLab/htfa/blob/main/docs/API.md).
 

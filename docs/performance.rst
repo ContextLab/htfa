@@ -16,6 +16,41 @@ workload ``V * T * K`` reaches ``htfa._engines.GPU_MIN_WORK``. Otherwise it
 uses NumPy. This heuristic is not a guarantee that a GPU is faster; compare
 explicit backends on the workload of interest.
 
+Multiple GPUs
+-------------
+
+HTFA distributes independent subject fits across CUDA GPUs, with one serial
+queue per device. With ``backend='cuda'``, all visible devices are selected
+by default. ``n_jobs`` caps concurrent devices; ``None`` uses all selected
+devices and ``1`` uses the first. Select a subset explicitly:
+
+.. code-block:: python
+
+   import htfa
+
+   result = htfa.fit(
+       images, K=50, backend="cuda", gpu_devices=[0, 1], n_jobs=2
+   )
+   print(result.model.subject_engines_)
+
+Here ``images`` is a list of registered multi-subject images or input arrays.
+``gpu_devices`` also works with ``backend='auto'`` or ``'torch'`` and forces
+CUDA and raises an error when CUDA or a requested index is unavailable;
+there is no silent CPU fallback for an explicit device selection. It cannot
+be combined with ``backend='numpy'``, ``'cpu'``, ``'mps'``, or ``'cuda:N'``.
+Without that argument, ``'auto'`` uses the largest subsampled subject workload
+to decide whether to distribute HTFA subjects across CUDA devices.
+``backend='cuda:1'`` pins TFA or HTFA to one visible GPU. Indices follow
+PyTorch's ``CUDA_VISIBLE_DEVICES`` numbering; see `CUDA semantics
+<https://docs.pytorch.org/docs/stable/notes/cuda.html>`_.
+
+Subject order and seeds are preserved when work completes out of order.
+Different GPU models can produce floating-point differences; parallelism is
+not a guarantee of identical local minima or a speedup. The global template
+update remains on the CPU. Each subject's working arrays must fit on its
+assigned device: this does not shard a single-subject TFA fit across GPUs.
+MPS uses one device and remains serial across subjects.
+
 Solver modes
 ------------
 

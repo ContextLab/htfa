@@ -117,13 +117,16 @@ Common model parameters
      - Components per factor; more than 1 fits each factor as a mixture
    * - ``backend``
      - ``'auto'``
-     - ``'numpy'``, ``'cpu'``, ``'torch'``, ``'cuda'``, ``'mps'`` or ``'auto'``; see :doc:`performance`
+     - ``'numpy'``, ``'cpu'``, ``'torch'``, ``'cuda'``, ``'cuda:N'``, ``'mps'`` or ``'auto'``; see :doc:`performance`
    * - ``mode``
      - ``'fast'``
      - Step model of the center/width solver: ``'fast'`` keeps the Hessian where it is indefinite, ``'exact'`` (the reference, used by the equivalence tests and BrainIAK cross-checks) takes Gauss-Newton steps there; see :doc:`performance`
    * - ``n_jobs`` (HTFA)
      - ``None``
-     - Concurrent subject fits; NumPy fits use threads in one process
+     - Concurrent subject fits; NumPy fits use threads in one process. CUDA uses at most one worker per selected GPU; ``None`` uses all selected GPUs.
+   * - ``gpu_devices`` (HTFA)
+     - ``None``
+     - Visible CUDA indices, e.g. ``[0, 1]``; defaults to all visible GPUs when CUDA is selected. See :doc:`performance`.
    * - ``verbose``
      - ``False``
      - Print per-iteration progress
