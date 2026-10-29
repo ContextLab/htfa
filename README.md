@@ -5,7 +5,7 @@
   <img alt="HTFA factor network: 50 template factors drawn as spheres inside a translucent brain, with the strongest inter-subject correlations as edges" src="docs/_static/cover_light.png" width="100%">
 </picture>
 
-<sub>HTFA template (K = 50) fitted to 12 adults watching a movie (nilearn's <code>development_fmri</code>), from the left, above and right. Edges: the strongest 5% of factor pairs by inter-subject functional correlation (|ISFC| &ge; 0.137; red positive, blue negative). Node size: factor width; colour: ISFC community. Made with <code>scripts/make_cover.py</code>.</sub>
+<sub>Illustrative movie-viewing analysis: an HTFA template (K = 50) fitted to 12 adults watching Pixar's <i>Partly Cloudy</i>, from Nilearn's <code>development_fmri</code> dataset, viewed from the left, above and right. Inter-subject functional correlation (ISFC) measures correlations between participants' factor time courses at matching moments of the film. Edges show the strongest 5% of factor pairs (|ISFC| &ge; 0.137; red positive, blue negative). Node size represents factor width; node colour identifies communities in the positive-ISFC graph. See the <a href="https://htfa.readthedocs.io/en/latest/tutorials/10_dynamic_isfc_animation.html">ISFC tutorial</a> for the analysis workflow.</sub>
 
 [![PyPI version](https://img.shields.io/pypi/v/htfa.svg)](https://pypi.org/project/htfa/)
 [![tests](https://github.com/ContextLab/htfa/actions/workflows/tests.yml/badge.svg)](https://github.com/ContextLab/htfa/actions/workflows/tests.yml)
@@ -15,6 +15,8 @@
 ## Overview
 
 Topographic factor analysis (TFA) models a data matrix `X` (voxels by time points) as `X ≈ F W + noise`. Each of the `K` factors is a spatial kernel, or a mixture of kernels, with fitted centers and widths in coordinate space. `W` holds the factors' weights over time [1]. Hierarchical TFA (HTFA) fits TFA to several subjects at once, with a global template that the per-subject factors are tied to [2, 3, 4].
+
+The examples use simulated data, movie-viewing fMRI, a word-viewing experiment, and ordinary 2D images to illustrate different parts of the API. TFA and HTFA do not require a particular task: the inputs are observations at spatial coordinates. HTFA fits can have different time-series lengths across subjects; analyses that correlate subjects at matching time points, such as ISFC, additionally require aligned samples.
 
 htfa is a standalone Python implementation of these algorithms. Its numerical validation includes comparisons with [BrainIAK](https://brainiak.org); BrainIAK is not a runtime dependency.
 

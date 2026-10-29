@@ -40,5 +40,14 @@
     "filename": "htfa_mitchell2008_null_20-47da3a734a49.npz",
     "sha256": "47da3a734a49253a82cdceebc94879989543202fbe31a2aa0ba82677fe8f75b0",
     "source": "/private/tmp/htfa-release-review-nulls/htfa_mitchell2008_null_20.npz"
+  },
+  {
+    "original": "htfa_development_fmri_children_adults_null_100.npz",
+    "filename": "htfa_development_fmri_children_adults_null_100-5bf2ae0b61f7.npz",
+    "sha256": "5bf2ae0b61f729f10be2820ba84cdd5f00448f5b51910024b66d7cca821b30eb",
+    "source": "/private/tmp/htfa-audit-group-null-100.npz",
+    "numerical_source_commit": "03bef8ca5ab685bf82f319bcf23ffb6b0c864f1c",
+    "alignment": "first-subject stage-0 reference, common display order",
+    "supersedes": "htfa_development_fmri_children_adults_null_100-d7c05c55f4a9.npz"
   }
 ]

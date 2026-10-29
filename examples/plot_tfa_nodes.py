@@ -5,7 +5,8 @@ Factor centers of a single-subject TFA
 Simulate a 24 x 24 grid with ``K = 4`` radial basis factors
 (:func:`htfa.make_tfa_data`), fit it with :func:`htfa.fit` and draw the estimated
 factor centers on top of the data with :meth:`htfa.HTFAResults.plot_nodes`.
-The data are already on a z-scored scale, so ``standardize=False`` is passed.
+The data are fitted on their generating scale with ``standardize=False`` so
+that the estimated parameters can be compared with the known simulation values.
 The printed numbers (fit time, convergence reason, center errors) come from the
 code below.
 """

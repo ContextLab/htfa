@@ -59,8 +59,9 @@ the package does not import it during ordinary use.
 Reproducibility
 ---------------
 
-``random_state`` controls stochastic initialization and subsampling. Within a
-process, repeated fits with identical inputs and settings are deterministic,
+``random_state`` controls stochastic initialization and subsampling. With the
+same explicit integer seed, repeated fits within a process with identical
+inputs, subject order, and settings are deterministic,
 and subject-level parallelism preserves the fitted results. BLAS implementations
 and hardware can differ in reduction order across processes or machines.
 Small numerical differences can lead to different local minima, so bitwise
@@ -73,8 +74,12 @@ not used as comparative benchmarks.
 Real fMRI evaluation
 --------------------
 
-The tutorials use Nilearn's ``development_fmri`` dataset: participants watch
-Pixar's *Partly Cloudy*, with 168 volumes at a two-second TR. The loader resamples
+Several tutorials use Nilearn's ``development_fmri`` dataset as an illustrative
+real-data workload: children and adults watch Pixar's *Partly Cloudy* during
+fMRI acquisition, producing 168 brain volumes sampled two seconds apart
+(the repetition time, or TR). The common film provides aligned stimulus time
+for inter-subject connectivity examples; neither movie viewing nor matched
+time-series lengths are requirements of HTFA fitting itself. The loader resamples
 the MNI152 brain mask, excludes low-intensity and nearly constant voxels,
 and regresses the supplied confounds and a linear trend as described by
 :mod:`htfa.datasets`. The estimators' ``standardize='auto'`` setting z-scores
@@ -98,10 +103,11 @@ component count.
 Held-out reconstruction
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-``scripts/validation_heldout.py`` provides a complementary evaluation protocol.
-It separates a training segment (samples 0–79) from a test segment (88–167),
-with a gap between them. Confound regression is performed separately on each
-segment; training means and standard deviations scale both segments.
+``scripts/validation_heldout.py`` provides a complementary evaluation protocol
+for the movie-viewing dataset. Its illustrative split separates a training
+segment (samples 0–79) from a test segment (88–167), with a gap between them. These indices describe this 168-volume example, not
+a required split for other datasets. Confound regression is performed separately
+on each segment; training means and standard deviations scale both segments.
 
 The protocol compares fitted TFA factors with their frozen initializations,
 random spatial centers, and matched-count PCA maps. On the test segment,
@@ -132,7 +138,9 @@ the templates are coupled through the hierarchy's tree equations. ``'empirical'`
 from matched unpenalized subject fits. The tests check these update equations,
 nested group trees, matching, and independence from ``n_jobs``.
 
-Group permutation tests shuffle labels and refit. Their interpretation depends
+Group permutation tests align all refits to a fixed stage-0 reference, shuffle
+labels, and refit. The reference subject order and any supplied starts must be
+fixed independently of the tested labels and effects. Their interpretation depends
 on exchangeable, independent subjects and the specified nesting restrictions;
 repeated observations of one participant are not independent subjects.
 Synthetic null and shifted-group checks are in ``tests/test_groups.py`` and
@@ -140,8 +148,9 @@ Synthetic null and shifted-group checks are in ``tests/test_groups.py`` and
 factors within a chosen statistic; it does not automatically correct across
 all statistics or exploratory analyses.
 
-:doc:`tutorials/13_group_hierarchy` fits ten children and ten adults with 30
-factors and evaluates 100 permutations. Its cached example shows no center,
+As an example of the grouped API, :doc:`tutorials/13_group_hierarchy` compares
+ten children and ten adults from the movie-viewing dataset using 30 factors and
+100 permutations. Its cached example shows no center,
 width, or connectivity differences surviving correction across factors.
 This does not prove equivalence between age groups. The sample is small,
 permutation p-values have resolution 1/101, and motion and registration can
@@ -150,8 +159,14 @@ affect the fitted factors.
 Word decoding
 -------------
 
-:doc:`tutorials/09_word_decoding_mitchell2008` maps between factor weights and
-word embeddings. The supervised mappings hold out target words and
+:doc:`tutorials/09_word_decoding_mitchell2008` illustrates how factor weights
+can serve as features for a prediction task. In the Mitchell et al. (2008)
+experiment, nine participants view 60 concrete nouns with line drawings, each
+presented six times, while fMRI responses are recorded. The example maps
+between the responses' factor weights and word embeddings (numerical vector
+representations of the nouns). This is one downstream application of HTFA,
+not a requirement of its spatial model. The supervised mappings hold out target
+words and
 participants, but the unsupervised spatial template and voxel standardization
 use full runs. This is a transductive evaluation, not a fully inductive test
 of preprocessing learned without the held-out observations. Cached permutation

@@ -392,10 +392,11 @@ class TFA(BaseEstimator):
     exp(-||r_v - c_k||**2 / w_k)`` are radial basis factors with centers ``c_k``
     and widths ``w_k = 2 sigma_k**2`` (BrainIAK's convention), or factors of
     another shape or mixtures of several components (``kernel``,
-    ``n_components``). The fit alternates
-    ridge-regression weights with a bounded nonlinear least-squares solve for the
-    centers and widths, from one or more candidate starts (see ``init``), and keeps
-    the candidate with the lowest final objective.
+    ``n_components``). The default linear-loss variable-projection solver
+    eliminates the temporal weights analytically while optimizing spatial
+    parameters. Other spatial solvers alternate weight and spatial updates.
+    The fit evaluates one or more candidate starts (see ``init``), keeping the
+    candidate with the lowest final objective.
 
     On macOS, a standalone TFA fit and HTFA's stage-0 fit of the same subject
     can differ at rounding level, because HTFA runs subject fits on one BLAS
@@ -407,27 +408,16 @@ class TFA(BaseEstimator):
         Number of factors; must be smaller than the number of voxels.
     max_iter : int, default=100
         Maximum number of outer iterations per candidate start. ``0`` evaluates
-        the start itself (no iterations). BrainIAK's default of 10 together with
-        its 1.0 threshold stops after about 3 iterations with roughly 10% width
-        error, so both defaults depart from BrainIAK.
+        the start itself without spatial optimization; temporal weights are
+        still fitted at that starting point.
     threshold : float, default=1e-3
         Convergence threshold on the scaled change between iterations,
         ``max(max|dc| / L, max|dw| / w)`` with ``L = sqrt(max_sigma(R) / 2)``.
-        BrainIAK instead thresholds the raw largest change at 1.0. With subsampling
-        (any ratio < 1 or a cap below the data size) the fresh sample of every
-        iteration keeps the change from settling: it has a noise floor, the
-        difference between two subsample optima. Measured on real fMRI data
-        (V = 69597, T = 1137, K = 100, six independent solves per row):
+        With subsampling (any ratio < 1 or a cap below the data size), fresh
+        samples can produce different spatial optima, so successive changes
+        need not settle below this threshold.
 
-        ===========  =============  =================  ======================
-        caps (V, T)  scaled change  center noise (mm)  width noise (median/90%)
-        ===========  =============  =================  ======================
-        3000, 300    0.56           2.1                5.6% / 23%
-        10000, 300   0.31           1.3                4.3% / 15%
-        30000, 300   0.31           0.85               2.5% / 14%
-        ===========  =============  =================  ======================
-
-        So with subsampling the fit also evaluates the objective after every
+        With subsampling the fit also evaluates the objective after every
         iteration, on one fixed random subsample of ``max(2 Vs, 6000)`` voxels
         (``Vs`` the per-iteration voxel count, at most V) and all samples
         (``max_trs`` if set), and stops when its lowest value so far has fallen
@@ -499,14 +489,10 @@ class TFA(BaseEstimator):
     n_screen_iter : int, default=0
         With several candidate starts and ``n_screen_iter > 0``, run each start
         for this many iterations, keep the one with the lowest full-data
-        objective and continue only that one to convergence (about 1/3 to 2/3 of
-        the time of full fits). ``0`` fits every candidate to convergence and
-        compares final objectives. Measured with 3 and 5 (`make_tfa_data` 3D
-        20^3, K=8 and 2D 40^2, K=6, T=100, seeds 0-5): on raw data screening
-        kept the full fits' winner every time, with identical final centers; on
-        per-voxel z-scored data it picked a different start in 6 of 12 cases,
-        where two starts had reached the same optimum (objectives within 1e-5
-        relative, matched centers within 0.03).
+        objective and continue only that candidate. ``0`` runs every candidate
+        until its stopping rule or iteration limit and compares final objectives.
+        Screening reduces work on discarded starts but can select a different
+        candidate than fully fitting every start.
     backend : {'auto', 'numpy', 'cpu', 'torch', 'cuda', 'mps'}, default='auto'
         Compute engine for the data-term products; see
         `htfa._engines.select_engine`.
@@ -520,13 +506,10 @@ class TFA(BaseEstimator):
         reference behavior, in which the equivalence tests and the BrainIAK
         cross-checks run. ``'fast'`` keeps the Hessian there and raises the
         damping instead, and forms the largest curvature products of the
-        linear loss in float32. On real fMRI the Hessian is indefinite at most
-        points of a solve, so ``'fast'`` takes fewer steps and can end at a
-        different local minimum. On six development_fmri adults it fitted
-        2.8 (K = 50) and 5.2 (K = 100) times faster; on twelve, its
-        objectives were within -4.7e-4 to +3.4e-4 (relative) of the exact
-        fits, and mean held-out R^2 0.0429 and 0.0507 against 0.0427 and
-        0.0506 (see docs/performance.rst and docs/validation.rst).
+        linear loss in float32. Different step models and floating-point
+        precision can lead to different local minima. Runtime and reconstruction
+        quality depend on the workload; see the Performance and Validation
+        guides for controlled comparisons and interpretation.
     random_state : None, int or numpy.random.Generator, default=None
         Seeds the K-means initializations and the subsampling.
     verbose : bool, default=False

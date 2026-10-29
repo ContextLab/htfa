@@ -123,7 +123,7 @@ Common model parameters
      - Step model of the center/width solver: ``'fast'`` keeps the Hessian where it is indefinite, ``'exact'`` (the reference, used by the equivalence tests and BrainIAK cross-checks) takes Gauss-Newton steps there; see :doc:`performance`
    * - ``n_jobs`` (HTFA)
      - ``None``
-     - joblib workers for the per-subject fits (NumPy backend)
+     - Concurrent subject fits; NumPy fits use threads in one process
    * - ``verbose``
      - ``False``
      - Print per-iteration progress
@@ -136,10 +136,14 @@ Groups of subjects
 ------------------
 
 ``HTFA.fit(X, coords, groups=...)`` (and ``htfa.fit(..., groups=...)``) fits
-one template per group of subjects under the global template, for example
-children and adults under a template of people in general. ``groups`` is one
-label (``str`` or ``int``) per subject, or a list of label sequences for deeper
-nesting, top level first (``[site, diagnosis]``). Each subject's prior is
+one template per group of subjects under the global template. For an
+illustrative developmental comparison, child and adult participants can have
+separate templates under one shared global template. These labels are examples;
+the API accepts any valid nested grouping of independent subjects. ``groups``
+is one label (``str`` or ``int``) per subject, or a list of label sequences for
+deeper nesting, top level first. For example, ``[site, subgroup]`` can describe
+participants grouped first by acquisition site and then by a subgroup within
+that site; subgroup labels must be distinct across sites. Each subject's prior is
 centred on its group's template, each group's prior on its parent's, with the
 subject-level covariance of the fit at every level; the templates jointly
 minimize the summed penalties given the subjects' local estimates
@@ -148,13 +152,18 @@ posterior covariances. Groups need ``template_update='fixed'`` or
 ``'empirical'``. Only nested designs are supported: a label under two parents,
 or (with ``subject_ids``) a subject in two groups, raises ``ValueError``.
 
+This schematic example assumes ``Xs``, ``Rs``, and ``subject_ids`` follow a
+prespecified dataset-identifier order, chosen independently of group labels or
+effects. ``group_labels`` contains the corresponding child/adult metadata
+label for each participant:
+
 .. code-block:: python
 
    import htfa
 
    model = htfa.HTFA(K=30, template_update="fixed", random_state=0)
-   model.fit(Xs, Rs, groups=["child"] * 10 + ["adult"] * 10)
-   model.group_keys_          # ['child', 'adult']
+   model.fit(Xs, Rs, groups=group_labels, subject_ids=subject_ids)
+   model.group_keys_          # fitted group labels
    model.group_centers_       # (2, K, D), factor k = global factor k
    model.group_centers_cov_   # (2, K, D, D)
 
@@ -198,7 +207,12 @@ Loading
 Connectivity
 ------------
 
-These functions work on any ``(K, T)`` weight matrices.
+These functions summarize Pearson correlations of ``(K, T)`` factor-weight
+matrices, either over all samples or within sliding windows. Inter-subject
+functional correlation (ISFC) additionally compares each participant with the
+other participants. For that comparison, factor rows and sample columns must
+correspond across subjects. Watching the same film at aligned time points is
+one example; merely having equal-length recordings is not sufficient.
 
 .. autosummary::
    :toctree: generated/
@@ -277,9 +291,13 @@ Example data
 ------------
 
 :func:`htfa.datasets.fetch_development_fmri` downloads nilearn's
-``development_fmri`` dataset (children and adults watching a short film) on first
-use and returns its runs masked to in-brain voxels and cleaned of a linear trend
-and confounds, ready for :func:`htfa.fit`:
+``development_fmri`` dataset on first use. In this example experiment, children
+and adults watch Pixar's *Partly Cloudy* while 168 fMRI volumes are acquired
+two seconds apart. The common stimulus supports the tutorials' aligned-time
+connectivity examples. This convenience loader is specific to that dataset;
+use :func:`htfa.load` or arrays for other studies. It returns runs masked to
+in-brain voxels and cleaned of a linear trend and confounds, ready for
+:func:`htfa.fit`:
 
 .. code-block:: python
 
@@ -299,7 +317,7 @@ and confounds, ready for :func:`htfa.fit`:
    htfa.datasets.regress_confounds
 
 :func:`htfa.datasets.fetch_tutorial_fit` downloads the saved HTFA fit of a
-tutorial (09, 10, 11 or 13) from the ``tutorial-data-v1`` pre-release of the htfa
+tutorial (09, 10, 11 or 13) from the ``tutorial-data-v1`` data release of the htfa
 repository, checks its SHA-256 and returns its arrays; the tutorials use it unless
 ``REFIT = True``.
 
@@ -312,8 +330,11 @@ repository, checks its SHA-256 and returns its arrays; the tutorials use it unle
 Synthetic data
 --------------
 
-The synthetic generators return data already on a z-scored scale, so fit them with
-``standardize=False``.
+The synthetic generators simulate spatial factors and their sample weights,
+then add noise. Their returned ground truth makes them useful for recovery
+checks without an experimental dataset. Fit on the generating scale with
+``standardize=False`` when comparing estimates with that truth; the generated
+data are not necessarily voxel-wise z-scored.
 
 .. autosummary::
    :toctree: generated/

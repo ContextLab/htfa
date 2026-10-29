@@ -634,8 +634,10 @@ class HTFA(BaseEstimator):
         groups : sequence, optional
             Nested groups of subjects: one label (``str`` or ``int``) per
             subject, or a list of such sequences, one per level, top level
-            first (for example ``[site, diagnosis]``; a label must belong to one
-            label of the level above). Each subject's prior is then centred on
+            first. For example, ``[site, subgroup]`` can group participants by
+            acquisition site and then by a site-specific subgroup. These labels
+            are illustrative; each label must belong to one parent label.
+            Each subject's prior is then centred on
             its innermost group's template, each group's prior on its parent's
             template (with the same covariance), and the global template is at
             the top; the templates jointly minimize the summed penalties given

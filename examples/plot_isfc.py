@@ -2,7 +2,11 @@
 Inter-subject functional correlation (ISFC)
 ===========================================
 
-Simulate three subjects on a 24 x 24 grid with four factors each. Factors 0 and 1
+ISFC asks whether factor time courses are related across subjects at matching
+samples. For example, people watching the same film can share responses to its
+events. Here a synthetic shared signal provides a controlled illustration,
+without a particular stimulus or experimental dataset: simulate three subjects
+on a 24 x 24 grid with four factors each. Factors 0 and 1
 follow a signal shared by all subjects (plus subject-specific noise), and factors
 2 and 3 are independent in every subject. Fit :class:`htfa.HTFA`; because the
 factors of every subject are in template order, :func:`htfa.isfc` can compare
@@ -11,7 +15,9 @@ other subjects' factors) is compared with within-subject
 :func:`htfa.static_connectivity`; ``htfa.isfc(..., window=20)`` gives the
 sliding-window version. Template order is arbitrary, so factors are matched to the
 simulated ones with :func:`htfa.synthetic.match_factors` before display. The
-printed numbers come from the code below.
+printed numbers come from the code below. In real data, factor identities and
+sample times must correspond across participants; equal array shapes alone
+do not establish that correspondence.
 """
 
 import time

@@ -14,6 +14,16 @@ fitted centers and widths in coordinate space. ``W`` holds the factors'
 weights over samples. HTFA fits TFA
 to several subjects at once, tying each subject's factors to a global template.
 
+The examples illustrate these operations with synthetic data, fMRI experiments,
+and 2D images. A particular stimulus or experimental task is not required for
+fitting. Subjects may have different numbers of samples; only analyses that
+compare time points across subjects, such as inter-subject functional
+correlation, require sample alignment.
+
+For example, a folder containing one 4D NIfTI time series per participant can
+be fitted as follows. Replace the placeholder path with your folder and choose
+the factor count for your analysis:
+
 .. code-block:: python
 
    import htfa

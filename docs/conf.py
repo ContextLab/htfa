@@ -51,6 +51,8 @@ sphinx_gallery_conf = {
     "gallery_dirs": "auto_examples",
     "filename_pattern": r"plot_",
     "download_all_examples": False,
+    # Library changes can alter figures even when example source is unchanged.
+    "run_stale_examples": True,
     "remove_config_comments": True,
     "doc_module": ("htfa",),
     "backreferences_dir": "generated/backreferences",

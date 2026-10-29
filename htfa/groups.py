@@ -157,7 +157,9 @@ def group_tree(
     ----------
     groups : sequence of labels, or sequence of sequences of labels
         One label (``str`` or ``int``) per subject, or a list of such sequences,
-        one per level, top level first (for example ``[site, diagnosis]``).
+        one per level, top level first. For example, ``[site, subgroup]`` can
+        group participants first by acquisition site and then by a subgroup
+        within that site; these names illustrate nesting, not required labels.
         Groups must be nested: every label of a level belongs to one label of
         the level above (use distinct labels such as ``'A-patient'`` and
         ``'B-patient'`` for groups under different parents).
@@ -182,6 +184,9 @@ def group_tree(
 
     Examples
     --------
+    An illustrative age-group tree for four independent participants, with one
+    global template above separate child and adult templates:
+
     >>> tree = group_tree(["child", "adult", "child", "adult"], 4)
     >>> tree.paths
     [(), ('child',), ('adult',)]

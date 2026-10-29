@@ -14,8 +14,11 @@
          edges
    :width: 100%
 
-HTFA template (K = 50) fitted to 12 adults watching a movie (nilearn's
-``development_fmri``), from the left, above and right. Edges: the strongest 5%
-of factor pairs by inter-subject functional correlation (\|ISFC\| ≥ 0.137; red
-positive, blue negative). Node size: factor width; colour: ISFC community.
-Made with ``scripts/make_cover.py``.
+Illustrative movie-viewing analysis: an HTFA template (K = 50) fitted to 12
+adults watching Pixar's *Partly Cloudy*, from Nilearn's ``development_fmri``
+dataset, viewed from the left, above and right. Inter-subject functional
+correlation (ISFC) compares participants' factor time courses at matching
+moments of the film. Edges show the strongest 5% of factor pairs
+(\|ISFC\| ≥ 0.137; red positive, blue negative). Node size represents factor
+width; node colour identifies communities in the positive-ISFC graph. See
+:doc:`tutorials/10_dynamic_isfc_animation` for the analysis workflow.

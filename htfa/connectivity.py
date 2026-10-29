@@ -85,7 +85,11 @@ def isfc(weights: Sequence[Array], window: int | None = None) -> Array:
 
     For each subject, its factor time courses are correlated with the mean of the
     other subjects' time courses; the result is symmetrized as ``(C + C.T) / 2`` and
-    averaged over subjects in Fisher-z space.
+    averaged over subjects in Fisher-z space. Factor rows and sample columns
+    must correspond across subjects. For example, movie-viewing data can align
+    samples to the same moments of a shared film. Equal array shapes alone do
+    not establish temporal correspondence; this alignment requirement belongs
+    to ISFC, not to HTFA fitting in general.
 
     Parameters
     ----------

@@ -13,9 +13,7 @@ from htfa.tfa import TFA
 # and the matched weights must correlate above 0.999.
 CENTER_SLACK_MM = 0.05
 WEIGHT_MIN_R = 0.999
-# The default multi-start. With the structured solver both fits pick 'power' and
-# take 131 s (MPS) and 222 s (CPU) on an M2 Max under a CPU load of ~175 (with
-# scipy's trf the MPS fit had not finished after an hour).
+# Exercise the default multi-start on both numerical backends.
 INIT = "auto"
 
 
@@ -58,14 +56,8 @@ def test_mps_fit_matches_cpu_accuracy() -> None:
     assert r > WEIGHT_MIN_R
 
 
-# K=100 (the real workload's K), with the robust loss (the default when these
-# numbers were measured, and the engine's heaviest pass), small enough to run in
-# minutes while still splitting the voxels into chunks on both engines (GPU:
-# 2**23 // K**2 = 838 rows,
-# 8 chunks; CPU: 209 rows, 29 chunks). Measured on an M2 Max (power start, 10
-# iterations, not converged): MPS 12.9 s vs CPU 26.0 s, matched center error 4.1293
-# on both, centers within 3.0e-5, weights r = 1.0000000000 (10 digits). The bounds
-# leave a 30x margin on the centers.
+# K=100 exercises robust-loss reductions and voxel chunking on both engines.
+# These are numerical-agreement tolerances, not performance assertions.
 K100_MAX_CENTER_DIFF = 1e-3
 K100_MIN_WEIGHT_R = 0.99999
 

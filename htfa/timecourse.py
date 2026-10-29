@@ -129,6 +129,12 @@ def plot_timecourse(
 ) -> Any:
     """Plot condition time courses as mean +/- SEM ribbons (slide style).
 
+    Labels and annotations describe the supplied analysis. For example, a
+    stimulus-response experiment might plot one curve per condition, mark
+    stimulus onset with ``events``, and shade its response interval with
+    ``periods``. These annotations are optional and do not require a particular
+    experimental task. All annotation positions use the units of ``x``.
+
     Parameters
     ----------
     conditions : mapping of label -> array of shape (S, T) or (T,)
@@ -141,13 +147,15 @@ def plot_timecourse(
         Window of a centered moving average (`moving_average`) applied to
         each subject's curve before averaging.
     shared_before : float, optional
-        Before this x value all conditions are one period: the mean of the
-        conditions is drawn as one dark curve there, and the conditions start
-        one sample before it.
+        Draw the mean of the conditions as one dark curve before this x value;
+        individual condition curves begin one sample before it. This optional
+        display choice can represent a shared baseline interval; it does not
+        test whether the conditions are equal there.
     events : sequence of float
-        x positions of magenta vertical lines (e.g. a cue).
+        x positions of magenta vertical lines, for example stimulus onsets.
     periods : sequence of (start, end)
-        x ranges shaded tan (e.g. a critical period).
+        x ranges shaded tan, for example intervals in which a response is
+        measured.
     xlabel, ylabel, title : str, optional
     ax : matplotlib Axes, optional
     fontsize : float

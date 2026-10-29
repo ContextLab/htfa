@@ -72,14 +72,18 @@ Measured CPU performance
 ------------------------
 
 The reproducible benchmark is ``scripts/benchmark_release.py``. It uses three
-adult participants from Nilearn's ``development_fmri`` dataset, full runs,
-K = 50 and 100, ``init='ncorr'``, and two BLAS threads. Each mode runs twice
-per subject, with the mode order reversed on the second repetition. Data
+adult participants from Nilearn's ``development_fmri`` dataset, an illustrative
+fMRI workload in which participants watch Pixar's *Partly Cloudy*. Each run
+contains 168 brain volumes sampled two seconds apart. The benchmark uses full
+runs, K = 50 and 100, ``init='ncorr'``, voxel-wise temporal z-scoring, and two
+BLAS threads. Each mode runs twice per subject, with the mode order reversed on the second repetition. Data
 loading, preprocessing, and a warmup fit are outside the timed region.
 
 The benchmark runs one fit at a time, waits for a quiet host, and samples CPU
-activity outside its process family during each fit. No tutorial executions,
-test suites, or other computational jobs run alongside it. Raw results include
+activity outside its process family during each fit. Baseline CPU use must
+remain below 10% for three samples; an external process using more than
+25% of one core for three consecutive samples invalidates a timed fit.
+No tutorial executions, test suites, or other computational jobs run alongside it. Raw results include
 hardware and software versions, input hashes, settings, stopping reasons,
 objective values, and external CPU measurements. These details make the scope
 of the comparison explicit.

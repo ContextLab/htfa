@@ -426,6 +426,10 @@ class HTFAResults:
     def isfc(self, window: int | None = None) -> Array:
         """Inter-subject factor correlation across all subjects.
 
+        Samples must refer to matching events or times across subjects, such as
+        the same moments of a shared film; equal series lengths alone are not
+        sufficient. The fitted HTFA template supplies the common factor order.
+
         Parameters
         ----------
         window : int, optional

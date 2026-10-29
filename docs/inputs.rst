@@ -59,7 +59,10 @@ Folders of NIfTI files
 BIDS datasets
 -------------
 
-A BIDS dataset is a nested folder tree, so pass a list of paths:
+The Brain Imaging Data Structure (BIDS) organizes imaging files in a nested
+folder tree. Pass a list of paths rather than the dataset root. For example,
+this pattern selects resting-state runs (``task-rest``); change the pattern
+for your task and preprocessed files:
 
 .. code-block:: python
 
@@ -69,6 +72,12 @@ A BIDS dataset is a nested folder tree, so pass a list of paths:
 
    runs = sorted(Path("bids_root").glob("sub-*/func/*_task-rest_bold.nii.gz"))
    res = htfa.fit([str(p) for p in runs], K=50, random_state=0)
+
+Each selected file is treated as a separate subject. If a participant has
+multiple runs, combine those runs appropriately before an analysis that assumes
+independent subjects, such as a group permutation test. For anatomical
+interpretation across participants, coordinates must refer to a shared space;
+equal coordinate dimensionality alone does not establish anatomical alignment.
 
 Masks
 -----
