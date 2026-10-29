@@ -1,8 +1,8 @@
 # htfa
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/_static/cover_dark.png">
-  <img alt="HTFA factor network: 50 template factors drawn as spheres inside a translucent brain, with the strongest inter-subject correlations as edges" src="docs/_static/cover_light.png" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ContextLab/htfa/main/docs/_static/cover_dark.png">
+  <img alt="HTFA factor network: 50 template factors drawn as spheres inside a translucent brain, with the strongest inter-subject correlations as edges" src="https://raw.githubusercontent.com/ContextLab/htfa/main/docs/_static/cover_light.png" width="100%">
 </picture>
 
 <sub>Illustrative movie-viewing analysis: an HTFA template (K = 50) fitted to 12 adults watching Pixar's <i>Partly Cloudy</i>, from Nilearn's <code>development_fmri</code> dataset, viewed from the left, above and right. Inter-subject functional correlation (ISFC) measures correlations between participants' factor time courses at matching moments of the film. Edges show the strongest 5% of factor pairs (|ISFC| &ge; 0.137; red positive, blue negative). Node size represents factor width; node colour identifies communities in the positive-ISFC graph. See the <a href="https://htfa.readthedocs.io/en/latest/tutorials/10_dynamic_isfc_animation.html">ISFC tutorial</a> for the analysis workflow.</sub>
@@ -10,7 +10,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/htfa.svg)](https://pypi.org/project/htfa/)
 [![tests](https://github.com/ContextLab/htfa/actions/workflows/tests.yml/badge.svg)](https://github.com/ContextLab/htfa/actions/workflows/tests.yml)
 [![Documentation Status](https://readthedocs.org/projects/htfa/badge/?version=latest)](https://htfa.readthedocs.io/en/latest/?badge=latest)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ContextLab/htfa/blob/main/LICENSE)
 
 ## Overview
 
@@ -66,7 +66,7 @@ For real data, pass a folder with one `.nii` / `.nii.gz` file per subject:
 res = htfa.fit("path/to/folder", K=50, random_state=0)
 ```
 
-The inputs `htfa.fit` accepts, its parameters and the results object are described in the [documentation](https://htfa.readthedocs.io/en/latest/) and in [docs/API.md](docs/API.md).
+The inputs `htfa.fit` accepts, its parameters and the results object are described in the [documentation](https://htfa.readthedocs.io/en/latest/) and in [docs/API.md](https://github.com/ContextLab/htfa/blob/main/docs/API.md).
 
 ## Installation
 
@@ -142,8 +142,8 @@ For example, `.venv/bin/pytest -m brainiak` runs the BrainIAK comparison tests.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](https://github.com/ContextLab/htfa/blob/main/CONTRIBUTING.md).
 
 ## License
 
-MIT; see [LICENSE](LICENSE). `htfa/brainnet.py` and `htfa/timecourse.py` adapt code from ContextLab/directed-forgetting-network-dynamics (commit 31a2b66; MIT License, Copyright (c) 2019 Contextual Dynamics Laboratory). The BrainNet Viewer brain meshes used by `htfa.brainnet` are not included; they are downloaded from NITRC on first use (BrainNet Viewer is distributed under the GNU GPL).
+MIT; see [LICENSE](https://github.com/ContextLab/htfa/blob/main/LICENSE). `htfa/brainnet.py` and `htfa/timecourse.py` adapt code from ContextLab/directed-forgetting-network-dynamics (commit 31a2b66; MIT License, Copyright (c) 2019 Contextual Dynamics Laboratory). The BrainNet Viewer brain meshes used by `htfa.brainnet` are not included; they are downloaded from NITRC on first use (BrainNet Viewer is distributed under the GNU GPL).

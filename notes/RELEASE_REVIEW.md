@@ -95,12 +95,12 @@ The local library differs only in reviewed docstrings and the verified Tutorial
   pass CPU-interference checks and stop on threshold without warnings. An
   independent reviewer verifies 1,070 monitoring samples, source/settings/data
   hashes, paired ordering, CSV values, and every table statistic. Public
-  artifacts are in `docs/_static/benchmarks/`. Final-head CI is pending.
+  artifacts are in `docs/_static/benchmarks/`. Current CI results are linked
+  from PR #185.
 
 ## Remaining gates
 
-1. Complete final-head platform and installed-wheel/tutorial CI after the
-   documentation, output, and asset updates are committed.
+1. Confirm the current PR checks are green before merging or publishing.
 2. Jeremy reviews the public content, scientific interpretation, and release
    draft. No publication approval is inferred from successful tests.
 3. Obtain explicit approval for TestPyPI/PyPI and GitHub release publication.
@@ -110,3 +110,7 @@ The local library differs only in reviewed docstrings and the verified Tutorial
 Historical evidence and asset provenance remain in
 `2026-10-28-release-review.md`, `2026-10-28-codex-integration.md`,
 `2026-10-28-stats-tutorials.md`, and `tutorial-assets-2026-10-28.json`.
+
+The package README is explicitly rendered with `readme_renderer[md]`; image
+and document links use absolute URLs so they resolve on PyPI. Twine alone
+does not render Markdown and is not evidence of this check.
