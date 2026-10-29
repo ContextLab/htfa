@@ -23,7 +23,7 @@ These extras are declared in ``pyproject.toml``:
    * - ``tutorials``
      - hypertools, sentence-transformers (only to re-execute the word-decoding tutorial)
    * - ``gpu``
-     - torch (``backend='torch'``, ``'cuda'`` or ``'mps'``)
+     - torch (``backend='torch'``, ``'cuda'``, ``'cuda:N'`` or ``'mps'``)
    * - ``dev``
      - pytest, pytest-cov, ruff, mypy, build, twine, plus plotting and image dependencies
    * - ``docs``
@@ -104,13 +104,13 @@ process. The function overrides the environment variable.
 torch
 -----
 
-``backend='torch'``, ``'cuda'`` or ``'mps'`` imports torch, installing
+``backend='torch'``, ``'cuda'``, ``'cuda:N'`` or ``'mps'`` imports torch, installing
 ``torch>=2.2`` when it is missing. On hosts other than macOS where ``nvidia-smi``
 is found and reports a CUDA driver, the installer picks the PyTorch wheel index
 for the newest supported CUDA version the driver can run (13.2, 13.0 or 12.6),
 or the CPU-only index when the driver is older than 12.6. Without an NVIDIA
 driver, and on macOS, it uses the default PyPI wheel.
-``backend='auto'`` never installs torch: it uses torch only if it is already
+Without an explicit ``gpu_devices`` selection, ``backend='auto'`` never installs torch: it uses torch only if it is already
 installed (see :doc:`performance`).
 
 Rendering without a display

@@ -86,6 +86,7 @@ class GroupTree:
     ----------
     labels : list of list
         One list of labels per level (top level first), one label per subject.
+        ``None`` marks levels below a subject's innermost group in a ragged tree.
     paths : list of tuple
         Node ``v``'s label path; node 0 is the global template ``()``, then the
         groups level by level in order of first appearance among the subjects.
@@ -105,6 +106,30 @@ class GroupTree:
     subject_node: NDArray[np.intp]
     precision: Array
     variance: Array
+
+    @classmethod
+    def from_paths(
+        cls,
+        paths: Sequence[Sequence[Hashable]],
+        subject_ids: Sequence[Hashable] | None = None,
+    ) -> GroupTree:
+        """Build a tree from one outer-to-inner group path per subject.
+
+        Paths may have different depths; an empty path attaches a subject
+        directly to the global template. Nodes are identified by their full
+        paths, so ``('site-a', 'control')`` and ``('site-b', 'control')`` are
+        distinct groups. Pass the resulting tree as ``groups`` to HTFA.fit.
+        Group permutation tests require equally deep paths and distinct
+        labels for groups under different parents.
+        """
+        checked = []
+        for path in paths:
+            if isinstance(path, (str, bytes)):
+                raise ValueError("each group path must be a sequence of labels")
+            checked.append(tuple(_label(v) for v in path))
+        if not checked:
+            raise ValueError("group paths must contain at least one subject")
+        return _tree_from_paths(checked, subject_ids)
 
     @property
     def n_nodes(self) -> int:
@@ -143,7 +168,7 @@ class GroupTree:
         rows = [
             s
             for s in range(len(self.subject_node))
-            if tuple(level[s] for level in self.labels[: len(path)]) == path
+            if self.paths[self.subject_node[s]][: len(path)] == path
         ]
         return np.asarray(rows, dtype=np.intp)
 
@@ -155,12 +180,14 @@ def group_tree(
 
     Parameters
     ----------
-    groups : sequence of labels, or sequence of sequences of labels
+    groups : sequence of labels, sequence of sequences of labels, or GroupTree
         One label (``str`` or ``int``) per subject, or a list of such sequences,
         one per level, top level first. For example, ``[site, subgroup]`` can
         group participants first by acquisition site and then by a subgroup
         within that site; these names illustrate nesting, not required labels.
-        Groups must be nested: every label of a level belongs to one label of
+        A tree from ``GroupTree.from_paths`` also supports unequal path depths
+        and repeated folder names under distinct parents. For label sequences,
+        groups must be nested: every label of a level belongs to one label of
         the level above (use distinct labels such as ``'A-patient'`` and
         ``'B-patient'`` for groups under different parents).
     n_subjects : int
@@ -193,6 +220,12 @@ def group_tree(
     >>> tree.solve(np.array([1.0, 4.0, 3.0, 6.0]))  # global, then group means
     array([3.5, 2.5, 4.5])
     """
+    if isinstance(groups, GroupTree):
+        if len(groups.subject_node) != n_subjects:
+            raise ValueError("group tree must have one path per subject")
+        return GroupTree.from_paths(
+            [groups.paths[v] for v in groups.subject_node], subject_ids
+        )
     levels = _levels(groups, n_subjects)
     for j in range(1, len(levels)):
         parents: dict[Hashable, set[Hashable]] = {}
@@ -206,17 +239,28 @@ def group_tree(
                     "groups under different parents distinct labels (crossed "
                     "designs are not supported)"
                 )
-    paths: list[tuple[Hashable, ...]] = [()]
-    for j in range(len(levels)):
-        for s in range(n_subjects):
-            path = tuple(level[s] for level in levels[: j + 1])
-            if path not in paths:
-                paths.append(path)
-    index = {p: v for v, p in enumerate(paths)}
-    subject_node = np.array(
-        [index[tuple(level[s] for level in levels)] for s in range(n_subjects)],
-        dtype=np.intp,
+    return _tree_from_paths(
+        [tuple(level[s] for level in levels) for s in range(n_subjects)], subject_ids
     )
+
+
+def _tree_from_paths(
+    subject_paths: Sequence[tuple[Hashable, ...]],
+    subject_ids: Sequence[Hashable] | None,
+) -> GroupTree:
+    n_subjects = len(subject_paths)
+    depth = max(map(len, subject_paths))
+    levels = [
+        [path[j] if j < len(path) else None for path in subject_paths]
+        for j in range(depth)
+    ]
+    paths: list[tuple[Hashable, ...]] = [()]
+    for j in range(depth):
+        for subject_path in subject_paths:
+            if len(subject_path) > j and subject_path[: j + 1] not in paths:
+                paths.append(subject_path[: j + 1])
+    index = {p: v for v, p in enumerate(paths)}
+    subject_node = np.array([index[p] for p in subject_paths], dtype=np.intp)
     if subject_ids is not None:
         if len(subject_ids) != n_subjects:
             raise ValueError(
@@ -475,6 +519,10 @@ def group_permutation_test(
 ) -> GroupTest:
     """Permutation test of differences between groups, per factor.
 
+    Group paths must have equal depth, with distinct labels for groups under
+    different parents; ragged folder hierarchies can be fitted and plotted but
+    do not define this level-wise permutation scheme.
+
     The labels of ``level`` are shuffled among the units under each parent
     (the groups of the next level, moved with their subjects, or the subjects
     at the innermost level), and the model is refitted with the shuffled
@@ -545,6 +593,24 @@ def group_permutation_test(
     tree = getattr(model, "group_tree_", None)
     if tree is None:
         raise ValueError("model was fitted without groups; pass groups to HTFA.fit")
+    depths = {len(tree.paths[v]) for v in tree.subject_node}
+    if len(depths) > 1:
+        raise ValueError(
+            "group permutation tests require equally deep group paths; "
+            "fit a balanced design with explicit groups for this test"
+        )
+    # Reassigning a parent must not merge distinct exchangeability units that
+    # happen to share the same child label in a path-based tree.
+    for j in range(1, len(tree.labels)):
+        parents: dict[Hashable, set[tuple[Hashable, ...]]] = {}
+        for path in tree.paths:
+            if len(path) == j + 1:
+                parents.setdefault(path[-1], set()).add(path[:-1])
+        if any(len(above) > 1 for above in parents.values()):
+            raise ValueError(
+                "group permutation tests require distinct labels for groups "
+                "under different parents; supply explicit unique group labels"
+            )
     if (
         isinstance(level, (bool, np.bool_))
         or not isinstance(level, (int, np.integer))

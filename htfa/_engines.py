@@ -25,16 +25,8 @@ from numpy.typing import NDArray
 from threadpoolctl import threadpool_limits
 
 BACKENDS = ("auto", "numpy", "cpu", "torch", "cuda", "mps")
-# Minimum V*T*K for 'auto' to prefer a GPU. Measured with the structured solver
-# on an M2 Max (MPS float32 vs NumPy, soft_l1, scripts/benchmark.py; other jobs
-# kept the CPU load at 60-180 on 12 cores, which handicaps NumPy): 5 iterations at
-# V*T*K = 6e8 (K=100) took 31 s on MPS vs 48 s, full fits 880 s vs 1627 s; at
-# 3e8 (K=50) MPS was slower (16.9 s vs 13.2 s). Smaller sizes favoured MPS too
-# but are dominated by load noise; 5e8 is the smallest size where MPS won with K
-# large enough for the T*K^2 Gauss-Newton product to dominate. Provisional until
-# measured on an idle machine. Accuracy at that size (20000x300, K=100, init
-# 'power', 30 iterations): MPS max matched center error 5.6681 vs CPU 5.6684
-# (both unconverged), centers within 3.5e-4, weights r = 0.9999999999.
+# Minimum V*T*K for the automatic GPU heuristic. Hardware and solver workloads
+# vary; explicit backend comparisons are needed for performance claims.
 GPU_MIN_WORK = int(5e8)
 # Elements per voxel chunk (chunk rows * max(T, K**2)) in the structured solver's
 # data-term passes: bounds the (chunk, T) and (K, K, chunk) temporaries to 16 MB
@@ -535,8 +527,16 @@ def select_engine(backend: str, V: int, T: int, K: int) -> Engine:
     ``'auto'`` uses a GPU torch engine only when torch is already installed, a
     CUDA or MPS device exists, and ``V*T*K >= GPU_MIN_WORK``.
     """
-    if backend not in BACKENDS:
-        raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
+    indexed_cuda = (
+        isinstance(backend, str)
+        and backend.startswith("cuda:")
+        and backend[5:].isascii()
+        and backend[5:].isdigit()
+    )
+    if backend not in BACKENDS and not indexed_cuda:
+        raise ValueError(
+            f"backend must be one of {BACKENDS} or cuda:N, got {backend!r}"
+        )
     if backend in ("numpy", "cpu"):
         return NumpyEngine()
     if backend == "auto":
@@ -550,6 +550,11 @@ def select_engine(backend: str, V: int, T: int, K: int) -> Engine:
 
     torch = ensure_torch()
     gpus = _available_devices(torch)
+    if indexed_cuda:
+        index = int(backend[5:])
+        if not torch.cuda.is_available() or index >= torch.cuda.device_count():
+            raise RuntimeError(f"backend {backend!r} requested but no such CUDA device")
+        return TorchEngine(f"cuda:{index}")
     if backend == "torch":
         return TorchEngine(gpus[0] if gpus else "cpu")
     if backend not in gpus:

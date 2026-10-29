@@ -27,7 +27,9 @@ def main():
             nbformat.v4.new_code_cell(
                 "import sys\nfrom pathlib import Path\nimport htfa\n"
                 "print(sys.executable, htfa.__file__)\n"
-                'assert "site-packages" in Path(htfa.__file__).resolve().parts'
+                'assert "site-packages" in Path(htfa.__file__).resolve().parts\n'
+                # A caller's headless backend must not silently discard figures.
+                'get_ipython().run_line_magic("matplotlib", "inline")'
             ),
         )
         print("Executing", path.name, flush=True)
@@ -39,6 +41,18 @@ def main():
         )
         try:
             client.execute()
+            visual = any(
+                "image/png" in output.get("data", {})
+                or "image/svg+xml" in output.get("data", {})
+                or any(
+                    tag in output.get("data", {}).get("text/html", "")
+                    for tag in ("<video", "<img")
+                )
+                for cell in notebook.cells
+                for output in cell.get("outputs", [])
+            )
+            if not visual:
+                raise RuntimeError(f"{path.name} did not emit a figure or animation")
         finally:
             nbformat.write(notebook, output / path.name)
         print("Passed", path.name, flush=True)

@@ -349,6 +349,7 @@ def _start_x(kernel: Kernel, start: tuple[ArrayLike, ...], K: int, D: int) -> Ar
     for M > 1."""
     M = kernel.n_components
     shapes = [np.shape(a) for a in start]
+    start = tuple(real_array(a, "start") for a in start)
     if M == 1:
         if len(start) != 2 or shapes != [(K, D), (K,)]:
             raise ValueError(
@@ -493,8 +494,10 @@ class TFA(BaseEstimator):
         until its stopping rule or iteration limit and compares final objectives.
         Screening reduces work on discarded starts but can select a different
         candidate than fully fitting every start.
-    backend : {'auto', 'numpy', 'cpu', 'torch', 'cuda', 'mps'}, default='auto'
-        Compute engine for the data-term products; see
+    backend : str, default='auto'
+        Compute engine: ``'auto'``, ``'numpy'``, ``'cpu'``, ``'torch'``,
+        ``'cuda'``, ``'mps'``, or ``'cuda:N'`` for a visible CUDA device index N.
+        A single-subject fit uses one device. For data-term products, see
         `htfa._engines.select_engine`.
     mode : {'fast', 'exact'}, default='fast'
         How the ``'bounded-lm'`` and ``'varpro'`` solvers form their steps (no
