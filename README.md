@@ -74,6 +74,41 @@ Use `groups=False` to ignore folder-derived grouping, or pass explicit `groups`
 to define the experimental hierarchy yourself. Each file remains one subject;
 repeated runs from one person are not independent subjects.
 
+With the `brain3d` extra, `htfa.plot_network` and `htfa.animate_network` draw nodes in MNI coordinates (mm) and edges above a threshold. This example draws four nodes with one color each, two views, a legend and an exact frame size, then an mp4 with per-frame node sizes drawn by two worker processes:
+
+```python
+import numpy as np
+import htfa
+
+rng = np.random.default_rng(0)
+centers = np.array([[-40, -20, 10], [40, -20, 10], [0, 40, 20], [0, -60, 30]], float)
+E = rng.uniform(-1, 1, (6, 4, 4))  # six windows of 4 x 4 connectivity
+E = (E + E.transpose(0, 2, 1)) / 2
+legend = [("red", "positive", "line"), ("blue", "negative", "line")]
+
+img = htfa.plot_network(
+    centers,
+    E[0],
+    node_color=["red", "green", "blue", "gray"],
+    views=["left", "right"],
+    legend=legend,
+    frame_size=(640, 400),
+    size=(320, 200),
+)
+htfa.animate_network(
+    centers,
+    E,
+    "network.mp4",
+    sizes=rng.uniform(1, 5, (6, 4)),
+    views=["left", "right"],
+    legend=legend,
+    frame_size=(640, 400),
+    size=(320, 200),
+    n_jobs=2,
+    crf=18,
+)
+```
+
 The inputs `htfa.fit` accepts, its parameters and the results object are described in the [documentation](https://htfa.readthedocs.io/en/latest/) and in [docs/API.md](https://github.com/ContextLab/htfa/blob/main/docs/API.md).
 
 ## Installation

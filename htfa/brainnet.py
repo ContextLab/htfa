@@ -1836,7 +1836,9 @@ def plot_network(
         Edge weights (upper triangle used). ``None`` draws nodes only.
     sizes : array of shape (K,), optional
         Node sizes; mapped linearly onto 2-7 mm radii (`node_radius`; see the
-        ``radius_*`` style options).
+        ``radius_*`` style options). (1, K) and (K, 1) arrays count as (K,);
+        any other 2D array raises ``ValueError`` here (one row per window is
+        for `animate_network`).
         Defaults to the (effective, with ``snap``) widths, or equal sizes
         (4 mm) when no widths are known.
     widths : array of shape (K,), optional
@@ -1933,8 +1935,9 @@ def plot_network(
         ``node_color`` (0.502 gray; one color, or K colors as a sequence
         of K color specs or a (K, 3) or (K, 4) array, alpha ignored; a
         flat sequence of 3 or 4 numbers is always one color, so three
-        nodes with numeric colors need a (3, 3) array; component lobes
-        take one color), ``mesh_color`` (0.95 gray),
+        nodes with numeric colors need a (3, 3) array; any other shape
+        raises ``ValueError`` naming the shape received and K; component
+        lobes take one color), ``mesh_color`` (0.95 gray),
         ``mesh_opacity`` (0.2), ``background`` ("white"),
         ``radius_range`` ((2, 7) mm: radii of the smallest and largest
         size), ``radius_kb`` (a fixed ``(k, b)``: radius ``k * size + b``
@@ -1948,6 +1951,24 @@ def plot_network(
     -------
     PIL.Image.Image
         The RGB image.
+
+    Raises
+    ------
+    ValueError
+        If ``view`` is given together with ``views``, ``views``, ``legend``
+        or ``frame_size`` is malformed, a legend row is wider than
+        ``frame_size``, ``sizes`` is not (K,), or ``node_color`` has a shape
+        other than one color or K colors.
+
+    Examples
+    --------
+    Two views side by side, one color per node, a legend row, and a 1920 x
+    1080 frame:
+
+    >>> img = plot_network(
+    ...     centers, E, node_color=colors, views=["left", "right"],
+    ...     legend=[("red", "positive", "line"), ("blue", "negative", "line")],
+    ...     frame_size=(1920, 1080))  # doctest: +SKIP
     """
     layout = _layout_args(views, legend, frame_size, style)
     scene_opts, edge_opts = _style(dict(style))
@@ -2114,7 +2135,11 @@ def animate_network(
     By default the movie has one frame per connectivity window, and the
     camera, mesh, nodes and threshold stay fixed. ``duration`` (or
     ``n_frames``) sets the number of frames instead, interpolating between
-    windows, and ``spin`` turns the brain.
+    windows, and ``spin`` turns the brain. A call that gives none of
+    ``views``, ``legend``, ``frame_size``, ``compose``, ``n_jobs``, ``crf``,
+    ``faststart``, (T, K) ``sizes`` or colors, or ``None`` connectivity is
+    drawn and encoded as in 0.1.0. ``views``, ``legend`` or ``frame_size``
+    take the layout path described under `plot_network`.
 
     Parameters
     ----------
@@ -2134,11 +2159,15 @@ def animate_network(
         As in `plot_network`. ``node_color`` may also hold per-frame colors:
         (T, K) color specs or an array of shape (T, K, 3) or (T, K, 4). A
         frame uses the colors of the nearest window; colors are not blended.
+        A flat sequence of 3 or 4 numbers is one color, as in `plot_network`.
+        In a GIF, colors outside the shared palette (see `write_animation`)
+        are approximated by palette colors.
     connectivity : array of shape (T, K, K) or (K, K), or None
         One edge matrix per window. A single ``(K, K)`` matrix gives fixed
         edges (for a spin) and needs ``duration``, ``n_frames``, or (T, K)
         ``sizes`` or colors. ``None`` draws no edges and needs (T, K)
-        ``sizes`` or colors. All time axes (connectivity, ``sizes``,
+        ``sizes`` or colors (in `htfa.HTFAResults.animate_network`, ``None``
+        instead computes ISFC). All time axes (connectivity, ``sizes``,
         ``node_color`` and a ``captions`` sequence) must have the same T.
     out : path
         ``.mp4`` (H.264 via imageio-ffmpeg) or ``.gif``. An mp4 is encoded
@@ -2194,8 +2223,10 @@ def animate_network(
         window time (a float). The returned PIL image is the frame as is:
         no caption, titles, legend or crop is added, so ``compose`` cannot
         be combined with ``legend``, ``captions`` or ``frame_size``
-        (``ValueError``). Every frame must have the same size (an mp4 is
-        trimmed to even sizes).
+        (``ValueError``). With ``n_jobs`` other than 1 it runs in the worker
+        processes. Every frame must have the same size (an mp4 is trimmed to
+        even sizes); a return value that is not a PIL image raises
+        ``ValueError``.
     frames_dir : path, optional
         Also save each frame there as ``1.png``, ``2.png``, ... (``.jpg``
         with ``jpeg_quality``).
@@ -2204,7 +2235,8 @@ def animate_network(
         movie. Lower quality values increase compression artifacts.
     n_jobs : int, default 1
         Number of worker processes drawing frames (joblib's convention:
-        ``-1`` uses every CPU). With 1, frames are drawn in this process and
+        ``-1`` uses every CPU; 0 or a non-integer raises ``ValueError``).
+        With 1, frames are drawn in this process and
         encoded as they are drawn. Otherwise this call starts its own pool
         (not joblib's shared one), each worker draws a contiguous run of
         frames into a temporary folder (removed afterwards, also after an
@@ -2214,13 +2246,14 @@ def animate_network(
         then run in the workers, so they must be picklable by cloudpickle
         (functions defined in a notebook are). A view rendered black on a
         light background (more than 5 percent of its pixels, and at least
-        one corner pixel, with every channel below 10) or a worker that dies
-        stops the pool; a new one redraws the missing frames, up to 5 times,
+        one corner pixel, with every channel below 10; not checked when the
+        ``background`` is dark, max channel below 40 of 255) or a worker that
+        dies stops the pool; a new one redraws the missing frames, up to 5 times,
         then ``RuntimeError``. Other errors are raised at once.
     crf : int, optional
         x264 constant rate factor of an mp4, 0 to 51 (higher is smaller and
-        blurrier); passed to `write_animation`. Default: the 0.1.0 quality
-        setting.
+        blurrier); passed to `write_animation`. Default ``None``: the 0.1.0
+        encoding (imageio ``quality=8``, which is CRF 10).
     faststart : bool, default False
         Move the mp4 index to the start of the file, so that browsers can
         play it while it downloads; passed to `write_animation`.
@@ -2249,6 +2282,18 @@ def animate_network(
 
     >>> animate_network(centers, C, "spin.gif", fps=12, duration=4,
     ...                 spin=(0, 0, 1), size=(480, 300))  # doctest: +SKIP
+
+    Suppose ``S`` has shape (30, K) and ``colors`` has shape (30, K, 3). A
+    movie of two views with per-frame node sizes and colors, a legend and
+    four worker processes; ``S`` is scaled jointly over all frames, and
+    ``crf`` and ``faststart`` set the encoding:
+
+    >>> animate_network(
+    ...     centers, E, "net.mp4", sizes=S, node_color=colors,
+    ...     views=["left", "right"],
+    ...     legend=[("red", "positive", "line"), ("blue", "negative", "line")],
+    ...     frame_size=(1920, 1080), n_jobs=4, crf=18,
+    ...     faststart=True)  # doctest: +SKIP
     """
     if (
         isinstance(n_jobs, bool)
@@ -2636,10 +2681,11 @@ def write_animation(
         Frames per second.
     crf : int, optional
         x264 constant rate factor, 0 to 51 (higher is smaller and blurrier).
-        Default: the 0.1.0 quality setting (``quality=8``). mp4 only.
+        Default ``None``: the 0.1.0 encoding (imageio ``quality=8``, which is
+        CRF 10). Not for GIF (``ValueError``).
     faststart : bool, default False
         Move the mp4 index to the start of the file so that browsers can
-        play it while it downloads. mp4 only.
+        play it while it downloads. Not for GIF (``ValueError``).
     """
     _check_fps(fps)
     out = Path(out)

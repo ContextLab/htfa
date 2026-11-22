@@ -14,7 +14,7 @@ from .synthetic import make_group_data, make_htfa_data, make_tfa_data
 from .tfa import TFA
 from .timecourse import plot_timecourse
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "HTFA",

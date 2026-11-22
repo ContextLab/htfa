@@ -1,6 +1,44 @@
 Release overview
 ================
 
+0.2.0
+-----
+
+0.2.0 adds options to the BrainNet Viewer-style network plots and animations in
+``htfa.brainnet``. Existing calls are unchanged: a call that passes none of the
+new arguments takes the 0.1.0 code path and gives the same images.
+
+Network plots and animations
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- ``node_color`` accepts one color per node: a sequence of K color specs, or an
+  array of shape (K, 3) or (K, 4). In :func:`htfa.animate_network` it also
+  accepts per-frame colors, (T, K) color specs or an array of shape (T, K, 3)
+  or (T, K, 4); each frame uses the colors of the nearest window. A flat
+  sequence of 3 or 4 numbers is still one color.
+- :func:`htfa.animate_network` accepts ``sizes`` of shape (T, K). Radii are
+  scaled jointly over all frames and follow ``interpolation`` between windows.
+  ``connectivity=None`` draws no edges when ``sizes`` or ``node_color`` has a
+  time axis. In :meth:`htfa.HTFAResults.animate_network`, ``connectivity=None``
+  still computes ISFC.
+- ``views`` draws several views side by side, ``legend`` adds rows of colored
+  dots and lines with labels, and ``frame_size`` sets the exact frame size.
+  One crop box serves every view and frame. Passing any of the three selects
+  the layout path; otherwise output is as in 0.1.0.
+- :func:`htfa.animate_network` accepts ``compose``, a callable
+  ``compose(images, t)`` that builds each frame from the per-view images, and
+  ``n_jobs``, which draws frames in worker processes. With ``n_jobs`` other
+  than 1, a blank (black) render or a dead worker restarts the pool, up to 5
+  times.
+- ``crf`` and ``faststart`` set the x264 constant rate factor and move the mp4
+  index to the start of the file, in :func:`htfa.animate_network` and
+  :func:`htfa.brainnet.write_animation`. With ``crf=None`` the encoding is as
+  in 0.1.0.
+- The style key ``supersample`` sets the rendering multiple used for
+  anti-aliasing (default 2).
+- :func:`htfa.content_box` returns the bounding box of the non-background
+  content of one or more images.
+
 0.1.0
 -----
 
