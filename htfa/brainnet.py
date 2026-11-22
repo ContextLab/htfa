@@ -1240,6 +1240,54 @@ def _radii(sizes: Array, scene_opts: dict[str, Any]) -> Array:
     return radii
 
 
+def _check_view(view: Any) -> None:
+    if not isinstance(view, str) or view not in VIEWS:
+        raise ValueError(f"unknown view {view!r}; choose from {sorted(VIEWS)}")
+
+
+_VIEW_TITLES = {
+    "left": "Left lateral",
+    "lateral": "Left lateral",
+    "right": "Right lateral",
+}
+
+
+def _view_titles(views: Any) -> tuple[list[str], list[str]]:
+    """View names and panel titles from ``views``.
+
+    Each entry of ``views`` is a name from `VIEWS` or a ``(name, title)``
+    pair. Default titles: "Left lateral" (``left``, ``lateral``), "Right
+    lateral" (``right``), else the capitalized name; with a single view, no
+    title unless one is given.
+    """
+    if isinstance(views, str) or not isinstance(views, Sequence) or not len(views):
+        raise ValueError(
+            "views must be a non-empty sequence of view names or (name, title) "
+            f"pairs, got {views!r}"
+        )
+    names, titles = [], []
+    for entry in views:
+        if isinstance(entry, str):
+            name, title = entry, None
+        elif (
+            isinstance(entry, Sequence)
+            and len(entry) == 2
+            and all(isinstance(x, str) for x in entry)
+        ):
+            name, title = entry
+        else:
+            raise ValueError(
+                "each view must be a name or a (name, title) pair of str, "
+                f"got {entry!r}"
+            )
+        _check_view(name)
+        if title is None:
+            title = "" if len(views) == 1 else _VIEW_TITLES.get(name, name.capitalize())
+        names.append(name)
+        titles.append(title)
+    return names, titles
+
+
 class _Scene:
     """Off-screen plotter holding mesh and nodes; edges change per frame."""
 
@@ -1264,8 +1312,7 @@ class _Scene:
         supersample: int = _SUPERSAMPLE,
     ) -> None:
         pv = lazy_import("pyvista", "brain3d", "network plots")
-        if view not in VIEWS:
-            raise ValueError(f"unknown view {view!r}; choose from {sorted(VIEWS)}")
+        _check_view(view)
         if (
             isinstance(supersample, bool)
             or not isinstance(supersample, (int, np.integer))
@@ -1564,6 +1611,75 @@ class _Scene:
         self.pl.close()
 
 
+class _Views:
+    """One `_Scene` per view, drawn together frame by frame.
+
+    Built from plain (picklable) arguments: ``scene_opts`` as returned by
+    `_style` (its ``view`` is replaced by each name of ``views``) and
+    ``scene_kwargs``, the other `_Scene` keywords. If a scene fails to build,
+    those already built are closed.
+    """
+
+    def __init__(
+        self,
+        centers: Array,
+        node_sizes: Array,
+        mesh: tuple[Array, Array] | None,
+        views: Sequence[str],
+        scene_opts: dict[str, Any],
+        **scene_kwargs: Any,
+    ) -> None:
+        self.scenes: list[_Scene] = []
+        self._spin: list[tuple[Array, float]] = []
+        try:
+            for view in views:
+                self.scenes.append(
+                    _Scene(
+                        centers,
+                        node_sizes,
+                        mesh,
+                        **{**scene_opts, "view": view},
+                        **scene_kwargs,
+                    )
+                )
+        except BaseException:
+            self.close()
+            raise
+
+    def fit_spin(self, rotations: Array) -> None:
+        """Fit each view's spin camera to ``rotations`` (see `_Scene.fit_spin`)."""
+        self._spin = [scene.fit_spin(rotations) for scene in self.scenes]
+
+    def draw(
+        self,
+        E: Array | None,
+        edge_opts: dict[str, Any],
+        radii: Array | None = None,
+        colors: Array | None = None,
+        rotation: Array | None = None,
+    ) -> list[Any]:
+        """One image per view.
+
+        Per scene: new spheres if ``radii`` or ``colors`` is given
+        (`_Scene.set_nodes`), the camera turned by ``rotation`` (needs
+        `fit_spin` first), the edges of ``E`` if given, then the image.
+        """
+        images = []
+        for k, scene in enumerate(self.scenes):
+            if radii is not None or colors is not None:
+                scene.set_nodes(scene.radii if radii is None else radii, colors)
+            if rotation is not None:
+                scene.orbit(rotation, *self._spin[k])
+            if E is not None:
+                scene.set_edges(E, **edge_opts)
+            images.append(scene.image())
+        return images
+
+    def close(self) -> None:
+        for scene in self.scenes:
+            scene.close()
+
+
 def _rgb(color: Any) -> tuple[float, float, float]:
     pv = lazy_import("pyvista", "brain3d", "network plots")
     r, g, b = pv.Color(color).float_rgb
@@ -1701,6 +1817,9 @@ def plot_network(
     lobe_negative_color: Any = "teal",
     out: str | os.PathLike | None = None,
     jpeg_quality: int | None = None,
+    views: Sequence[Any] | None = None,
+    legend: Any = None,
+    frame_size: tuple[int, int] | None = None,
     **style: Any,
 ) -> Any:
     """Render nodes and thresholded edges BrainNet Viewer-style.
@@ -1773,6 +1892,31 @@ def plot_network(
     jpeg_quality : int, optional
         If given, the image is JPEG-compressed at this quality before it is
         returned or saved. JPEG at 75 makes thin edges paler.
+    views : sequence, optional
+        Several views side by side, each a name of `VIEWS` or a
+        ``(name, title)`` pair (not together with ``view``). Each view is
+        rendered at ``size`` and all are cropped to one box around the
+        content (`content_box` with ``background``), then laid out as
+        `annotate_pair` does: titles above the views, a divider between
+        them. Default titles: "Left lateral" (``left``, ``lateral``),
+        "Right lateral" (``right``), else the capitalized name; an empty
+        title hides it, and a single view has no title unless one is given.
+    legend : list, optional
+        One legend row, a list of ``(color, label, kind)`` with ``kind``
+        ``"dot"`` or ``"line"``, or a list of such rows; drawn centered
+        below the views, one band ``round(64 * W / 1920)`` pixels high per
+        row with font size ``round(30 * W / 1920)`` for frame width W. A row
+        wider than the frame raises ``ValueError``.
+    frame_size : (W, H) even ints, optional
+        Exact size of the image: titles and legend are drawn at width W and
+        the views are scaled down (never up) to fit the space left, centered.
+        Without it, W is the summed width of the cropped views (trimmed with
+        the height to even numbers).
+
+        Passing any of ``views``, ``legend`` or ``frame_size`` takes this
+        layout path; the title and legend bands take the ``background``
+        color, with black text on a light background and white text on a
+        dark one. Without them the single ``view`` is returned uncropped.
     **style
         ``threshold`` (0.25; edges with ``|E| > threshold`` are drawn),
         ``view`` (``"lateral"`` = ``"left"``, ``"right"``, ``"dorsal"``,
@@ -1799,6 +1943,7 @@ def plot_network(
     PIL.Image.Image
         The RGB image.
     """
+    layout = _layout_args(views, legend, frame_size, style)
     scene_opts, edge_opts = _style(dict(style))
     centers, node_sizes, opacity, components, surfaces = _network_geometry(
         nodes,
@@ -1822,22 +1967,28 @@ def plot_network(
     E = None
     if connectivity is not None:
         E = _connectivity(connectivity, len(centers), 2)
-    scene = _Scene(
+    scenes = _Views(
         centers,
         node_sizes,
         load_mesh(mesh),
-        **scene_opts,
+        [scene_opts["view"]] if layout is None else layout[0],
+        scene_opts,
         node_opacity=opacity,
         component_surfaces=surfaces,
         component_weights=None if components is None else components.mixing,
         lobe_negative_color=lobe_negative_color,
     )
     try:
-        if E is not None:
-            scene.set_edges(E, **edge_opts)
-        img = scene.image()
+        images = scenes.draw(E, edge_opts)
     finally:
-        scene.close()
+        scenes.close()
+    if layout is None:
+        img = images[0]
+    else:
+        _, titles, rows, size = layout
+        img = _layout(
+            images, titles, None, rows, None, None, size, scene_opts["background"]
+        )
     if jpeg_quality is not None:
         img = _jpeg(img, jpeg_quality)
     if out is not None:
@@ -1936,6 +2087,9 @@ def animate_network(
     captions: Sequence[str] | Callable[[float], str] | None = None,
     frames_dir: str | os.PathLike | None = None,
     jpeg_quality: int | None = None,
+    views: Sequence[Any] | None = None,
+    legend: Any = None,
+    frame_size: tuple[int, int] | None = None,
     **style: Any,
 ) -> Path:
     """Render a ``(T, K, K)`` connectivity series as an mp4 or GIF.
@@ -2004,10 +2158,18 @@ def animate_network(
         ``view``; any spin, even ``(0, 0, 0)``, uses the centered, fitted
         zoom.
     captions : sequence of T str, or callable, optional
-        Text shown in a white band above each frame (not over the brain).
+        Text shown in a white band above each frame (not over the brain);
+        with ``views``, ``legend`` or ``frame_size``, a line under the view
+        titles in a band of the ``background`` color.
         A sequence gives the caption of each window (a movie frame takes
         that of the nearest window); a callable is called with each frame's
         window time ``t`` (a float) and returns its caption.
+    views, legend, frame_size
+        As in `plot_network`. In a movie, one crop box serves all views and
+        frames, so the brain does not move: it is taken once, before the
+        first frame, around one render of each view without edges and with
+        each node at its largest radius. With ``spin`` every view turns and
+        the views are not cropped.
     frames_dir : path, optional
         Also save each frame there as ``1.png``, ``2.png``, ... (``.jpg``
         with ``jpeg_quality``).
@@ -2040,6 +2202,7 @@ def animate_network(
     >>> animate_network(centers, C, "spin.gif", fps=12, duration=4,
     ...                 spin=(0, 0, 1), size=(480, 300))  # doctest: +SKIP
     """
+    layout = _layout_args(views, legend, frame_size, style)
     scene_opts, edge_opts = _style(dict(style))
     if interpolation not in ("linear", "nearest"):
         raise ValueError(
@@ -2118,39 +2281,51 @@ def animate_network(
     folder = None if frames_dir is None else Path(frames_dir)
     if folder is not None:
         folder.mkdir(parents=True, exist_ok=True)
-    scene = _Scene(
+    scenes = _Views(
         centers,
         node_sizes,
         load_mesh(mesh),
-        **scene_opts,
+        [scene_opts["view"]] if layout is None else layout[0],
+        scene_opts,
         node_opacity=opacity,
         component_surfaces=surfaces,
         component_weights=None if components is None else components.mixing,
         lobe_negative_color=lobe_negative_color,
     )
+    crop = None
 
     def frames() -> Iterator[Any]:
         if rotations is not None:
-            center, scale = scene.fit_spin(rotations)
+            scenes.fit_spin(rotations)
         for k, t in enumerate(times):
-            if radii is not None or colors is not None:
-                scene.set_nodes(
-                    (
-                        scene.radii
-                        if radii is None
-                        else _at_time(radii, float(t), interpolation)
-                    ),
-                    None if colors is None else colors[_nearest(float(t), T)],
-                )
-            if rotations is not None:
-                scene.orbit(rotations[k], center, scale)
+            # fixed (K, K) edges: the same matrix at every t
+            at = None
             if E is not None:
-                # fixed (K, K) edges: the same matrix at every t
                 at = E[0] if len(E) == 1 else _at_time(E, float(t), interpolation)
-                scene.set_edges(at, **edge_opts)
-            img = scene.image()
-            if caption is not None:
-                img = _with_header(img, [caption(float(t))])
+            images = scenes.draw(
+                at,
+                edge_opts,
+                None if radii is None else _at_time(radii, float(t), interpolation),
+                None if colors is None else colors[_nearest(float(t), T)],
+                None if rotations is None else rotations[k],
+            )
+            text = None if caption is None else caption(float(t))
+            if layout is not None:
+                _, titles, rows, size = layout
+                img = _layout(
+                    images,
+                    titles,
+                    text,
+                    rows,
+                    crop,
+                    None,
+                    size,
+                    scene_opts["background"],
+                )
+            else:
+                img = images[0]
+                if text is not None:
+                    img = _with_header(img, [text])
             if jpeg_quality is not None:
                 img = _jpeg(img, jpeg_quality)
             if folder is not None:
@@ -2159,9 +2334,17 @@ def animate_network(
             yield img
 
     try:
+        if layout is not None and rotations is None:
+            # one crop for all views and frames: no edges, the largest spheres
+            # (the scene starts with them, see above)
+            crop = content_box(
+                scenes.draw(None, edge_opts), background=scene_opts["background"]
+            )
+        elif layout is not None:
+            crop = (0, 0, *scenes.scenes[0].size)
         return write_animation(frames(), out, fps=fps)
     finally:
-        scene.close()
+        scenes.close()
 
 
 # ------------------------------------------------------------------ animations
@@ -2456,41 +2639,237 @@ def annotate_pair(
     PIL.Image.Image
         Text sits only in the header band, never over the brain.
     """
+    return _layout([left, right], titles, caption or None, None, crop, width, None)
+
+
+def _frame_size(frame_size: Any) -> tuple[int, int] | None:
+    """``frame_size`` as two ints, checked to be positive and even (or None)."""
+    if frame_size is None:
+        return None
+    if (
+        isinstance(frame_size, str)
+        or not isinstance(frame_size, Sequence)
+        or len(frame_size) != 2
+        or not all(
+            isinstance(v, numbers.Integral)
+            and not isinstance(v, bool)
+            and int(v) > 0
+            and int(v) % 2 == 0
+            for v in frame_size
+        )
+    ):
+        raise ValueError(
+            "frame_size must be two positive, even integers (W, H) (H.264 needs "
+            f"even sizes), got {frame_size!r}"
+        )
+    return int(frame_size[0]), int(frame_size[1])
+
+
+def _legend_rows(legend: Any) -> list[list[tuple[tuple[int, int, int], str, str]]]:
+    """Legend rows of ``(rgb, label, kind)``, ``rgb`` as 0-255 ints.
+
+    ``legend`` is one row, a list of ``(color, label, kind)`` with ``kind``
+    ``"dot"`` or ``"line"``, or a list of such rows.
+    """
+
+    def seq(x: Any) -> bool:
+        return isinstance(x, (list, tuple))
+
+    if not seq(legend) or not legend:
+        raise ValueError(
+            "legend must be a non-empty list of (color, label, kind) entries or "
+            f"of such rows, got {legend!r}"
+        )
+    nested = all(seq(row) and all(seq(e) for e in row) for row in legend)
+    rows = []
+    for r, row in enumerate(legend if nested else [legend], 1):
+        if not row:
+            raise ValueError(f"legend row {r} is empty")
+        entries = []
+        for entry in row:
+            if not (
+                seq(entry)
+                and len(entry) == 3
+                and isinstance(entry[1], str)
+                and entry[2] in ("dot", "line")
+            ):
+                raise ValueError(
+                    "legend entries are (color, label, kind) with kind 'dot' or "
+                    f"'line'; row {r} has {entry!r}"
+                )
+            r8, g8, b8 = (int(v) for v in _uint8(np.asarray(_rgb(entry[0]))))
+            entries.append(((r8, g8, b8), entry[1], entry[2]))
+        rows.append(entries)
+    return rows
+
+
+def _layout_args(
+    views: Any, legend: Any, frame_size: Any, style: dict[str, Any]
+) -> tuple[list[str], list[str], list | None, tuple[int, int] | None] | None:
+    """Checked ``(names, titles, legend rows, frame_size)`` of the layout path.
+
+    None (the single-view path) when none of ``views``, ``legend`` and
+    ``frame_size`` is given; ``style`` is checked for a ``view`` given with
+    ``views``.
+    """
+    if views is None and legend is None and frame_size is None:
+        return None
+    if views is not None and "view" in style:
+        raise ValueError(
+            f"give view or views, not both; got view={style['view']!r} and "
+            f"views={views!r}"
+        )
+    names, titles = _view_titles(
+        [style.get("view", "lateral")] if views is None else views
+    )
+    rows = None if legend is None else _legend_rows(legend)
+    return names, titles, rows, _frame_size(frame_size)
+
+
+def _layout(
+    images: Sequence[Any],
+    titles: Sequence[str],
+    caption: str | None,
+    legend: list | None,
+    crop: tuple[int, int, int, int] | None,
+    width: int | None,
+    frame_size: tuple[int, int] | None,
+    background: Any = "white",
+) -> Any:
+    """Images side by side under their titles and a caption, legend rows below.
+
+    Parameters
+    ----------
+    images : sequence of paths or PIL images
+        Views of equal size.
+    titles : sequence of str
+        One per image; ``"\\n"`` starts a smaller subtitle line. The title
+        band is left out when all are empty and there is no caption.
+    caption : str or None
+        A line centered under the titles; ``None`` leaves out its row.
+    legend : list or None
+        Rows from `_legend_rows`, centered below the views.
+    crop : (left, top, right, bottom) or None
+        Region of each image to show; default `content_box` of all images
+        with ``background``.
+    width : int or None
+        Frame width with panes of ``width // N`` pixels (`annotate_pair`).
+    frame_size : (W, H) or None
+        Exact frame size; the cropped views are scaled down (never up) to fit
+        the space between the bands and centered. With neither ``width`` nor
+        ``frame_size``, views keep their cropped size and the frame is
+        trimmed to even width and height.
+    background : color
+        Frame and band color. Text is black when the background's mean
+        channel is 128 or more, else white; subtitle and divider grays are
+        mirrored likewise (``255 - gray``).
+
+    Returns
+    -------
+    PIL.Image.Image
+    """
     Image = _pil()
     draw_mod = lazy_import("PIL.ImageDraw", "brain3d", "annotations")
-    ims = [_open(left), _open(right)]
-    box = crop or content_box(ims)
-    pane_w = width // 2
-    pane_h = round(pane_w * (box[3] - box[1]) / (box[2] - box[0]))
-    tsize = max(16, width // 32)
+    ims = [_open(im) for im in images]
+    if len(titles) != len(ims):
+        raise ValueError(f"{len(titles)} titles for {len(ims)} images")
+    box = crop or content_box(ims, background=background)
+    n, bw, bh = len(ims), box[2] - box[0], box[3] - box[1]
+    W = frame_size[0] if frame_size else width or n * bw
+    bg = tuple(int(v) for v in _uint8(np.asarray(_rgb(background))))
+    light = sum(bg) / 3 >= 128
+
+    def ink(v: int) -> tuple[int, int, int]:
+        return (v, v, v) if light else (255 - v, 255 - v, 255 - v)
+
+    tsize = max(16, W // 32)
     ssize = int(tsize * 0.8)
     n_sub = max(len(t.split("\n")) for t in titles) - 1
-    head = int(
-        tsize * 1.5
-        + n_sub * ssize * 1.3
-        + (ssize * 1.6 if caption else 0)
-        + tsize * 0.4
-    )
+    if any(titles):
+        top, cap_y = (
+            tsize * 1.5 + n_sub * ssize * 1.3,
+            int(tsize * 1.6 + n_sub * ssize * 1.3),
+        )
+    else:
+        top, cap_y = tsize * 0.2, int(tsize * 0.3)
+    head = 0
+    if any(titles) or caption is not None:
+        head = int(top + (ssize * 1.6 if caption is not None else 0) + tsize * 0.4)
+    rows = legend or []
+    band = round(64 * W / 1920)
+    legend_h = band * len(rows)
+    if frame_size:
+        H = frame_size[1]
+        space = H - head - legend_h
+        if space < 1:
+            raise ValueError(
+                f"frame_size {frame_size} leaves no room for the views under "
+                f"{head} px of titles and above {legend_h} px of legend"
+            )
+        s = min(1.0, W / (n * bw), space / bh)
+        pw, ph = max(1, int(bw * s)), max(1, int(bh * s))
+    else:
+        pw = width // n if width else bw
+        ph = round(pw * bh / bw)
+        H = head + ph + legend_h
+    x0, y0 = (W - n * pw) // 2, head + (H - head - legend_h - ph) // 2
     ft, fs = _font(tsize), _font(ssize)
-    canvas = Image.new("RGB", (width, head + pane_h), "white")
+    canvas = Image.new("RGB", (W, H), bg)
     d = draw_mod.Draw(canvas)
     for k, (im, title) in enumerate(zip(ims, titles, strict=True)):
-        canvas.paste(
-            im.crop(box).resize((pane_w, pane_h), Image.LANCZOS), (k * pane_w, head)
-        )
+        canvas.paste(im.crop(box).resize((pw, ph), Image.LANCZOS), (x0 + k * pw, y0))
         lines = title.split("\n")
-        xc = k * pane_w + pane_w / 2
-        _center_text(d, xc, int(tsize * 0.3), lines[0], ft, (0, 0, 0))
+        xc = x0 + k * pw + pw / 2
+        _center_text(d, xc, int(tsize * 0.3), lines[0], ft, ink(0))
         for m, line in enumerate(lines[1:]):
-            _center_text(
-                d, xc, int(tsize * 1.5 + m * ssize * 1.3), line, fs, (60, 60, 60)
-            )
-    if caption:
-        _center_text(
-            d, width / 2, int(tsize * 1.6 + n_sub * ssize * 1.3), caption, fs, (0, 0, 0)
-        )
-    d.line([(pane_w, head), (pane_w, head + pane_h)], fill=(200, 200, 200), width=2)
+            _center_text(d, xc, int(tsize * 1.5 + m * ssize * 1.3), line, fs, ink(60))
+    if caption is not None:
+        _center_text(d, W / 2, cap_y, caption, fs, ink(0))
+    for k in range(1, n):
+        x = x0 + k * pw
+        d.line([(x, y0), (x, y0 + ph)], fill=ink(200), width=2)
+    if rows:
+        _draw_legend(d, rows, W, H - legend_h, band, ink(0))
+    if not frame_size and not width:
+        canvas = canvas.crop((0, 0, W - W % 2, H - H % 2))
     return canvas
+
+
+def _draw_legend(
+    d: Any, rows: list, W: int, top: int, band: int, fill: tuple[int, int, int]
+) -> None:
+    """Draw legend rows (`_legend_rows`) as bands of height ``band`` from ``top``.
+
+    Font size ``round(30 * W / 1920)``; per 30 px of font: gap 40 between
+    entries, mark width 34, dot radius 12, line width 6, mark to text 10.
+    Entries are centered as a group; a row wider than ``W`` raises.
+    """
+    size = round(30 * W / 1920)
+    f = size / 30
+    font = _font(size)
+    gap, mark, radius, lw, pad = (round(v * f) for v in (40, 34, 12, 6, 10))
+    for r, row in enumerate(rows):
+        widths = [mark + pad + d.textlength(label, font=font) for _, label, _ in row]
+        total = sum(widths) + gap * (len(row) - 1)
+        if total > W:
+            raise ValueError(
+                f"legend row {r + 1} is {total:.0f} px wide, more than the {W} px "
+                f"frame: {[label for _, label, _ in row]}"
+            )
+        x, yc = (W - total) / 2, top + r * band + band / 2
+        for (rgb, label, kind), w in zip(row, widths, strict=True):
+            if kind == "dot":
+                cx = x + mark / 2
+                d.ellipse(
+                    [cx - radius, yc - radius, cx + radius, yc + radius], fill=rgb
+                )
+            else:
+                d.line([(x, yc), (x + mark, yc)], fill=rgb, width=max(1, lw))
+            t = d.textbbox((0, 0), label, font=font)
+            d.text(
+                (x + mark + pad, yc - (t[1] + t[3]) / 2), label, font=font, fill=fill
+            )
+            x += w + gap
 
 
 def montage(

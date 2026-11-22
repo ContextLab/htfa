@@ -2387,3 +2387,284 @@ def test_animate_fixed_edges_with_time_sizes(tmp_path):
     red = [int(_red(a).sum()) for a in frames]
     print("red px per frame", red, "node-0 areas", [a for a, _ in _areas(frames)])
     assert min(red) > 10
+
+
+# ------------------------------------------------- views, legend, frame_size
+
+
+def _head(W, n_sub=0, caption=False):
+    """Height of the title (and caption) band of a W-pixel-wide layout frame."""
+    t = max(16, W // 32)
+    s = int(t * 0.8)
+    return int(t * 1.5 + n_sub * s * 1.3 + (s * 1.6 if caption else 0) + t * 0.4)
+
+
+def _dark(a):
+    return a.max(axis=-1) < 100
+
+
+def _pure_red(a):
+    """Red pixels that are not orange (green low)."""
+    return _red(a) & (a[..., 1] < 80)
+
+
+def _orange(a):
+    """#E69F00-like pixels (230, 159, 0)."""
+    return (a[..., 0] > 200) & (abs(a[..., 1] - 159) < 35) & (a[..., 2] < 60)
+
+
+PN_LEGEND = [("red", "positive", "line"), ("blue", "negative", "line")]
+
+
+def test_view_titles():
+    """Names and titles from names or (name, title) pairs; defaults; errors."""
+    views = ("left", "dorsal", "right", "lateral", "anterior", ("ventral", "Bottom"))
+    names, titles = bn._view_titles(views)
+    print(names, titles)
+    assert names == ["left", "dorsal", "right", "lateral", "anterior", "ventral"]
+    assert titles == [
+        "Left lateral", "Dorsal", "Right lateral", "Left lateral", "Anterior", "Bottom"
+    ]  # fmt: skip
+    assert bn._view_titles(("left",)) == (["left"], [""])  # one view: no title
+    assert bn._view_titles([("left", "L")]) == (["left"], ["L"])
+    for bad in ((), ("top",), (("left",),), (("left", 3),), "left"):
+        with pytest.raises(ValueError) as err:
+            bn._view_titles(bad)
+        print("error:", err.value)
+
+
+def test_views_object_draws_each_view():
+    """_Views draws one image per view, equal to plot_network's single view."""
+    scene_opts, edge_opts = bn._style({"size": (320, 200)})
+    centers = CENTERS
+    views = bn._Views(centers, np.ones(6), None, ["left", "dorsal"], scene_opts)
+    try:
+        images = views.draw(_conn(), edge_opts)
+    finally:
+        views.close()
+    assert [im.size for im in images] == [(320, 200), (320, 200)]
+    for im, view in zip(images, ("left", "dorsal"), strict=True):
+        ref = bn.plot_network(CENTERS, _conn(), sizes=np.ones(6), view=view, **_ANIM)
+        print(view, "differing px", int((_rgb(im) != _rgb(ref)).any(-1).sum()))
+        np.testing.assert_array_equal(_rgb(im), _rgb(ref))
+
+
+def test_views_failure_closes_built_scenes():
+    """A failing view closes the scenes built before it."""
+    from pyvista.plotting import _ALL_PLOTTERS
+
+    before = set(_ALL_PLOTTERS)
+    scene_opts, _ = bn._style({"size": (320, 200)})
+    with pytest.raises(ValueError, match="unknown view"):
+        bn._Views(CENTERS, np.ones(6), None, ["left", "top"], scene_opts)
+    print("open plotters before/after:", len(before), len(_ALL_PLOTTERS))
+    assert set(_ALL_PLOTTERS) == before
+
+
+def test_plot_network_views():
+    """Two views side by side under their titles, split by a divider."""
+    two = bn.plot_network(CENTERS, _conn(), views=("left", "dorsal"), **_ANIM)
+    one = bn.plot_network(CENTERS, _conn(), views=("left",), **_ANIM)
+    print("two views", two.size, "one view", one.size)
+    assert two.size[0] > one.size[0]
+    assert two.size[0] / two.size[1] > one.size[0] / one.size[1]
+    assert two.size[0] % 2 == 0 and two.size[1] % 2 == 0
+    a = _rgb(two)
+    W = two.size[0]
+    head, mid = _head(W), W // 2
+    halves = [a[:, : mid - 2], a[:, mid + 2 :]]
+    for k, half in enumerate(halves):
+        content, title = int(_drawn(half[head:]).sum()), int(_dark(half[:head]).sum())
+        print(f"half {k}: brain px {content}, dark title px {title}")
+        assert content > 100 and title > 20
+    # the divider: light gray between the panes
+    print("divider columns", a[head + 5, mid - 1 : mid + 3].tolist())
+    assert np.all(abs(a[head + 2 : -2, mid : mid + 2] - 200) <= 1)
+    with pytest.raises(ValueError, match="view or views") as err:
+        bn.plot_network(CENTERS, view="left", views=("left",), **_ANIM)
+    print("error:", err.value)
+    with pytest.raises(ValueError, match="unknown view"):
+        bn.plot_network(CENTERS, views=("left", "sideways"), **_ANIM)
+
+
+def test_views_titles():
+    """An empty title leaves its band blank; default titles are drawn."""
+    img = bn.plot_network(CENTERS, views=("left", ("dorsal", "")), **_ANIM)
+    a = _rgb(img)
+    W = img.size[0]
+    head, mid = _head(W), W // 2
+    left, right = a[:head, :mid], a[:head, mid:]
+    print("dark px in left/right title bands", _dark(left).sum(), _dark(right).sum())
+    assert _dark(left).sum() > 20
+    assert np.all(right == 255)
+
+
+def test_plot_network_frame_size():
+    """frame_size gives exactly that size with content; odd sizes raise."""
+    for views in (None, ("left", "dorsal")):
+        img = bn.plot_network(
+            CENTERS, _conn(), views=views, frame_size=(960, 540), **_ANIM
+        )
+        a = _rgb(img)
+        print(views, img.size, "drawn px", int(_drawn(a).sum()), "red", _red(a).sum())
+        assert img.size == (960, 540)
+        assert _drawn(a).sum() > 500 and _red(a).sum() > 10
+    for bad in ((961, 540), (960, 541), (0, 540), (960,), "big"):
+        with pytest.raises(ValueError, match="frame_size") as err:
+            bn.plot_network(CENTERS, frame_size=bad, **_ANIM)
+        print("error:", err.value)
+
+
+def test_plot_network_legend():
+    """Legend rows are bands at the bottom with their marks and dark text."""
+    fs = (960, 540)
+    band = round(64 * 960 / 1920)
+    img = bn.plot_network(CENTERS, legend=PN_LEGEND, frame_size=fs, **_ANIM)
+    a = _rgb(img)
+    low, above = a[-band:], a[:-band]
+    counts = [int(f(x).sum()) for x in (low, above) for f in (_red, _blue, _dark)]
+    print("legend band red/blue/dark px", counts[:3], "above", counts[3:])
+    assert _red(low).sum() > 20 and _blue(low).sum() > 20 and _dark(low).sum() > 20
+    assert _red(above).sum() == 0 and _blue(above).sum() == 0
+    rows = [PN_LEGEND, [("#E69F00", "community 1 (4 nodes)", "dot")]]
+    two = _rgb(bn.plot_network(CENTERS, legend=rows, frame_size=fs, **_ANIM))
+    first, second = two[-2 * band : -band], two[-band:]
+    counts = [int(f(x).sum()) for x in (first, second) for f in (_pure_red, _orange)]
+    print("red/orange px in row 1", counts[:2], "in row 2", counts[2:])
+    assert _pure_red(first).sum() > 20 and _orange(first).sum() == 0
+    assert _orange(second).sum() > 20 and _pure_red(second).sum() == 0
+    assert _orange(two[:-band]).sum() == 0
+    # the views sit above both rows
+    print("drawn px above the legend", _drawn(two[: -2 * band]).sum())
+    assert _drawn(two[: -2 * band]).sum() > 200  # six gray nodes
+
+
+def test_legend_validation():
+    """_legend_rows normalizes rows; bad entries and too-wide rows raise."""
+    one = bn._legend_rows([("red", "a", "dot"), ((0, 0, 1.0), "b", "line")])
+    assert one == [[((255, 0, 0), "a", "dot"), ((0, 0, 255), "b", "line")]]
+    two = bn._legend_rows([[("red", "a", "dot")], [("#E69F00", "c", "line")]])
+    assert two == [[((255, 0, 0), "a", "dot")], [((230, 159, 0), "c", "line")]]
+    for bad in (
+        [("red", "a", "square")], [("red", "a")], [], [[]], [("notacolor", "a", "dot")]
+    ):  # fmt: skip
+        with pytest.raises(ValueError) as err:
+            bn._legend_rows(bad)
+        print("error:", err.value)
+    wide = [PN_LEGEND, [("red", "x" * 200, "line")]]
+    with pytest.raises(ValueError, match="legend row 2") as err:
+        bn.plot_network(CENTERS, legend=wide, frame_size=(320, 200), **_ANIM)
+    print("error:", err.value)
+
+
+def test_single_view_layout_path():
+    """legend with the default view: a cropped view and no title band."""
+    img = bn.plot_network(CENTERS, _conn(), legend=PN_LEGEND, **_ANIM)
+    a = _rgb(img)
+    band = round(64 * img.size[0] / 1920)
+    pane = a[:-band]
+    rows = np.flatnonzero(_drawn(pane).any(axis=1))
+    cols = np.flatnonzero(_drawn(pane).any(axis=0))
+    print("frame", img.size, "content rows", rows[[0, -1]], "cols", cols[[0, -1]])
+    assert img.size[0] < 320 and img.size[1] < 200 + band
+    assert rows[0] <= 10 and cols[0] <= 10  # no title band above the view
+    assert rows[-1] >= pane.shape[0] - 12 and cols[-1] >= pane.shape[1] - 12
+
+
+def test_views_dark_background():
+    """A black background: cropped to the brain, black bands, white text."""
+    img = bn.plot_network(
+        CENTERS, views=("left", "dorsal"), legend=PN_LEGEND, background="black",
+        **_ANIM,
+    )  # fmt: skip
+    a = _rgb(img)
+    W, H = img.size
+    head, band = _head(W), round(64 * W / 1920)
+    print("frame", img.size, "head", head, "band", band)
+    assert W < 2 * 320 and H < head + 200 + band  # cropped
+    for name, region in (("titles", a[:head]), ("legend", a[-band:])):
+        flat = region.reshape(-1, 3)
+        black = (flat == 0).all(axis=1).mean()
+        # light text pixels (the legend font is small at this width)
+        white = int((flat.min(axis=1) > 100).sum())
+        print(name, "black fraction", round(black, 3), "light px", white)
+        assert black > 0.8 and white > 10
+
+
+def test_animate_views_caption_legend(tmp_path):
+    """Two views, captions, legend, frame_size: fixed crop, changing caption."""
+    frames = _movie(
+        tmp_path, "views", TWO, None, sizes=GROW, node_color=["red", "blue"],
+        views=("left", "dorsal"), captions=["a", "b", "c"], legend=PN_LEGEND,
+        frame_size=(640, 360),
+    )  # fmt: skip
+    assert all(a.shape == (360, 640, 3) for a in frames)
+    # node 1 (blue) keeps its size, so with a fixed crop it does not move
+    blue = [_centroid(_blue(a)) for a in frames]
+    red = [int(_red(a[: 360 - round(64 * 640 / 1920)]).sum()) for a in frames]
+    print("blue centroids", [c.round(2).tolist() for c in blue], "red px", red)
+    assert red[0] < red[1] < red[2]
+    for c in blue[1:]:
+        assert np.abs(c - blue[0]).max() < 0.5
+    t = max(16, 640 // 32)
+    titles, cap = slice(0, int(t * 1.5)), slice(int(t * 1.5), _head(640, caption=True))
+    for k in (1, 2):
+        assert np.array_equal(frames[k][titles], frames[0][titles])
+        diff = int((frames[k][cap] != frames[0][cap]).any(-1).sum())
+        print(f"caption row differs from frame 1 in {diff} px (frame {k + 1})")
+        assert diff > 5
+
+
+def test_animate_views_spin(tmp_path):
+    """views with spin: every view turns; the frames differ."""
+    frames = _movie(
+        tmp_path, "vspin", CENTERS, _conn(), views=("left", "dorsal"),
+        spin=(0, 0, 1), n_frames=3,
+    )  # fmt: skip
+    sizes = {a.shape for a in frames}
+    diffs = [int((frames[k] != frames[0]).any(-1).sum()) for k in (1, 2)]
+    print("frame shapes", sizes, "px differing from frame 1", diffs)
+    assert len(sizes) == 1 and min(diffs) > 100
+    # not cropped: two full 320 x 200 views side by side under the titles
+    assert frames[0].shape == (200 + _head(640), 640, 3)
+
+
+def test_legacy_caption_path_unchanged(tmp_path):
+    """captions without views/legend/frame_size: _with_header frames, as in 0.1.0."""
+    plain = _movie(tmp_path, "plain", CENTERS, np.stack([_conn(), -_conn()]), n=2)
+    capped = _movie(
+        tmp_path, "capped", CENTERS, np.stack([_conn(), -_conn()]), n=2,
+        captions=["first", "second"],
+    )  # fmt: skip
+    head = int(max(16, 320 // 32) * (0.5 + 1.3))
+    for a, b, text in zip(plain, capped, ("first", "second"), strict=True):
+        print("caption frame", b.shape, "plain", a.shape, "head", head)
+        assert b.shape == (200 + head, 320, 3)
+        expect = bn._with_header(Image.fromarray(a.astype(np.uint8)), [text])
+        np.testing.assert_array_equal(b, _rgb(expect))
+
+
+def test_annotate_pair_three_way_equivalence():
+    """annotate_pair is _layout of two images; panes are crop-and-resize."""
+    from PIL import ImageDraw
+
+    a = Image.new("RGB", (400, 250), "white")
+    ImageDraw.Draw(a).ellipse((80, 60, 300, 200), fill=(200, 30, 30))
+    b = Image.new("RGB", (400, 250), "white")
+    ImageDraw.Draw(b).rectangle((120, 40, 340, 220), fill=(30, 30, 200))
+    titles = ("Original\nsaved files", "Reconstruction")
+    for caption, W in (("TR 3", 1200), (None, 777), ("", 640)):
+        pair = bn.annotate_pair(a, b, titles, caption, width=W)
+        lay = bn._layout([a, b], titles, caption or None, None, None, W, None)
+        print(caption, W, pair.size, lay.size)
+        np.testing.assert_array_equal(_rgb(pair), _rgb(lay))
+        box = bn.content_box([a, b])
+        pane_w = W // 2
+        pane_h = round(pane_w * (box[3] - box[1]) / (box[2] - box[0]))
+        head = _head(W, n_sub=1, caption=bool(caption))
+        assert pair.size == (W, head + pane_h)
+        expect = b.crop(box).resize((pane_w, pane_h), Image.LANCZOS)
+        np.testing.assert_array_equal(
+            _rgb(pair)[head:, pane_w + 2 : 2 * pane_w], _rgb(expect)[:, 2:]
+        )
+        assert _dark(_rgb(pair)[:head]).sum() > 100
