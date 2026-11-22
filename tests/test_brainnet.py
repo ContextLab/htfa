@@ -2400,6 +2400,27 @@ def test_plot_network_rejects_time_sizes():
     print("error:", err.value)
 
 
+def test_sizes_length_error_names_the_shapes_of_the_function(tmp_path):
+    """Too many sizes: plot_network names (K,) only, animate_network (T, K) too.
+
+    Checked with and without ``snap`` (two code paths validate the sizes).
+    """
+    mask = np.array([[0.0, -50.0, 0.0], [0.0, 50.0, 0.0], [0.0, 0.0, 0.0]])
+    for snap in (False, True):
+        kw = {**_ANIM, "snap": snap, "mask": mask}
+        with pytest.raises(ValueError, match="sizes has 3 entries for 2 nodes") as err:
+            bn.plot_network(TWO, sizes=[1.0, 2.0, 3.0], **kw)
+        print(f"plot_network, snap={snap}:", err.value)
+        assert "(T, K)" not in str(err.value)
+        assert "shape (3,)" in str(err.value)
+        with pytest.raises(ValueError, match="sizes has 3 entries for 2 nodes") as err:
+            bn.animate_network(
+                TWO, None, tmp_path / "a.gif", sizes=[1.0, 2.0, 3.0], **kw
+            )
+        print(f"animate_network, snap={snap}:", err.value)
+        assert "((K,) or (T, K))" in str(err.value)
+
+
 def test_animate_fixed_edges_with_time_sizes(tmp_path):
     """A (K, K) matrix with (T, K) sizes draws the same edge in all T frames."""
     E = np.array([[0.0, 0.8], [0.8, 0.0]])

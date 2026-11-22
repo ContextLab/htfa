@@ -501,28 +501,38 @@ def _centers(centers: Any) -> Array:
     return c
 
 
-def _per_node(values: Any, K: int, what: str, frames: bool = False) -> Array:
+def _per_node(
+    values: Any, K: int, what: str, frames: bool = False, hint: bool = True
+) -> Array:
     """``values`` as shape (K,); with ``frames``, (T, K) with T > 1 is kept.
 
     K values in any shape, such as (1, K) or (K, 1), are flattened to (K,).
+    Other values raise ``ValueError``; with ``frames`` and ``hint`` its message
+    names both shapes, (K,) or (T, K).
     """
     v = np.asarray(values, dtype=np.float64)
     if frames and v.ndim == 2 and v.shape[1] == K and len(v) > 1:
         return v
     if v.size != K:
-        want = " ((K,) or (T, K))" if frames else ""
+        want = " ((K,) or (T, K))" if frames and hint else ""
         raise ValueError(
             f"{what} has {v.size} entries for {K} nodes{want}, shape {v.shape}"
         )
     return v.ravel()
 
 
-def _nodes(nodes: Any, sizes: Any, subject: Any) -> tuple[Array, Array]:
-    """Centers and sizes from an HTFAResults, a fitted TFA/HTFA, or an array."""
+def _nodes(
+    nodes: Any, sizes: Any, subject: Any, time_sizes: bool = True
+) -> tuple[Array, Array]:
+    """Centers and sizes from an HTFAResults, a fitted TFA/HTFA, or an array.
+
+    (T, K) sizes are kept; ``time_sizes`` (the caller takes them) adds that
+    shape to the message of a size error.
+    """
     centers, widths = _fit_nodes(nodes, subject)
     K = len(centers)
     if sizes is not None:
-        return centers, _per_node(sizes, K, "sizes", frames=True)
+        return centers, _per_node(sizes, K, "sizes", frames=True, hint=time_sizes)
     return centers, np.ones(K) if widths is None else widths
 
 
@@ -986,8 +996,12 @@ def _display_nodes(
     mask: Any,
     scale_by_mass: bool = False,
     fade_by_mass: bool | float = False,
+    time_sizes: bool = True,
 ) -> tuple[Array, Array, Array | None]:
-    """Centers, sizes ((K,) or (T, K)) and per-node opacities (or None) to draw."""
+    """Centers, sizes ((K,) or (T, K)) and per-node opacities (or None) to draw.
+
+    ``time_sizes``: whether the caller takes (T, K) sizes (see `_nodes`).
+    """
     centers, fit_widths = _fit_nodes(nodes, subject)
     K = len(centers)
     w = fit_widths if widths is None else _per_node(widths, K, "widths")
@@ -1002,7 +1016,10 @@ def _display_nodes(
     if not snap:
         if scale_by_mass or floor is not None:
             raise ValueError("scale_by_mass and fade_by_mass need snap=True")
-        return (*_nodes(nodes, w if sizes is None else sizes, subject), None)
+        return (
+            *_nodes(nodes, w if sizes is None else sizes, subject, time_sizes),
+            None,
+        )
     if w is None and (scale_by_mass or floor is not None):
         raise ValueError("scale_by_mass and fade_by_mass need node widths (widths=)")
     if mask is None:
@@ -1014,7 +1031,7 @@ def _display_nodes(
         name, comp_c, comp_w, pi = shape
         centers, w_eff, info = effective_nodes(comp_c, comp_w, mask, name, pi)
     if sizes is not None:
-        node_sizes = _per_node(sizes, K, "sizes", frames=True)
+        node_sizes = _per_node(sizes, K, "sizes", frames=True, hint=time_sizes)
     else:
         node_sizes = np.ones(K) if w is None else w_eff
     if scale_by_mass:
@@ -1184,13 +1201,25 @@ def _network_geometry(
     fade_by_mass: bool | float,
     node_mode: str,
     lobe_level: float,
+    time_sizes: bool = True,
 ) -> tuple:
-    """Common static/movie geometry, with factor IDs for expanding edges."""
+    """Common static/movie geometry, with factor IDs for expanding edges.
+
+    ``time_sizes``: whether the caller takes (T, K) sizes (see `_nodes`).
+    """
     shape = _fit_shape(nodes, subject)
     if not component_mode(node_mode, shape is not None):
         return (
             *_display_nodes(
-                nodes, sizes, widths, subject, snap, mask, scale_by_mass, fade_by_mass
+                nodes,
+                sizes,
+                widths,
+                subject,
+                snap,
+                mask,
+                scale_by_mass,
+                fade_by_mass,
+                time_sizes,
             ),
             None,
             None,
@@ -1999,6 +2028,7 @@ def plot_network(
         fade_by_mass,
         node_mode,
         lobe_level,
+        time_sizes=False,
     )
     if node_sizes.ndim != 1:
         raise ValueError(
