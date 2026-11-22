@@ -2297,6 +2297,17 @@ def animate_network(
         ``background`` is dark, max channel below 40 of 255) or a worker that
         dies stops the pool; a new one redraws the missing frames, up to 5 times,
         then ``RuntimeError``. Other errors are raised at once.
+
+        Each worker pays a fixed start-up cost (about 4 s before its first
+        frame on a 12-core Apple M-series Mac: process start, imports, scene
+        building) and writes every frame as a PNG (about 0.06 s at 1920 x
+        1080), which this process reads back and encodes after the last
+        frame is drawn. On that machine a
+        300-frame movie (two 1200 x 750 views, ``frame_size=(1920, 1080)``,
+        edges and per-frame sizes) took 61 s with ``n_jobs=1`` and 50, 35
+        and 31 s with 2, 3 and 4; a 30-frame movie of the same kind took
+        about the same time with 1 and 3 (9 s). Workers help with long
+        movies and not with short ones.
     crf : int, optional
         x264 constant rate factor of an mp4, 0 to 51 (higher is smaller and
         blurrier); passed to `write_animation`. Default ``None``: the 0.1.0
