@@ -2038,6 +2038,35 @@ def test_scene_set_nodes():
         scene.close()
 
 
+@pytest.mark.parametrize("opacity", [None, np.array([0.5, 1.0])])
+def test_set_nodes_bad_input_leaves_scene_unchanged(opacity):
+    """Bad radii or colors raise before set_nodes touches the scene."""
+    scene = _scene(TWO, node_opacity=opacity, node_color=["red", "blue"])
+    try:
+        image = np.asarray(scene.image())
+        actors, radii = list(scene._nodes), scene.radii.copy()
+        colors = scene.node_colors.copy()
+        for bad_radii, bad_colors in [
+            (np.array([6.0, np.inf]), None),
+            (np.array([np.nan, 6.0]), None),
+            (np.array([-np.inf, 6.0]), None),
+            (np.full(3, 6.0), None),
+            (2 * radii, ["red", "green", "blue"]),
+            (2 * radii, ["red", "no such color"]),
+        ]:
+            with pytest.raises(ValueError) as err:
+                scene.set_nodes(bad_radii, bad_colors)
+            print("error:", err.value)
+            assert scene._nodes == actors
+            np.testing.assert_array_equal(scene.radii, radii)
+            np.testing.assert_array_equal(scene.node_colors, colors)
+            again = np.asarray(scene.image())
+            print("pixels changed:", np.count_nonzero(again != image))
+            np.testing.assert_array_equal(again, image)
+    finally:
+        scene.close()
+
+
 def test_supersample_style():
     """supersample sets the render scale; the image keeps the requested size."""
     assert bn._style({})[0]["supersample"] == bn._SUPERSAMPLE == 2

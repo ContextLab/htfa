@@ -1253,6 +1253,7 @@ class _Scene:
                 "colors; use node_mode='summary' for per-node colors"
             )
         self.node_colors = _node_colors(node_color, len(centers))
+        self.node_color = node_color  # as given: one color is drawn as in 0.1.0
         self.centers = centers
         k, b = (None, None) if radius_kb is None else radius_kb
         self.radii = node_radius(
@@ -1324,7 +1325,7 @@ class _Scene:
                 )
                 pl.add_mesh(
                     surface,
-                    color=self.node_colors if sign > 0 else self.lobe_negative_color,
+                    color=self.node_color if sign > 0 else self.lobe_negative_color,
                     opacity=(0.2 + 0.6 * float(alpha)) * (0.35 if sign < 0 else 1.0),
                     smooth_shading=True,
                     show_scalar_bar=False,
@@ -1362,12 +1363,14 @@ class _Scene:
             )
         )
 
-    def _add_nodes(self, pv: Any, pl: Any, render: bool = True) -> None:
-        """Add spheres of ``self.radii`` in ``self.node_colors`` to ``pl``.
+    def _add_nodes(self, pv: Any, pl: Any, **add: Any) -> None:
+        """Add spheres of ``self.radii`` in the node colors to ``pl``.
 
         One merged mesh without node opacity (per-node colors as per-cell
-        ``rgb`` scalars), else one actor per sphere. The actors are kept in
-        ``self._nodes``.
+        ``rgb`` scalars), else one actor per sphere. One color is passed to
+        ``add_mesh`` as given (``self.node_color``), with the 0.1.0 call
+        arguments. ``add`` holds extra ``add_mesh`` arguments (``render=False``
+        when replacing nodes). The actors are kept in ``self._nodes``.
         """
         spheres = [
             pv.Sphere(radius=r, center=c, theta_resolution=40, phi_resolution=40)
@@ -1378,10 +1381,10 @@ class _Scene:
             self._nodes = [
                 pl.add_mesh(
                     pv.merge(spheres),
-                    color=colors,
+                    color=self.node_color,
                     smooth_shading=True,
-                    render=render,
                     **_DULL,
+                    **add,
                 )
             ]
         elif self.node_opacity is None:
@@ -1394,20 +1397,20 @@ class _Scene:
                     rgb=True,
                     smooth_shading=True,
                     show_scalar_bar=False,
-                    render=render,
                     **_DULL,
+                    **add,
                 )
             ]
         else:
-            per_node = np.broadcast_to(colors, (len(spheres), 3))
+            per_node = [self.node_color] * len(spheres) if colors.ndim == 1 else colors
             self._nodes = [
                 pl.add_mesh(
                     sphere,
                     color=rgb,
                     opacity=float(alpha),
                     smooth_shading=True,
-                    render=render,
                     **_DULL,
+                    **add,
                 )
                 for sphere, rgb, alpha in zip(
                     spheres, per_node, self.node_opacity, strict=True
@@ -1431,13 +1434,13 @@ class _Scene:
             )
         K = len(self.centers)
         radii = np.asarray(radii, dtype=np.float64)
-        if radii.shape != (K,) or not np.all(radii > 0):
+        if radii.shape != (K,) or not np.all(np.isfinite(radii) & (radii > 0)):
             raise ValueError(
-                f"set_nodes needs K={K} positive radii in mm, got shape "
+                f"set_nodes needs K={K} finite, positive radii in mm, got shape "
                 f"{radii.shape} and values {radii}"
             )
-        if colors is not None:
-            self.node_colors = _node_colors(colors, K)
+        if colors is not None:  # validated, like radii, before anything changes
+            self.node_color, self.node_colors = colors, _node_colors(colors, K)
         self.pl.remove_actor(self._nodes, render=False)
         self.radii = radii
         pv = lazy_import("pyvista", "brain3d", "network plots")
