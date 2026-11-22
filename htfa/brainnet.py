@@ -1909,7 +1909,8 @@ def plot_network(
         ``"dot"`` or ``"line"``, or a list of such rows; drawn centered
         below the views with font size ``max(12, round(30 * W / 1920))``
         for frame width W, one band 64 pixels high per 30 pixels of font for
-        each row. A row wider than the frame raises ``ValueError``.
+        each row. Without ``frame_size`` the image widens to hold the widest
+        row (views centered); with it, a wider row raises ``ValueError``.
     frame_size : (W, H) even ints, optional
         Exact size of the image: titles and legend are drawn at width W and
         the views are scaled (Lanczos, up or down) to fit the space left,
@@ -2771,9 +2772,12 @@ def _layout(
     frame_size : (W, H) or None
         Exact frame size; the cropped views are scaled (Lanczos, up or down,
         keeping their aspect ratio) to fit the space between the bands and
-        centered. With neither ``width`` nor
-        ``frame_size``, views keep their cropped size and the frame is
-        trimmed to even width and height.
+        centered; a legend row wider than W raises ``ValueError``. With
+        neither ``width`` nor ``frame_size``, views keep their cropped size,
+        the frame is as wide as the views or, if wider, the widest legend
+        row plus one entry gap on each side (views centered), and it is
+        trimmed to even width and height. Font sizes follow the views'
+        summed width (or the given W).
     background : color
         Frame and band color. Text is black when the background's mean
         channel is 128 or more, else white; subtitle and divider grays are
@@ -2816,6 +2820,10 @@ def _layout(
     lsize = max(12, round(30 * W / 1920))
     band = round(64 * lsize / 30)
     legend_h = band * len(rows)
+    if rows and not frame_size and not width:
+        # a natural frame widens to hold the widest legend row
+        gap = _legend_geometry(lsize)[1]
+        W = max(W, math.ceil(max(_legend_row_widths(rows, lsize))) + 2 * gap)
     if frame_size:
         H = frame_size[1]
         space = H - head - legend_h
@@ -2853,6 +2861,26 @@ def _layout(
     return canvas
 
 
+def _legend_geometry(size: int) -> tuple[Any, int, int, int, int, int]:
+    """Legend ``(font, gap, mark, radius, line width, pad)`` for font ``size``.
+
+    Per 30 px of font: gap 40 between entries, mark width 34, dot radius 12,
+    line width 6, mark to text 10.
+    """
+    gap, mark, radius, lw, pad = (round(v * size / 30) for v in (40, 34, 12, 6, 10))
+    return _font(size), gap, mark, radius, lw, pad
+
+
+def _legend_row_widths(rows: list, size: int) -> list[float]:
+    """Width in pixels of each legend row at font ``size``."""
+    font, gap, mark, _, _, pad = _legend_geometry(size)
+    return [
+        sum(mark + pad + font.getlength(label) for _, label, _ in row)
+        + gap * (len(row) - 1)
+        for row in rows
+    ]
+
+
 def _draw_legend(
     d: Any,
     rows: list,
@@ -2864,16 +2892,14 @@ def _draw_legend(
 ) -> None:
     """Draw legend rows (`_legend_rows`) as bands of height ``band`` from ``top``.
 
-    ``size`` is the font size; per 30 px of font: gap 40 between entries,
-    mark width 34, dot radius 12, line width 6, mark to text 10. Entries
-    are centered as a group in the frame width ``W``; a wider row raises.
+    ``size`` is the font size (see `_legend_geometry`). Entries are
+    centered as a group in the frame width ``W``; a wider row raises.
     """
-    f = size / 30
-    font = _font(size)
-    gap, mark, radius, lw, pad = (round(v * f) for v in (40, 34, 12, 6, 10))
-    for r, row in enumerate(rows):
-        widths = [mark + pad + d.textlength(label, font=font) for _, label, _ in row]
-        total = sum(widths) + gap * (len(row) - 1)
+    font, gap, mark, radius, lw, pad = _legend_geometry(size)
+    for r, (row, total) in enumerate(
+        zip(rows, _legend_row_widths(rows, size), strict=True)
+    ):
+        widths = [mark + pad + font.getlength(label) for _, label, _ in row]
         if total > W:
             raise ValueError(
                 f"legend row {r + 1} is {total:.0f} px wide, more than the {W} px "

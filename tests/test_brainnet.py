@@ -2584,9 +2584,7 @@ def test_legend_validation():
 
 def test_single_view_layout_path():
     """legend with the default view: a cropped view and no title band."""
-    # one short entry: this view is 140 px wide, too narrow for PN_LEGEND at
-    # the 12 px legend font floor
-    img = bn.plot_network(CENTERS, _conn(), legend=[("red", "pos", "line")], **_ANIM)
+    img = bn.plot_network(CENTERS, _conn(), legend=PN_LEGEND, **_ANIM)
     a = _rgb(img)
     band = _band(img.size[0])
     pane = a[:-band]
@@ -2594,8 +2592,40 @@ def test_single_view_layout_path():
     cols = np.flatnonzero(_drawn(pane).any(axis=0))
     print("frame", img.size, "content rows", rows[[0, -1]], "cols", cols[[0, -1]])
     assert img.size[0] < 320 and img.size[1] < 200 + band
-    assert rows[0] <= 10 and cols[0] <= 10  # no title band above the view
-    assert rows[-1] >= pane.shape[0] - 12 and cols[-1] >= pane.shape[1] - 12
+    assert rows[0] <= 10  # no title band above the view
+    assert rows[-1] >= pane.shape[0] - 12
+    # the view is centered (the frame may be wider, for the legend)
+    left, right = cols[0], pane.shape[1] - 1 - cols[-1]
+    assert left >= 10 and right >= 10 and abs(left - right) <= 2
+
+
+def test_natural_frame_widens_for_legend():
+    """A narrow view with a wide legend: the frame is as wide as the legend."""
+    legend = [("red", "positive correlation", "line"), ("blue", "negative", "line")]
+    narrow = bn.plot_network(CENTERS, _conn(), legend=[("red", "a", "dot")], **_ANIM)
+    img = bn.plot_network(CENTERS, _conn(), legend=legend, **_ANIM)
+    views_w = narrow.size[0]  # the cropped view's width (a one-letter legend fits)
+    rows = bn._legend_rows(legend)
+    size = max(12, round(30 * views_w / 1920))
+    gap = bn._legend_geometry(size)[1]
+    need = int(np.ceil(bn._legend_row_widths(rows, size)[0])) + 2 * gap
+    print("view width", views_w, "legend needs", need, "frame", img.size)
+    assert need > views_w
+    assert img.size[0] == need - need % 2
+    assert img.size[1] == narrow.size[1]
+    a = _rgb(img)
+    view = a[: -_band(views_w)]
+    cols = np.flatnonzero(_drawn(view).any(axis=0))
+    left, right = cols[0], view.shape[1] - 1 - cols[-1]
+    print("view content cols", cols[[0, -1]], "margins", left, right)
+    assert abs(left - right) <= 2 and left > 10
+    # the view's pixels are those of the narrow frame, shifted to the center
+    x0 = (need - views_w) // 2
+    np.testing.assert_array_equal(
+        view[:, x0 : x0 + views_w - 2], _rgb(narrow)[: view.shape[0], : views_w - 2]
+    )
+    lows = a[-_band(views_w) :]
+    assert _red(lows).sum() > 10 and _blue(lows).sum() > 10
 
 
 def test_views_dark_background():

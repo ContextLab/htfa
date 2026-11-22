@@ -143,8 +143,11 @@ New keyword `frame_size=(W, H)`: the composed frame is exactly this size.
 Title, caption and legend bands are drawn at width W; the views are scaled
 (Lanczos, up or down) to fit the space left and centered on the background
 color.
-Without `frame_size`, W is the summed width of the cropped views and the
-height follows, trimmed to even width and height.
+Without `frame_size`, W is the summed width of the cropped views, or the
+widest legend row plus one entry gap on each side if that is wider (the
+views are then centered); the height follows, trimmed to even width and
+height. With `frame_size`, a legend row wider than W raises `ValueError`
+naming the row.
 
 `spin` with `views` rotates every view; the views are then not cropped.
 
