@@ -2486,6 +2486,52 @@ def test_views_failure_closes_built_scenes():
     assert set(_ALL_PLOTTERS) == before
 
 
+_RENDER_LOOP = """
+import resource, sys
+import numpy as np
+from htfa import brainnet as bn
+
+centers, E = np.array({centers}), np.ones((6, 6))
+unit = 1 if sys.platform == "darwin" else 1024  # ru_maxrss: bytes, else KiB
+for i in range(1, 101):
+    bn.plot_network(centers, E, size=(320, 200), snap=False)
+    if i % 10 == 0:
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * unit / 2**20
+        print(i, peak, flush=True)
+"""
+
+
+@pytest.mark.slow
+def test_repeated_renders_release_memory(ch2):
+    """100 renders in one process: peak memory stops growing, no context leak.
+
+    Each render opens and closes VTK render windows. Before they were released
+    (on macOS: the autorelease pool of `_Views`), the peak resident memory
+    grew by 5 to 9 MB per render with the ch2 mesh at this size, without
+    leveling off, and macOS printed "Context leak detected" after about 40 renders.
+    With them released it still rises over the first 60 or so renders (the
+    allocator keeps freed memory for reuse), then stays flat, so the growth
+    is measured over renders 61-100. The loop runs in its own process so
+    that nothing else is measured.
+    """
+    import subprocess
+    import sys
+
+    run = subprocess.run(
+        [sys.executable, "-c", _RENDER_LOOP.format(centers=CENTERS.tolist())],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    print("stdout (render, peak MB):", run.stdout, "stderr:", run.stderr, sep="\n")
+    assert run.returncode == 0
+    peaks = dict(np.array(run.stdout.split(), float).reshape(-1, 2))
+    per_render = (peaks[100] - peaks[60]) / 40
+    print(f"peak growth over renders 61-100: {per_render:.2f} MB per render")
+    assert per_render < 3.0
+    assert "Context leak detected" not in run.stderr
+
+
 def test_plot_network_views():
     """Two views side by side under their titles, split by a divider."""
     two = bn.plot_network(CENTERS, _conn(), views=("left", "dorsal"), **_ANIM)

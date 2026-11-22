@@ -39,6 +39,10 @@ Network plots and animations
   anti-aliasing (default 2).
 - :func:`htfa.content_box` returns the bounding box of the non-background
   content of one or more images.
+- On macOS, network plots and animations release their closed render windows.
+  In 0.1.0 each render kept its window in memory (5 to 9 MB per render with
+  the ch2 mesh), and after about 40 renders in one process macOS printed
+  "Context leak detected".
 
 0.1.0
 -----

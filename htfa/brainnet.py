@@ -1618,6 +1618,13 @@ class _Views:
     `_style` (its ``view`` is replaced by each name of ``views``) and
     ``scene_kwargs``, the other `_Scene` keywords. If a scene fails to build,
     those already built are closed.
+
+    On macOS the scenes live inside a Cocoa autorelease pool, released by
+    `close` after the scenes are closed. VTK's Cocoa render windows hand their
+    OpenGL contexts and buffers to an autorelease pool, and a Python process
+    without a Cocoa event loop never drains one, so without this every render
+    window stays in memory (5 to 9 MB per render with the ch2 mesh at 320 x
+    200; macOS prints "Context leak detected" after about 40 of them).
     """
 
     def __init__(
@@ -1629,6 +1636,11 @@ class _Views:
         scene_opts: dict[str, Any],
         **scene_kwargs: Any,
     ) -> None:
+        self._pool: Any = None
+        if sys.platform == "darwin":
+            from vtkmodules.vtkRenderingUI import vtkCocoaAutoreleasePool
+
+            self._pool = vtkCocoaAutoreleasePool()
         self.scenes: list[_Scene] = []
         self._spin: list[tuple[Array, float]] = []
         try:
@@ -1678,6 +1690,9 @@ class _Views:
     def close(self) -> None:
         for scene in self.scenes:
             scene.close()
+        if self._pool is not None:
+            self._pool.Release()
+            self._pool = None
 
 
 def _rgb(color: Any) -> tuple[float, float, float]:
