@@ -2002,10 +2002,10 @@ def plot_network(
         for frame width W, one band 64 pixels high per 30 pixels of font for
         each row. Without ``frame_size`` the image widens to hold the widest
         row (views centered); with it, a wider row raises ``ValueError``.
-    frame_size : (W, H) even ints, optional
+    frame_size : (W, H) positive ints, optional
         Exact size of the image: titles and legend are drawn at width W and
         the views are scaled (Lanczos, up or down) to fit the space left,
-        centered.
+        centered. (`animate_network` needs even W and H for an mp4.)
         Without it, W is the summed width of the cropped views (trimmed with
         the height to even numbers).
 
@@ -2304,7 +2304,9 @@ def animate_network(
         that of the nearest window); a callable is called with each frame's
         window time ``t`` (a float) and returns its caption.
     views, legend, frame_size
-        As in `plot_network`. In a movie, one crop box serves all views and
+        As in `plot_network`; an odd ``frame_size`` W or H raises
+        ``ValueError`` for an mp4 (H.264 needs even sizes) and is kept
+        exactly in a GIF. In a movie, one crop box serves all views and
         frames, so the brain does not move: it is taken once, before the
         first frame, around one render of each view without edges and with
         each node at its largest radius, opaque and in one color that
@@ -2431,6 +2433,17 @@ def animate_network(
     out = Path(out)
     if out.suffix.lower() not in (".mp4", ".gif"):
         raise ValueError(f"out must end in .mp4 or .gif, got {out.name!r}")
+    if (
+        layout is not None
+        and layout[3] is not None
+        and out.suffix.lower() == ".mp4"
+        and (layout[3][0] % 2 or layout[3][1] % 2)
+    ):
+        raise ValueError(
+            "an mp4 needs an even frame_size (H.264 in yuv420p stores color at "
+            f"half resolution in both directions), got {frame_size!r}; use even "
+            "numbers or a .gif"
+        )
     centers, node_sizes, opacity, components, surfaces = _network_geometry(
         nodes,
         sizes,
@@ -3077,7 +3090,7 @@ def annotate_pair(
 
 
 def _frame_size(frame_size: Any) -> tuple[int, int] | None:
-    """``frame_size`` as two ints, checked to be positive and even (or None)."""
+    """``frame_size`` as two ints, checked to be positive (or None)."""
     if frame_size is None:
         return None
     if (
@@ -3085,16 +3098,12 @@ def _frame_size(frame_size: Any) -> tuple[int, int] | None:
         or not isinstance(frame_size, Sequence)
         or len(frame_size) != 2
         or not all(
-            isinstance(v, numbers.Integral)
-            and not isinstance(v, bool)
-            and int(v) > 0
-            and int(v) % 2 == 0
+            isinstance(v, numbers.Integral) and not isinstance(v, bool) and int(v) > 0
             for v in frame_size
         )
     ):
         raise ValueError(
-            "frame_size must be two positive, even integers (W, H) (H.264 needs "
-            f"even sizes), got {frame_size!r}"
+            f"frame_size must be two positive integers (W, H), got {frame_size!r}"
         )
     return int(frame_size[0]), int(frame_size[1])
 

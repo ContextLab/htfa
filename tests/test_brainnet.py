@@ -2744,19 +2744,44 @@ def test_views_titles():
 
 
 def test_plot_network_frame_size():
-    """frame_size gives exactly that size with content; odd sizes raise."""
-    for views in (None, ("left", "dorsal")):
-        img = bn.plot_network(
-            CENTERS, _conn(), views=views, frame_size=(960, 540), **_ANIM
-        )
-        a = _rgb(img)
-        print(views, img.size, "drawn px", int(_drawn(a).sum()), "red", _red(a).sum())
-        assert img.size == (960, 540)
-        assert _drawn(a).sum() > 500 and _red(a).sum() > 10
-    for bad in ((961, 540), (960, 541), (0, 540), (960,), "big"):
+    """frame_size gives exactly that size with content, odd sizes included
+    (a still has no H.264 constraint); malformed sizes raise."""
+    for size in ((960, 540), (961, 540), (960, 541), (641, 401)):
+        for views in (None, ("left", "dorsal")):
+            img = bn.plot_network(
+                CENTERS, _conn(), views=views, frame_size=size, **_ANIM
+            )
+            a = _rgb(img)
+            print(size, views, img.size, "drawn px", int(_drawn(a).sum()),
+                  "red", _red(a).sum())  # fmt: skip
+            assert img.size == size
+            assert _drawn(a).sum() > 500 and _red(a).sum() > 10
+    for bad in ((0, 540), (960, -2), (960,), "big", (960.0, 540), (True, 540)):
         with pytest.raises(ValueError, match="frame_size") as err:
             bn.plot_network(CENTERS, frame_size=bad, **_ANIM)
         print("error:", err.value)
+        assert repr(bad) in str(err.value)
+
+
+def test_animate_odd_frame_size(tmp_path):
+    """An odd frame_size raises for an mp4 (saying why) and is kept in a GIF."""
+    E = np.stack([_conn(), -_conn()])
+    with pytest.raises(ValueError, match="mp4 needs an even frame_size") as err:
+        bn.animate_network(
+            CENTERS, E, tmp_path / "o.mp4", frame_size=(641, 401), **_ANIM
+        )
+    print("error:", err.value)
+    assert "(641, 401)" in str(err.value) and "H.264" in str(err.value)
+    assert not (tmp_path / "o.mp4").exists()
+    out = bn.animate_network(
+        CENTERS, E, tmp_path / "o.gif", frame_size=(641, 401),
+        views=("left", "dorsal"), frames_dir=tmp_path / "odd", **_ANIM,
+    )  # fmt: skip
+    frames = _pngs(tmp_path / "odd", 2)
+    with Image.open(out) as gif:
+        print("png frames", [a.shape for a in frames], "gif", gif.size, gif.n_frames)
+        assert gif.size == (641, 401) and gif.n_frames == 2
+    assert all(a.shape == (401, 641, 3) for a in frames)
 
 
 def test_plot_network_legend():

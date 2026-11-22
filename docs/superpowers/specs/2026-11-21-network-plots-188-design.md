@@ -142,7 +142,9 @@ existing style key), then the frame is built:
 `annotate_pair` keeps its signature and its output.
 
 New keyword `frame_size=(W, H)`: the composed frame is exactly this size.
-Title, caption and legend bands are drawn at width W; the views are scaled
+Any positive W and H are accepted; `animate_network` raises `ValueError` for
+an odd W or H only when the output is an mp4 (H.264 in yuv420p needs even
+sizes). Title, caption and legend bands are drawn at width W; the views are scaled
 (Lanczos, up or down) to fit the space left and centered on the background
 color.
 Without `frame_size`, W is the summed width of the cropped views, or the
