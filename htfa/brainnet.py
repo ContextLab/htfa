@@ -1898,7 +1898,8 @@ def plot_network(
         Several views side by side, each a name of `VIEWS` or a
         ``(name, title)`` pair (not together with ``view``). Each view is
         rendered at ``size`` and all are cropped to one box around the
-        content (`content_box` with ``background``), then laid out as
+        content of a render without edges (`content_box` with
+        ``background``), so edges never change the framing, then laid out as
         `annotate_pair` does: titles above the views, a divider between
         them. Default titles: "Left lateral" (``left``, ``lateral``),
         "Right lateral" (``right``), else the capitalized name; an empty
@@ -1906,12 +1907,13 @@ def plot_network(
     legend : list, optional
         One legend row, a list of ``(color, label, kind)`` with ``kind``
         ``"dot"`` or ``"line"``, or a list of such rows; drawn centered
-        below the views, one band ``round(64 * W / 1920)`` pixels high per
-        row with font size ``round(30 * W / 1920)`` for frame width W. A row
-        wider than the frame raises ``ValueError``.
+        below the views with font size ``max(12, round(30 * W / 1920))``
+        for frame width W, one band 64 pixels high per 30 pixels of font for
+        each row. A row wider than the frame raises ``ValueError``.
     frame_size : (W, H) even ints, optional
         Exact size of the image: titles and legend are drawn at width W and
-        the views are scaled down (never up) to fit the space left, centered.
+        the views are scaled (Lanczos, up or down) to fit the space left,
+        centered.
         Without it, W is the summed width of the cropped views (trimmed with
         the height to even numbers).
 
@@ -1980,7 +1982,14 @@ def plot_network(
         component_weights=None if components is None else components.mixing,
         lobe_negative_color=lobe_negative_color,
     )
+    crop = None
     try:
+        if layout is not None:
+            # crop around the nodes and mesh only, as in animate_network, so
+            # edges never change the framing
+            crop = content_box(
+                scenes.draw(None, edge_opts), background=scene_opts["background"]
+            )
         images = scenes.draw(E, edge_opts)
     finally:
         scenes.close()
@@ -1989,7 +1998,7 @@ def plot_network(
     else:
         _, titles, rows, size = layout
         img = _layout(
-            images, titles, None, rows, None, None, size, scene_opts["background"]
+            images, titles, None, rows, crop, None, size, scene_opts["background"]
         )
     if jpeg_quality is not None:
         img = _jpeg(img, jpeg_quality)
@@ -2708,12 +2717,12 @@ def _legend_rows(legend: Any) -> list[list[tuple[tuple[int, int, int], str, str]
 
 def _layout_args(
     views: Any, legend: Any, frame_size: Any, style: dict[str, Any]
-) -> tuple[list[str], list[str], list | None, tuple[int, int] | None] | None:
+) -> tuple[list[str], list[str] | None, list | None, tuple[int, int] | None] | None:
     """Checked ``(names, titles, legend rows, frame_size)`` of the layout path.
 
     None (the single-view path) when none of ``views``, ``legend`` and
     ``frame_size`` is given; ``style`` is checked for a ``view`` given with
-    ``views``.
+    ``views``. ``titles`` is None (no title band) when all are empty.
     """
     if views is None and legend is None and frame_size is None:
         return None
@@ -2726,12 +2735,12 @@ def _layout_args(
         [style.get("view", "lateral")] if views is None else views
     )
     rows = None if legend is None else _legend_rows(legend)
-    return names, titles, rows, _frame_size(frame_size)
+    return names, titles if any(titles) else None, rows, _frame_size(frame_size)
 
 
 def _layout(
     images: Sequence[Any],
-    titles: Sequence[str],
+    titles: Sequence[str] | None,
     caption: str | None,
     legend: list | None,
     crop: tuple[int, int, int, int] | None,
@@ -2745,9 +2754,11 @@ def _layout(
     ----------
     images : sequence of paths or PIL images
         Views of equal size.
-    titles : sequence of str
-        One per image; ``"\\n"`` starts a smaller subtitle line. The title
-        band is left out when all are empty and there is no caption.
+    titles : sequence of str, or None
+        One per image; ``"\\n"`` starts a smaller subtitle line. A sequence
+        always reserves the title rows (as `annotate_pair` does, even for
+        empty titles); ``None`` leaves them out, and with no caption there
+        is no header band at all.
     caption : str or None
         A line centered under the titles; ``None`` leaves out its row.
     legend : list or None
@@ -2758,8 +2769,9 @@ def _layout(
     width : int or None
         Frame width with panes of ``width // N`` pixels (`annotate_pair`).
     frame_size : (W, H) or None
-        Exact frame size; the cropped views are scaled down (never up) to fit
-        the space between the bands and centered. With neither ``width`` nor
+        Exact frame size; the cropped views are scaled (Lanczos, up or down,
+        keeping their aspect ratio) to fit the space between the bands and
+        centered. With neither ``width`` nor
         ``frame_size``, views keep their cropped size and the frame is
         trimmed to even width and height.
     background : color
@@ -2774,6 +2786,8 @@ def _layout(
     Image = _pil()
     draw_mod = lazy_import("PIL.ImageDraw", "brain3d", "annotations")
     ims = [_open(im) for im in images]
+    has_titles = titles is not None
+    titles = [""] * len(ims) if titles is None else titles
     if len(titles) != len(ims):
         raise ValueError(f"{len(titles)} titles for {len(ims)} images")
     box = crop or content_box(ims, background=background)
@@ -2788,7 +2802,7 @@ def _layout(
     tsize = max(16, W // 32)
     ssize = int(tsize * 0.8)
     n_sub = max(len(t.split("\n")) for t in titles) - 1
-    if any(titles):
+    if has_titles:
         top, cap_y = (
             tsize * 1.5 + n_sub * ssize * 1.3,
             int(tsize * 1.6 + n_sub * ssize * 1.3),
@@ -2796,10 +2810,11 @@ def _layout(
     else:
         top, cap_y = tsize * 0.2, int(tsize * 0.3)
     head = 0
-    if any(titles) or caption is not None:
+    if has_titles or caption is not None:
         head = int(top + (ssize * 1.6 if caption is not None else 0) + tsize * 0.4)
     rows = legend or []
-    band = round(64 * W / 1920)
+    lsize = max(12, round(30 * W / 1920))
+    band = round(64 * lsize / 30)
     legend_h = band * len(rows)
     if frame_size:
         H = frame_size[1]
@@ -2809,7 +2824,7 @@ def _layout(
                 f"frame_size {frame_size} leaves no room for the views under "
                 f"{head} px of titles and above {legend_h} px of legend"
             )
-        s = min(1.0, W / (n * bw), space / bh)
+        s = min(W / (n * bw), space / bh)
         pw, ph = max(1, int(bw * s)), max(1, int(bh * s))
     else:
         pw = width // n if width else bw
@@ -2832,22 +2847,27 @@ def _layout(
         x = x0 + k * pw
         d.line([(x, y0), (x, y0 + ph)], fill=ink(200), width=2)
     if rows:
-        _draw_legend(d, rows, W, H - legend_h, band, ink(0))
+        _draw_legend(d, rows, W, H - legend_h, band, lsize, ink(0))
     if not frame_size and not width:
         canvas = canvas.crop((0, 0, W - W % 2, H - H % 2))
     return canvas
 
 
 def _draw_legend(
-    d: Any, rows: list, W: int, top: int, band: int, fill: tuple[int, int, int]
+    d: Any,
+    rows: list,
+    W: int,
+    top: int,
+    band: int,
+    size: int,
+    fill: tuple[int, int, int],
 ) -> None:
     """Draw legend rows (`_legend_rows`) as bands of height ``band`` from ``top``.
 
-    Font size ``round(30 * W / 1920)``; per 30 px of font: gap 40 between
-    entries, mark width 34, dot radius 12, line width 6, mark to text 10.
-    Entries are centered as a group; a row wider than ``W`` raises.
+    ``size`` is the font size; per 30 px of font: gap 40 between entries,
+    mark width 34, dot radius 12, line width 6, mark to text 10. Entries
+    are centered as a group in the frame width ``W``; a wider row raises.
     """
-    size = round(30 * W / 1920)
     f = size / 30
     font = _font(size)
     gap, mark, radius, lw, pad = (round(v * f) for v in (40, 34, 12, 6, 10))

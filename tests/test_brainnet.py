@@ -2419,6 +2419,11 @@ def _head(W, n_sub=0, caption=False):
     return int(t * 1.5 + n_sub * s * 1.3 + (s * 1.6 if caption else 0) + t * 0.4)
 
 
+def _band(W):
+    """Legend row height: 64 px per 30 px of font, font max(12, 30 W / 1920)."""
+    return round(64 * max(12, round(30 * W / 1920)) / 30)
+
+
 def _dark(a):
     return a.max(axis=-1) < 100
 
@@ -2538,7 +2543,7 @@ def test_plot_network_frame_size():
 def test_plot_network_legend():
     """Legend rows are bands at the bottom with their marks and dark text."""
     fs = (960, 540)
-    band = round(64 * 960 / 1920)
+    band = _band(960)
     img = bn.plot_network(CENTERS, legend=PN_LEGEND, frame_size=fs, **_ANIM)
     a = _rgb(img)
     low, above = a[-band:], a[:-band]
@@ -2579,9 +2584,11 @@ def test_legend_validation():
 
 def test_single_view_layout_path():
     """legend with the default view: a cropped view and no title band."""
-    img = bn.plot_network(CENTERS, _conn(), legend=PN_LEGEND, **_ANIM)
+    # one short entry: this view is 140 px wide, too narrow for PN_LEGEND at
+    # the 12 px legend font floor
+    img = bn.plot_network(CENTERS, _conn(), legend=[("red", "pos", "line")], **_ANIM)
     a = _rgb(img)
-    band = round(64 * img.size[0] / 1920)
+    band = _band(img.size[0])
     pane = a[:-band]
     rows = np.flatnonzero(_drawn(pane).any(axis=1))
     cols = np.flatnonzero(_drawn(pane).any(axis=0))
@@ -2599,7 +2606,7 @@ def test_views_dark_background():
     )  # fmt: skip
     a = _rgb(img)
     W, H = img.size
-    head, band = _head(W), round(64 * W / 1920)
+    head, band = _head(W), _band(W)
     print("frame", img.size, "head", head, "band", band)
     assert W < 2 * 320 and H < head + 200 + band  # cropped
     for name, region in (("titles", a[:head]), ("legend", a[-band:])):
@@ -2619,13 +2626,18 @@ def test_animate_views_caption_legend(tmp_path):
         frame_size=(640, 360),
     )  # fmt: skip
     assert all(a.shape == (360, 640, 3) for a in frames)
-    # node 1 (blue) keeps its size, so with a fixed crop it does not move
-    blue = [_centroid(_blue(a)) for a in frames]
-    red = [int(_red(a[: 360 - round(64 * 640 / 1920)]).sum()) for a in frames]
-    print("blue centroids", [c.round(2).tolist() for c in blue], "red px", red)
-    assert red[0] < red[1] < red[2]
-    for c in blue[1:]:
-        assert np.abs(c - blue[0]).max() < 0.5
+    # Each brain panel alone: below the header, above the legend, either side
+    # of the divider (at the middle, as the two panes are centered).
+    rows = slice(_head(640, caption=True), 360 - _band(640))
+    panels = {"left": slice(0, 316), "dorsal": slice(324, 640)}
+    for name, cols in panels.items():
+        # node 1 (blue) keeps its size, so with a fixed crop it does not move
+        blue = [_centroid(_blue(a[rows, cols])) for a in frames]
+        red = [int(_red(a[rows, cols]).sum()) for a in frames]
+        print(name, "blue centroids", [c.round(2).tolist() for c in blue], "red", red)
+        assert red[0] < red[1] < red[2]
+        for c in blue[1:]:
+            assert np.abs(c - blue[0]).max() < 0.5
     t = max(16, 640 // 32)
     titles, cap = slice(0, int(t * 1.5)), slice(int(t * 1.5), _head(640, caption=True))
     for k in (1, 2):
@@ -2756,3 +2768,90 @@ def test_animate_empty_time_axes_rejected(tmp_path):
             bn.animate_network(TWO, E, out, **{**_ANIM, **kw})
         print(sorted(kw), None if E is None else E.shape, "error:", err.value)
     assert not out.exists()
+
+
+def test_plot_network_crop_ignores_edges():
+    """The still-image crop comes from a render without edges, as in movies."""
+    E = np.zeros((6, 6))
+    E[0, 1] = E[1, 0] = 20.0  # a 10 mm tube along the top row of nodes
+    views = ("left", "dorsal")
+    with_e = bn.plot_network(CENTERS, E, views=views, legend=PN_LEGEND, **_ANIM)
+    without = bn.plot_network(CENTERS, views=views, legend=PN_LEGEND, **_ANIM)
+    # the edge does reach past the nodes, so a crop around it would differ
+    boxes = [
+        bn.content_box(bn.plot_network(CENTERS, c, view="left", **_ANIM))
+        for c in (E, None)
+    ]
+    print("sizes with/without edges", with_e.size, without.size, "boxes", boxes)
+    assert boxes[0] != boxes[1]
+    assert with_e.size == without.size
+    a, b = _rgb(with_e), _rgb(without)
+    gray = _drawn(b) & ~_red(a)  # node pixels the edge does not cover
+    print("node px compared", int(gray.sum()))
+    assert gray.sum() > 100
+    assert np.abs(a[gray] - b[gray]).max() <= 2
+
+
+def test_frame_size_scales_views_up():
+    """A small render in a large frame_size is scaled up to fill the space."""
+    views = ("left", "dorsal")
+    natural = bn.plot_network(CENTERS, views=views, **_ANIM)
+    bw = natural.size[0] / 2
+    bh = natural.size[1] - _head(natural.size[0])  # within 1 px (even trim)
+    big = _rgb(bn.plot_network(CENTERS, views=views, frame_size=(960, 540), **_ANIM))
+    space = 540 - _head(960)
+    # the divider spans the pane height
+    ph = int((np.abs(big[:, 480] - 200) <= 1).all(axis=1).sum())
+    print(f"natural pane {bw} x {bh} (+0/1), divider {ph} px, space 960 x {space}")
+    assert ph > 1.5 * bh  # scaled up
+    # the scale that fits both ways, for the cropped height bh or bh + 1
+    fits = []
+    for h in (bh, bh + 1):
+        scale = min(960 / (2 * bw), space / h)
+        pw, ph_fit = int(bw * scale), int(h * scale)
+        print(f"height {h}: scale {scale:.4f}, pane {pw} x {ph_fit}")
+        if abs(ph - ph_fit) <= 1:  # the divider spans ph_fit or ph_fit + 1 rows
+            fits.append(abs(2 * pw - 960) <= 2 or abs(ph_fit - space) <= 2)
+    assert fits and all(fits)
+
+
+def test_legend_font_floor():
+    """Legend text is at least a 12 px font; a 1920-wide frame uses 30 px."""
+    from PIL import ImageDraw
+
+    def text_height(img):
+        a = _rgb(img)
+        band = _band(img.size[0])
+        rows = np.flatnonzero(_dark(a[-band:]).any(axis=1))
+        return int(rows[-1] - rows[0] + 1), band
+
+    def font_height(size):
+        draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+        t = draw.textbbox((0, 0), "Hg", font=bn._font(size))
+        return t[3] - t[1]
+
+    legend = [("red", "Hg", "line")]
+    small = bn.plot_network(CENTERS, legend=legend, **_ANIM)
+    large = bn.plot_network(CENTERS, legend=legend, frame_size=(1920, 1080), **_ANIM)
+    for img, size in ((small, 12), (large, 30)):
+        height, band = text_height(img)
+        print(f"frame {img.size}: text {height} px, font {size} -> {font_height(size)}"
+              f" px, band {band}")  # fmt: skip
+        assert img.size[0] < 320 or size == 30
+        assert abs(height - font_height(size)) <= 2
+    assert _band(small.size[0]) == 26 and _band(1920) == 64
+
+
+def test_annotate_pair_empty_titles_keep_header():
+    """annotate_pair reserves the title rows even when both titles are empty."""
+    from PIL import ImageDraw
+
+    a = Image.new("RGB", (400, 250), "white")
+    ImageDraw.Draw(a).ellipse((80, 60, 300, 200), fill=(200, 30, 30))
+    box = bn.content_box([a, a])
+    pane_h = round(600 * (box[3] - box[1]) / (box[2] - box[0]))
+    for caption in (None, "TR 3"):
+        pair = bn.annotate_pair(a, a, ("", ""), caption)
+        expect = (1200, _head(1200, caption=bool(caption)) + pane_h)
+        print(caption, pair.size, expect)
+        assert pair.size == expect

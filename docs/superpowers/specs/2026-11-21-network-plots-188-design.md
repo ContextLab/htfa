@@ -141,7 +141,8 @@ existing style key), then the frame is built:
 
 New keyword `frame_size=(W, H)`: the composed frame is exactly this size.
 Title, caption and legend bands are drawn at width W; the views are scaled
-down (Lanczos) to fit the space left and centered on the background color.
+(Lanczos, up or down) to fit the space left and centered on the background
+color.
 Without `frame_size`, W is the summed width of the cropped views and the
 height follows, trimmed to even width and height.
 
@@ -152,8 +153,9 @@ height follows, trimmed to even width and height.
 New keyword `legend` on both functions: a list of `(color, label, kind)`
 with `kind` "dot" or "line" for one row, or a list of such lists for several
 rows. Geometry follows the tutorial's `legend_band`: font size
-`round(30 * W / 1920)` for frame width W, one band 64 px high per 30 px of
-font for each row, entries centered as a group, black text, mark then
+`max(12, round(30 * W / 1920))` for frame width W (the floor keeps text
+readable in small frames), one band 64 px high per 30 px of font for each
+row, entries centered as a group, black text, mark then
 label, sizes proportional to the font size (gap 40, mark width 34, dot
 radius 12, line width 6, mark-to-text 10, all per 30 px of font).
 
