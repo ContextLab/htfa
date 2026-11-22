@@ -3251,6 +3251,30 @@ def test_n_jobs_gives_up(tmp_path):
     assert not (tmp_path / "g.mp4").exists()
 
 
+def test_n_jobs_blank_render(tmp_path):
+    """Workers reject a real render that is over 5 percent black on white.
+
+    Large black spheres make every frame fail the blank-render rule, so the
+    pool is restarted 5 times and the call gives up; n_jobs=1 runs no check.
+    """
+    black = {**_ANIM, "node_color": "black", "radius_kb": (0.0, 25.0)}
+    E = np.stack([_conn()])
+    render = bn.plot_network(CENTERS, _conn(), **black)
+    frac = (np.asarray(render).max(axis=2) < 10).mean()
+    print("near-black fraction of the render:", round(float(frac), 3))
+    assert bn._is_blank(render, "white")
+    out = bn.animate_network(CENTERS, E, tmp_path / "seq.mp4", **black)
+    assert _mp4_count(out) == 1
+    before = _frame_dirs()
+    with pytest.raises(RuntimeError, match="5 restarts") as err:
+        bn.animate_network(CENTERS, E, tmp_path / "par.mp4", n_jobs=2, **black)
+    print(err.value)
+    assert "_BlankRender" in str(err.value) and "rendered black" in str(err.value)
+    assert isinstance(err.value.__cause__, bn._BlankRender)
+    assert _frame_dirs() == before
+    assert not (tmp_path / "par.mp4").exists()
+
+
 def test_animate_network_forwards_encoding(tmp_path):
     """crf and faststart reach write_animation (sequential and parallel)."""
     sizes = {}
