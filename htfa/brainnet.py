@@ -2347,7 +2347,9 @@ def animate_network(
         one corner pixel, with every channel below 10; not checked when the
         ``background`` is dark, max channel below 40 of 255) or a worker that
         dies stops the pool; a new one redraws the missing frames, up to 5 times,
-        then ``RuntimeError``. Other errors are raised at once.
+        then ``RuntimeError``. Other errors are raised at once, among them
+        joblib's ``BrokenProcessPool`` for a ``compose`` or ``captions``
+        that cannot be unpickled in a worker.
 
         Each worker pays a fixed start-up cost (about 4 s before its first
         frame on a 12-core Apple M-series Mac: process start, imports, scene
@@ -2751,12 +2753,15 @@ def _draw_parallel(build: _ViewsArgs, movie: _Movie, n_jobs: int, work: Path) ->
     """Draw every frame of ``movie`` into ``work`` with this call's own pool.
 
     Frames are split into contiguous chunks, one per worker. After a blank
-    render or a dead worker the pool is stopped with its workers and a new
-    one draws the frames still missing, up to `_MAX_RESTARTS` times.
+    render or a dead worker (``TerminatedWorkerError``) the pool is stopped
+    with its workers and a new one draws the frames still missing, up to
+    `_MAX_RESTARTS` times. Any other error, including the other kinds of
+    ``BrokenProcessPool`` (a task or result that cannot be unpickled, which
+    would fail again), is raised at once.
     """
     from joblib import effective_n_jobs
     from joblib.externals.loky import ProcessPoolExecutor, as_completed
-    from joblib.externals.loky.process_executor import BrokenProcessPool
+    from joblib.externals.loky.process_executor import TerminatedWorkerError
 
     n = len(movie.times)
     error: BaseException | None = None
@@ -2778,7 +2783,7 @@ def _draw_parallel(build: _ViewsArgs, movie: _Movie, n_jobs: int, work: Path) ->
             ]
             for future in as_completed(futures):
                 future.result()
-        except (_BlankRender, BrokenProcessPool) as err:
+        except (_BlankRender, TerminatedWorkerError) as err:
             error = err
         finally:
             pool.shutdown(wait=True, kill_workers=True)

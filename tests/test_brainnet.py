@@ -3318,9 +3318,15 @@ def test_compose_odd_size_mp4(tmp_path):
 
 
 # ------------------------------------------------------- parallel rendering
-# Worker-side callables reach the worker processes pickled (cloudpickle), so
-# they carry their marker or log path through functools.partial: a global set
-# in this process does not reach them.
+# Worker-side callables reach the worker processes pickled (cloudpickle).
+# Module-level ones carry their paths through functools.partial (a global set
+# in this process does not reach them); closures defined inside a function
+# are pickled by value, as functions defined in a notebook are.
+#
+# The cases that look at htfa's temporary frame folders run as scenarios in a
+# fresh process (`_isolated`) whose TMPDIR, inherited by its workers, is a
+# folder of their own, so other tests or htfa processes using the system
+# temporary directory can neither disturb them nor lose files to them.
 
 
 def _frame_dirs():
@@ -3339,30 +3345,103 @@ def _alive(pid):
     return True
 
 
-def _listing_compose(log, images, t):
-    """Record the htfa frame folders visible to the worker; the first view as is."""
-    import json
-
-    with open(log, "a") as f:
-        f.write(json.dumps([os.getpid(), t, _frame_dirs()]) + "\n")
-    return images[0]
+def _pids(path):
+    """Process ids written one per line to ``path`` (none if it does not exist)."""
+    path = Path(path)
+    return [int(s) for s in path.read_text().split()] if path.exists() else []
 
 
-def _raising_compose(log, images, t):
-    """Raise ValueError for t == 2 (logging each such call); else the first view."""
-    if t == 2:
-        with open(log, "a") as f:
-            f.write(f"{os.getpid()} {t}\n")
-        raise ValueError(f"compose refuses t={t}")
-    return images[0]
+def _write_pid(path):
+    with open(path, "a") as f:
+        f.write(f"{os.getpid()}\n")
 
 
-def _die_once_compose(marker, images, t):
-    """End this worker process the first time t == 2 is drawn (marker records it)."""
-    if t == 2 and not os.path.exists(marker):
-        Path(marker).write_text(str(os.getpid()))
-        os._exit(1)
-    return images[0]
+_ISOLATED = """
+import sys
+sys.path.insert(0, {tests!r})
+import test_brainnet
+
+test_brainnet.{name}({files!r})
+print("finished")
+"""
+
+
+def _isolated(tmp_path, name):
+    """Run scenario ``name(files)`` of this module in a fresh process whose
+    TMPDIR (inherited by its workers) is a new folder under ``tmp_path``.
+
+    The scenario asserts and prints for itself (its output is printed here);
+    this checks that it finished and left no htfa frame folder in its TMPDIR.
+    """
+    import subprocess
+    import time
+
+    tmp, files = tmp_path / "tmpdir", tmp_path / "files"
+    tmp.mkdir()
+    files.mkdir()
+    tests = str(Path(__file__).parent)
+    code = _ISOLATED.format(tests=tests, name=name, files=str(files))
+    start = time.perf_counter()
+    run = subprocess.run(
+        [sys.executable, "-c", code], env={**os.environ, "TMPDIR": str(tmp)},
+        capture_output=True, text=True, timeout=900,
+    )  # fmt: skip
+    print(f"{name}: exit code {run.returncode} after "
+          f"{time.perf_counter() - start:.1f} s", "stdout:", run.stdout, "stderr:",
+          run.stderr, sep="\n")  # fmt: skip
+    assert run.returncode == 0
+    assert run.stdout.splitlines()[-1] == "finished"
+    left = sorted(p.name for p in tmp.glob("htfa-frames-*"))
+    print("htfa frame folders left in the scenario's TMPDIR:", left)
+    assert not left
+
+
+def _hold(flag, timeout=300.0):
+    """A joblib task that keeps a shared-pool worker busy until ``flag`` exists."""
+    import time
+
+    end = time.monotonic() + timeout
+    while not os.path.exists(flag):
+        if time.monotonic() > end:
+            raise TimeoutError(f"{flag} did not appear in {timeout} s")
+        time.sleep(0.05)
+    return os.getpid()
+
+
+def _unpickled_in(log, refuse):
+    """Record the pid of the process unpickling a `_PidCaptions` or
+    `_UnpicklableCompose` (a worker, once per task); refuse if ``refuse``."""
+    _write_pid(log)
+    if refuse:
+        raise RuntimeError(f"refusing to be unpickled in process {os.getpid()}")
+    return _PidCaptions(log)
+
+
+class _PidCaptions:
+    """Empty captions; each worker task that unpickles it writes its pid to ``log``."""
+
+    def __init__(self, log):
+        self.log = log
+
+    def __call__(self, t):
+        return ""
+
+    def __reduce__(self):
+        return _unpickled_in, (self.log, False)
+
+
+class _UnpicklableCompose:
+    """A compose that pickles here, but whose unpickling in a worker raises
+    (after writing the worker's pid to ``log``): a deterministic failure."""
+
+    def __init__(self, log):
+        self.log = log
+
+    def __call__(self, images, t):
+        return images[0]
+
+    def __reduce__(self):
+        return _unpickled_in, (self.log, True)
 
 
 def _locking_compose(fail, images, t):
@@ -3393,7 +3472,9 @@ def _unlock_frame_dirs(names):
         shutil.rmtree(work)
 
 
-def _die_compose(images, t):
+def _die_compose(pids, images, t):
+    """Write this worker's pid to ``pids``, then end the worker process."""
+    _write_pid(pids)
     os._exit(1)
 
 
@@ -3451,68 +3532,114 @@ def test_n_jobs_matches_sequential(tmp_path):
         assert count == T
 
 
-def test_n_jobs_temp_folder_removed(tmp_path):
-    """The call's frame folder exists while workers draw, and is removed after
-    success and after a compose ValueError (raised once, not retried)."""
+def _scenario_temp_folder_removed(files):
+    """Run by test_n_jobs_temp_folder_removed in its own process and TMPDIR."""
     import json
+    import threading
 
+    from joblib import Parallel, delayed
+
+    files = Path(files)
     before = _frame_dirs()
     print("htfa frame folders before:", before)
-    log = tmp_path / "seen.jsonl"
-    from functools import partial
+    assert before == []
+    # A joblib workload in the shared reusable pool, kept running (each task
+    # waits for `flag`) across both animate_network calls.
+    flag, held = files / "release", []
+    workload = threading.Thread(
+        target=lambda: held.extend(
+            Parallel(n_jobs=2)(delayed(_hold)(str(flag)) for _ in range(2))
+        )
+    )
+    workload.start()
+    # compose is a closure, pickled by value like a notebook function; it
+    # captures the log path and a stamp of image data
+    log, stamp = files / "seen.jsonl", np.full((8, 8, 3), (12, 34, 56), np.uint8)
 
-    bn.animate_network(
-        CENTERS, _frames(), tmp_path / "ok.mp4", n_jobs=2,
-        compose=partial(_listing_compose, str(log)), **_ANIM,
+    def compose(images, t):
+        with open(log, "a") as f:
+            f.write(json.dumps([os.getpid(), t, _frame_dirs()]) + "\n")
+        img = images[0].copy()
+        img.paste(Image.fromarray(stamp), (0, 0))
+        return img
+
+    out = bn.animate_network(
+        CENTERS, _frames(), files / "ok.mp4", n_jobs=2, compose=compose,
+        frames_dir=files / "ok", **_ANIM,
     )  # fmt: skip
     seen = [json.loads(s) for s in log.read_text().splitlines()]
     print("worker calls (pid, t, folders seen):", seen)
     assert len(seen) == 3 and all(len(set(s[2]) - set(before)) == 1 for s in seen)
+    assert sorted(s[1] for s in seen) == [0.0, 1.0, 2.0]
     workers = {s[0] for s in seen}
     assert os.getpid() not in workers  # drawn in workers
+    corners = [_rgb(Image.open(files / "ok" / f"{k}.png"))[:8, :8] for k in (1, 2, 3)]
+    print("frame corners (the captured stamp):", [c[0, 0].tolist() for c in corners])
+    assert all((c == (12, 34, 56)).all() for c in corners)
+    assert _mp4_count(out) == 3
     alive = [pid for pid in workers if _alive(pid)]
     print("worker pids", workers, "still alive after the call:", alive)
     assert not alive
     after = _frame_dirs()
     print("after success:", after)
     assert after == before
-    errors = tmp_path / "errors.txt"
+    errors = files / "errors.txt"
+
+    def refuse(images, t):
+        if t == 2:
+            _write_pid(errors)
+            raise ValueError(f"compose refuses t={t}")
+        return images[0]
+
     with pytest.raises(ValueError, match="compose refuses t=2.0") as err:
         bn.animate_network(
-            CENTERS, _frames(), tmp_path / "bad.mp4", n_jobs=2,
-            compose=partial(_raising_compose, str(errors)), **_ANIM,
-        )  # fmt: skip
+            CENTERS, _frames(), files / "bad.mp4", n_jobs=2, compose=refuse, **_ANIM
+        )
     print("raised:", type(err.value).__name__, err.value)
-    calls = errors.read_text().splitlines()
-    print("compose calls at t=2:", calls, "alive:", _alive(int(calls[0].split()[0])))
-    assert len(calls) == 1 and not _alive(int(calls[0].split()[0]))
-    assert not (tmp_path / "bad.mp4").exists()
+    calls = _pids(errors)
+    print("compose calls at t=2 (pids):", calls, "alive:", [_alive(p) for p in calls])
+    assert len(calls) == 1 and not _alive(calls[0])  # raised once, not retried
+    assert not (files / "bad.mp4").exists()
     after = _frame_dirs()
     print("after error:", after)
     assert after == before
+    # the shared pool's tasks ran on through both calls and still finish
+    print("joblib workload still running after both calls:", workload.is_alive())
+    assert workload.is_alive()
+    flag.write_text("go")
+    workload.join(timeout=120)
+    again = Parallel(n_jobs=2)(delayed(os.getpid)() for _ in range(4))
+    print("joblib shared-pool workers", held, "afterwards", again)
+    assert len(held) == 2 and all(_alive(p) for p in held)
+    assert not set(held) & (workers | set(calls))
+    assert set(again) <= set(held)  # the same shared pool, not restarted
 
 
-@pytest.mark.skipif(
-    os.name != "posix" or os.geteuid() == 0,
-    reason="needs POSIX permissions that bind this user (not root)",
-)
-def test_n_jobs_cleanup_failure_surfaces(tmp_path):
-    """A frame folder that cannot be removed is reported, not ignored: OSError
-    after a written movie; on a rendering error that error still propagates
-    (also with warnings as errors) with the cleanup failure in its chain."""
+def test_n_jobs_temp_folder_removed(tmp_path):
+    """The call's frame folder exists while workers draw, and is removed after
+    success and after a compose ValueError (raised once, not retried); worker
+    processes are gone after both. compose is a closure capturing data, and a
+    joblib workload in joblib's shared pool keeps running across both calls."""
+    _isolated(tmp_path, "_scenario_temp_folder_removed")
+
+
+def _scenario_cleanup_failure_surfaces(files):
+    """Run by test_n_jobs_cleanup_failure_surfaces in its own process and TMPDIR."""
     import traceback
     from functools import partial
 
+    files = Path(files)
     before = _frame_dirs()
+    assert before == []
     left = []
     try:
         with pytest.raises(OSError, match="was not removed") as err:
             bn.animate_network(
-                CENTERS, _frames(), tmp_path / "ok.mp4", n_jobs=2,
+                CENTERS, _frames(), files / "ok.mp4", n_jobs=2,
                 compose=partial(_locking_compose, False), **_ANIM,
             )  # fmt: skip
         print("after success:", type(err.value).__name__, err.value)
-        assert (tmp_path / "ok.mp4").stat().st_size > 0
+        assert (files / "ok.mp4").stat().st_size > 0
         left = sorted(set(_frame_dirs()) - set(before))
         print("left behind:", left)
         assert len(left) == 1
@@ -3521,7 +3648,7 @@ def test_n_jobs_cleanup_failure_surfaces(tmp_path):
             warnings.simplefilter("error")
             with pytest.raises(ValueError) as err:
                 bn.animate_network(
-                    CENTERS, _frames(), tmp_path / "bad.mp4", n_jobs=2,
+                    CENTERS, _frames(), files / "bad.mp4", n_jobs=2,
                     compose=partial(_locking_compose, True), **_ANIM,
                 )  # fmt: skip
         print("rendering error:", type(err.value).__name__, err.value)
@@ -3542,6 +3669,17 @@ def test_n_jobs_cleanup_failure_surfaces(tmp_path):
     finally:
         _unlock_frame_dirs(sorted(set(_frame_dirs()) - set(before)))
     assert _frame_dirs() == before
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() == 0,
+    reason="needs POSIX permissions that bind this user (not root)",
+)
+def test_n_jobs_cleanup_failure_surfaces(tmp_path):
+    """A frame folder that cannot be removed is reported, not ignored: OSError
+    after a written movie; on a rendering error that error still propagates
+    (also with warnings as errors) with the cleanup failure in its chain."""
+    _isolated(tmp_path, "_scenario_cleanup_failure_surfaces")
 
 
 def test_n_jobs_more_workers_than_frames(tmp_path):
@@ -3604,39 +3742,134 @@ def test_is_blank():
         assert blank is want
 
 
-def test_n_jobs_restart_after_worker_death(tmp_path):
-    """A worker that dies on one frame is replaced; the movie is complete."""
-    from functools import partial
+def _scenario_restart_after_worker_death(files):
+    """Run by test_n_jobs_restart_after_worker_death in its own process and TMPDIR.
 
-    marker = tmp_path / "died.txt"
+    Frames 0-1 go to one worker and 2-3 to the other. The second worker, at
+    frame 2, waits until the first has written both of its PNGs, then dies
+    (once: a marker file records it). Every composed frame is logged with its
+    worker's pid, so the log shows which frames each pool drew.
+    """
+    import json
+    import tempfile
+    import time
+
+    files = Path(files)
+    marker, log = files / "died.txt", files / "drawn.jsonl"
+
+    def compose(images, t):
+        if t == 2 and not marker.exists():
+            (work,) = Path(tempfile.gettempdir()).glob("htfa-frames-*")
+            end = time.monotonic() + 120
+            while not all((work / f"{k:05d}.png").exists() for k in (0, 1)):
+                assert time.monotonic() < end, "frames 0 and 1 were not written"
+                time.sleep(0.05)
+            marker.write_text(str(os.getpid()))
+            os._exit(1)
+        with open(log, "a") as f:
+            f.write(json.dumps([os.getpid(), t]) + "\n")
+        return images[0]
+
     E = np.stack([_conn(), -_conn(), _conn(0.6), -_conn(0.6)])
     out = bn.animate_network(
-        CENTERS, E, tmp_path / "r.mp4", n_jobs=2, frames_dir=tmp_path / "f",
-        compose=partial(_die_once_compose, str(marker)), **_ANIM,
+        CENTERS, E, files / "r.mp4", n_jobs=2, frames_dir=files / "f",
+        compose=compose, **_ANIM,
     )  # fmt: skip
     count = _mp4_count(out)
-    names = sorted(p.name for p in (tmp_path / "f").iterdir())
-    print("worker that died:", marker.read_text(), "frames:", count, names)
+    names = sorted(p.name for p in (files / "f").iterdir())
+    died = int(marker.read_text())
+    drawn = [json.loads(s) for s in log.read_text().splitlines()]
+    print("worker that died:", died, "frames:", count, names)
+    print("frames composed (pid, t), in order:", drawn)
     assert marker.exists() and count == 4
     assert names == [f"{k}.png" for k in (1, 2, 3, 4)]
+    # each frame composed once: frames 0 and 1, finished before the death,
+    # were not redrawn; 2 and 3 were drawn by the new pool's workers
+    assert sorted(t for _, t in drawn) == [0.0, 1.0, 2.0, 3.0]
+    first = {pid for pid, t in drawn if t < 2}
+    again = {pid for pid, t in drawn if t >= 2}
+    assert len(first) == 1 and not again & (first | {died})
+    pids = first | again | {died}
+    print("worker pids", sorted(pids), "alive:", [p for p in pids if _alive(p)])
+    assert not any(_alive(p) for p in pids)
+    # the recovered movie equals one drawn in this process
+    bn.animate_network(CENTERS, E, files / "s.mp4", frames_dir=files / "s", **_ANIM)
+    _assert_same_frames([files / "s", files / "f"], names)
+
+
+def test_n_jobs_restart_after_worker_death(tmp_path):
+    """A worker that dies on one frame is replaced; only the missing frames are
+    redrawn, by new workers, and the movie equals the sequential one."""
+    _isolated(tmp_path, "_scenario_restart_after_worker_death")
+
+
+def _scenario_gives_up(files):
+    """Run by test_n_jobs_gives_up in its own process and TMPDIR."""
+    import time
+    from functools import partial
+
+    from joblib.externals.loky.process_executor import TerminatedWorkerError
+
+    files = Path(files)
+    pids = files / "pids.txt"
+    before = _frame_dirs()
+    start = time.perf_counter()
+    # one frame: each pool gets one task and one worker, which records its pid
+    with pytest.raises(RuntimeError, match="5 restarts") as err:
+        bn.animate_network(
+            CENTERS, _frames()[:1], files / "g.mp4", n_jobs=2,
+            compose=partial(_die_compose, str(pids)), **_ANIM,
+        )  # fmt: skip
+    elapsed = time.perf_counter() - start
+    workers = _pids(pids)
+    print(f"gave up after {elapsed:.1f} s:", err.value)
+    print("worker pids, one per pool:", workers,
+          "alive:", [p for p in workers if _alive(p)])  # fmt: skip
+    assert isinstance(err.value.__cause__, TerminatedWorkerError)
+    # one first pool and 5 restarts, each with a new worker; all gone
+    assert len(workers) == 6 and len(set(workers)) == 6
+    assert not any(_alive(p) for p in workers)
+    assert _frame_dirs() == before
+    assert not (files / "g.mp4").exists()
 
 
 def test_n_jobs_gives_up(tmp_path):
-    """Workers that always die: RuntimeError after 5 restarts, folder removed."""
-    import time
+    """Workers that always die: RuntimeError after exactly 5 restarts (6 pools,
+    counted by the pids their workers record), workers gone, folder removed."""
+    _isolated(tmp_path, "_scenario_gives_up")
 
-    before = _frame_dirs()
-    start = time.perf_counter()
-    with pytest.raises(RuntimeError, match="5 restarts") as err:
+
+def _scenario_unpicklable_compose(files):
+    """Run by test_n_jobs_unpicklable_compose_not_retried in its own process."""
+    from joblib.externals.loky.process_executor import (
+        BrokenProcessPool,
+        TerminatedWorkerError,
+    )
+
+    files = Path(files)
+    log = files / "unpickled.txt"
+    with pytest.raises(BrokenProcessPool) as err:
         bn.animate_network(
-            CENTERS, _frames(), tmp_path / "g.mp4", n_jobs=2, compose=_die_compose,
-            **_ANIM,
+            CENTERS, _frames()[:1], files / "u.mp4", n_jobs=2,
+            compose=_UnpicklableCompose(str(log)), **_ANIM,
         )  # fmt: skip
-    elapsed = time.perf_counter() - start
-    print(f"gave up after {elapsed:.1f} s:", err.value)
-    assert elapsed < 300
-    assert _frame_dirs() == before
-    assert not (tmp_path / "g.mp4").exists()
+    workers = _pids(log)
+    print("raised:", type(err.value).__name__, err.value)
+    print("cause:", repr(err.value.__cause__))
+    print("workers that unpickled the task:", workers,
+          "alive:", [p for p in workers if _alive(p)])  # fmt: skip
+    assert not isinstance(err.value, TerminatedWorkerError)
+    assert "un-serialize" in str(err.value)
+    assert "refusing to be unpickled" in str(err.value.__cause__)
+    assert len(workers) == 1  # one pool: no restart
+    assert not any(_alive(p) for p in workers)
+    assert _frame_dirs() == [] and not (files / "u.mp4").exists()
+
+
+def test_n_jobs_unpicklable_compose_not_retried(tmp_path):
+    """A task that cannot be unpickled in the worker (a BrokenProcessPool that
+    is not a dead worker) fails at once: one pool, no restart."""
+    _isolated(tmp_path, "_scenario_unpicklable_compose")
 
 
 def test_n_jobs_dark_nodes_not_blank(tmp_path):
@@ -3652,13 +3885,9 @@ def test_n_jobs_dark_nodes_not_blank(tmp_path):
     _assert_same_frames(folders, [f"{k}.png" for k in (1, 2, 3)])
 
 
-def test_n_jobs_blank_render(tmp_path):
-    """Workers reject a real render that is black to its corners on white.
-
-    Black spheres of 200 mm radius fill the whole view, so every frame meets
-    the blank-render rule: the pool is restarted 5 times and the call gives
-    up. n_jobs=1 runs no check and writes the movie.
-    """
+def _scenario_blank_render(files):
+    """Run by test_n_jobs_blank_render in its own process and TMPDIR."""
+    files = Path(files)
     black = {**_ANIM, "node_color": "black", "radius_kb": (0.0, 200.0)}
     E = np.stack([_conn()])
     render = bn.plot_network(CENTERS, _conn(), **black)
@@ -3666,16 +3895,39 @@ def test_n_jobs_blank_render(tmp_path):
     corners = dark[[0, 0, -1, -1], [0, -1, 0, -1]]
     print("near-black fraction:", round(float(dark.mean()), 3), "corners:", corners)
     assert bn._is_blank(render, "white")
-    out = bn.animate_network(CENTERS, E, tmp_path / "seq.mp4", **black)
+    out = bn.animate_network(CENTERS, E, files / "seq.mp4", **black)
     assert _mp4_count(out) == 1
     before = _frame_dirs()
+    # one frame: each pool runs one task, whose worker records its pid when it
+    # unpickles the captions (the blank check stops the frame before compose
+    # or captions would run)
+    log = files / "pids.txt"
     with pytest.raises(RuntimeError, match="5 restarts") as err:
-        bn.animate_network(CENTERS, E, tmp_path / "par.mp4", n_jobs=2, **black)
+        bn.animate_network(
+            CENTERS, E, files / "par.mp4", n_jobs=2, captions=_PidCaptions(str(log)),
+            **black,
+        )  # fmt: skip
+    workers = _pids(log)
     print(err.value)
+    print("worker pids, one per pool:", workers,
+          "alive:", [p for p in workers if _alive(p)])  # fmt: skip
     assert "_BlankRender" in str(err.value) and "rendered black" in str(err.value)
     assert isinstance(err.value.__cause__, bn._BlankRender)
+    assert len(workers) == 6 and len(set(workers)) == 6  # 1 pool + 5 restarts
+    assert not any(_alive(p) for p in workers)
     assert _frame_dirs() == before
-    assert not (tmp_path / "par.mp4").exists()
+    assert not (files / "par.mp4").exists()
+
+
+def test_n_jobs_blank_render(tmp_path):
+    """Workers reject a real render that is black to its corners on white.
+
+    Black spheres of 200 mm radius fill the whole view, so every frame meets
+    the blank-render rule: the pool is restarted exactly 5 times (6 pools,
+    counted by their workers' pids) and the call gives up. n_jobs=1 runs no
+    check and writes the movie.
+    """
+    _isolated(tmp_path, "_scenario_blank_render")
 
 
 def test_animate_network_forwards_encoding(tmp_path):
