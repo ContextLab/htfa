@@ -3232,9 +3232,9 @@ def test_n_jobs_temp_folder_removed(tmp_path):
 )
 def test_n_jobs_cleanup_failure_surfaces(tmp_path):
     """A frame folder that cannot be removed is reported, not ignored: OSError
-    after a written movie, a note (3.10: a warning) on a rendering error."""
-    import contextlib
-    import sys
+    after a written movie; on a rendering error that error still propagates
+    (also with warnings as errors) with the cleanup failure in its chain."""
+    import traceback
     from functools import partial
 
     before = _frame_dirs()
@@ -3251,20 +3251,26 @@ def test_n_jobs_cleanup_failure_surfaces(tmp_path):
         print("left behind:", left)
         assert len(left) == 1
         _unlock_frame_dirs(left)
-        warns = (
-            pytest.warns(RuntimeWarning, match="was not removed")
-            if sys.version_info < (3, 11)
-            else contextlib.nullcontext()
-        )
-        with warns, pytest.raises(ValueError, match="after locking") as err:
-            bn.animate_network(
-                CENTERS, _frames(), tmp_path / "bad.mp4", n_jobs=2,
-                compose=partial(_locking_compose, True), **_ANIM,
-            )  # fmt: skip
-        notes = getattr(err.value, "__notes__", [])
-        print("rendering error:", err.value, "notes:", notes)
-        if sys.version_info >= (3, 11):
-            assert any("was not removed" in note for note in notes)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            with pytest.raises(ValueError) as err:
+                bn.animate_network(
+                    CENTERS, _frames(), tmp_path / "bad.mp4", n_jobs=2,
+                    compose=partial(_locking_compose, True), **_ANIM,
+                )  # fmt: skip
+        print("rendering error:", type(err.value).__name__, err.value)
+        assert type(err.value) is ValueError
+        assert str(err.value) == "compose refuses t=0.0 after locking"
+        chain, e = [], err.value
+        while e is not None and e not in chain:
+            chain.append(e)
+            e = e.__cause__ or (None if e.__suppress_context__ else e.__context__)
+        print("chain:", [f"{type(x).__name__}: {x}" for x in chain])
+        found = [x for x in chain if isinstance(x, OSError)]
+        assert found and "was not removed" in str(found[0])
+        assert isinstance(found[0].__cause__, PermissionError)
+        shown = "".join(traceback.format_exception(err.value))
+        assert "was not removed" in shown and "after locking" in shown
         left = sorted(set(_frame_dirs()) - set(before))
         assert len(left) == 1
     finally:

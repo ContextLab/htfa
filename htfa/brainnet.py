@@ -35,7 +35,6 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-import warnings
 import zipfile
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
@@ -2240,8 +2239,9 @@ def animate_network(
         encoded as they are drawn. Otherwise this call starts its own pool
         (not joblib's shared one), each worker draws a contiguous run of
         frames into a temporary folder (removed afterwards, also after an
-        error; a folder that cannot be removed raises ``OSError``, or is
-        noted on the error already raised), and the movie is encoded from
+        error; a folder that cannot be removed raises ``OSError`` or, when
+        an error is already raised, is chained to it as its innermost
+        ``__context__``), and the movie is encoded from
         there once all are drawn. ``compose`` and a ``captions`` callable
         then run in the workers, so they must be picklable by cloudpickle
         (functions defined in a notebook are). A view rendered black on a
@@ -2463,21 +2463,32 @@ def animate_network(
 def _remove_work(work: Path, err: BaseException | None) -> None:
     """Remove a call's temporary frame folder.
 
-    If that fails, ``OSError`` is raised when no error ``err`` is already on
-    its way; otherwise the failure is added to ``err`` as a note (a
-    ``RuntimeWarning`` on Python 3.10, which has no exception notes).
+    If that fails, an ``OSError`` naming the folder (caused by the removal
+    error) is raised when no error ``err`` is already on its way. Otherwise
+    ``err`` stays the error that propagates, and that ``OSError`` becomes the
+    ``__context__`` of the last exception in the chain a traceback of ``err``
+    shows, so the traceback shows it too.
     """
     try:
         shutil.rmtree(work)
     except OSError as cleanup:
-        note = f"the temporary frame folder {work} was not removed: {cleanup!r}"
+        failure = OSError(f"the temporary frame folder {work} was not removed")
         if err is None:
-            raise OSError(note) from cleanup
-        add_note = getattr(err, "add_note", None)
-        if add_note is None:
-            warnings.warn(note, RuntimeWarning, stacklevel=3)
-        else:
-            add_note(note)
+            raise failure from cleanup
+        failure.__cause__ = cleanup
+        cleanup.__context__ = None  # set to err by the except: no cycle
+        # the end of the chain a traceback shows (causes, else contexts)
+        last, seen = err, {id(err)}
+        while True:
+            shown = last.__cause__ or (
+                None if last.__suppress_context__ else last.__context__
+            )
+            if shown is None or id(shown) in seen:
+                break
+            last = shown
+            seen.add(id(last))
+        last.__context__ = failure
+        last.__suppress_context__ = False
 
 
 class _ViewsArgs(NamedTuple):
