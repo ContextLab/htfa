@@ -77,3 +77,8 @@
 ## CI round 2 (59a1e15): docs, brainiak green; test matrix 14 of 15 green (all Linux, all macOS, Windows 3.10-3.13)
 - Windows 3.14: test_n_jobs_temp_folder_removed read an empty record file: a worker the pool terminated had created its record but not yet written it. Test records are now written under a .tmp name and renamed (tests only).
 - Local at 59a1e15: make test 1216 passed, 19 skipped; make docs succeeded; lint clean.
+
+## CI round 3 (a97b137) and the candidate workflow's time limit
+- Tests: all Linux and all Windows jobs green (Windows 3.14 included); macOS jobs were still queued at the next push (they were green in round 2; only a test helper changed since).
+- Candidate workflow (executes every tutorial against the wheel, 120-minute job limit): a Windows job was cancelled at the limit in rounds 2 and 3. Tutorial 10 took 25.5 min on the Windows runner vs 7 min before this branch. Fix fd55f59: the new sections render about 64 frames instead of 400 (local total 37-40 s vs 33 s at main, 52 s before the fix). The n_jobs=1 vs 4 timing comparison left the tutorial.
+- Candidate timings on Windows, for reference: pytest about 25 min, tutorial 05 about 43 min, tutorial 15 about 17 min; the job is close to its limit even without this branch (1 h 47 min on 2026-10-29 for Python 3.14).
