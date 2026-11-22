@@ -2708,17 +2708,23 @@ def test_autorelease_without_pool_class():
     """With no pool class (other systems, or VTK < 9.5) scenes render as with one.
 
     `_autorelease(None)` is the path a VTK without ``vtkCocoaAutoreleasePool``
-    takes. That `_autorelease_pool_class` returns None for such a VTK is not
-    tested: this machine's VTK has the class, and patching VTK is not allowed.
+    takes. `_autorelease_pool_class` must return the class exactly when this
+    VTK provides it on macOS (found here by importing it), else None; which
+    branch runs depends on the installed VTK.
     """
     import vtkmodules
 
+    try:
+        from vtkmodules.vtkRenderingUI import vtkCocoaAutoreleasePool as provided
+    except ImportError:  # VTK < 9.5, or a build without the class
+        provided = None
     cls = bn._autorelease_pool_class()
-    print("VTK", vtkmodules.__version__, sys.platform, "pool class:", cls)
-    if sys.platform == "darwin":
-        assert cls is not None and cls.__name__ == "vtkCocoaAutoreleasePool"
+    print("VTK", vtkmodules.__version__, sys.platform, "VTK provides:", provided,
+          "pool class:", cls)  # fmt: skip
+    if sys.platform == "darwin" and provided is not None:
+        assert cls is provided
     else:
-        assert cls is None
+        assert cls is None  # rendering then takes the no-pool path below
     scene_opts, edge_opts = bn._style({"size": (320, 200)})
     with bn._autorelease(None):
         views = bn._Views(CENTERS, np.ones(6), None, ["left"], scene_opts)
@@ -3698,9 +3704,10 @@ def _scenario_temp_folder_removed(files):
     after = _frame_dirs()
     print("after success:", after)
     assert after == before
-    errors = files / "errors.txt"
+    errors, called = files / "errors.txt", files / "called.txt"
 
     def refuse(images, t):
+        _write_pid(called)  # every compose call, in every worker, first of all
         if t == 2:
             _write_pid(errors)
             raise ValueError(f"compose refuses t={t}")
@@ -3714,6 +3721,13 @@ def _scenario_temp_folder_removed(files):
     calls = _pids(errors)
     print("compose calls at t=2 (pids):", calls, "alive:", [_alive(p) for p in calls])
     assert len(calls) == 1 and not _alive(calls[0])  # raised once, not retried
+    # every worker that composed a frame, also the one that did not raise
+    # (it may have been stopped before its first frame, then it is not listed)
+    erring = set(_pids(called))
+    print("workers that composed in the failing call:", sorted(erring),
+          "alive:", [p for p in erring if _alive(p)])  # fmt: skip
+    assert calls[0] in erring and not any(_alive(p) for p in erring)
+    assert os.getpid() not in erring
     assert not (files / "bad.mp4").exists()
     after = _frame_dirs()
     print("after error:", after)
@@ -3726,7 +3740,7 @@ def _scenario_temp_folder_removed(files):
     again = Parallel(n_jobs=2)(delayed(os.getpid)() for _ in range(4))
     print("joblib shared-pool workers", held, "afterwards", again)
     assert len(held) == 2 and all(_alive(p) for p in held)
-    assert not set(held) & (workers | set(calls))
+    assert not set(held) & (workers | erring)
     assert set(again) <= set(held)  # the same shared pool, not restarted
 
 
