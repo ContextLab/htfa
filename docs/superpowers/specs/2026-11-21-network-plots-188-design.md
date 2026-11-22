@@ -160,8 +160,9 @@ naming the row.
 New keyword `legend` on both functions: a list of `(color, label, kind)`
 with `kind` "dot" or "line" for one row, or a list of such lists for several
 rows. Geometry follows the tutorial's `legend_band`: font size
-`max(12, round(30 * W / 1920))` for frame width W (the floor keeps text
-readable in small frames), one band 64 px high per 30 px of font for each
+`max(12, round(30 * W / 1920))` (the floor keeps text readable in small
+frames), where W is the `frame_size` width or, without it, the summed width
+of the cropped views, also when a legend row then widens the frame; one band 64 px high per 30 px of font for each
 row, entries centered as a group, black text, mark then
 label, sizes proportional to the font size (gap 40, mark width 34, dot
 radius 12, line width 6, mark-to-text 10, all per 30 px of font).

@@ -1998,10 +1998,13 @@ def plot_network(
     legend : list, optional
         One legend row, a list of ``(color, label, kind)`` with ``kind``
         ``"dot"`` or ``"line"``, or a list of such rows; drawn centered
-        below the views with font size ``max(12, round(30 * W / 1920))``
-        for frame width W, one band 64 pixels high per 30 pixels of font for
-        each row. Without ``frame_size`` the image widens to hold the widest
-        row (views centered); with it, a wider row raises ``ValueError``.
+        below the views with font size ``max(12, round(30 * W / 1920))``,
+        one band 64 pixels high per 30 pixels of font for each row. W is the
+        ``frame_size`` width or, without it, the summed width of the cropped
+        views (the title fonts follow the same W). Without ``frame_size`` the
+        image widens to hold the widest row (views centered), and the fonts
+        keep the size set by the views' width; with it, a wider row raises
+        ``ValueError``.
     frame_size : (W, H) positive ints, optional
         Exact size of the image: titles and legend are drawn at width W and
         the views are scaled (Lanczos, up or down) to fit the space left,
@@ -3237,7 +3240,8 @@ def _layout(
         the frame is as wide as the views or, if wider, the widest legend
         row plus one entry gap on each side (views centered), and it is
         trimmed to even width and height. Font sizes follow the views'
-        summed width (or the given W).
+        summed width (or the given W), also when the legend widens the
+        frame.
     background : color
         Frame and band color. Text is black when the background's mean
         channel is 128 or more, else white; subtitle and divider grays are
