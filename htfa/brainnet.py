@@ -1469,7 +1469,7 @@ class _Scene:
     def _add_nodes(self, pv: Any, pl: Any, **add: Any) -> None:
         """Add spheres of ``self.radii`` in the node colors to ``pl``.
 
-        One merged mesh without node opacity (per-node colors as per-cell
+        One merged mesh without node opacity (per-node colors as per-point
         ``rgb`` scalars), else one actor per sphere. One color is passed to
         ``add_mesh`` as given (``self.node_color``), with the 0.1.0 call
         arguments. ``add`` holds extra ``add_mesh`` arguments (``render=False``
@@ -1491,8 +1491,9 @@ class _Scene:
                 )
             ]
         elif self.node_opacity is None:
+            # Point, not cell, colors, as for the edges (see `set_edges`).
             for sphere, rgb in zip(spheres, _uint8(colors), strict=True):
-                sphere.cell_data["rgb"] = np.tile(rgb, (sphere.n_cells, 1))
+                sphere.point_data["rgb"] = np.tile(rgb, (sphere.n_points, 1))
             self._nodes = [
                 pl.add_mesh(
                     pv.merge(spheres),
@@ -1571,8 +1572,11 @@ class _Scene:
         else:
             radius, opacity = np.full(len(w), 0.25), 1.0
         tubes = _tubes(self.centers, self.radii, i, j, radius)
-        per_edge = tubes.n_cells // len(i)
-        tubes.cell_data["rgb"] = _uint8(np.repeat(rgb, per_edge, axis=0))
+        # Point, not cell, colors: Mesa 26's llvmpipe (Ubuntu 26.04) draws
+        # nothing for an actor colored by cell scalars. Each tube has its own
+        # points, so every point of a tube gets that edge's color.
+        per_edge = tubes.n_points // len(i)
+        tubes.point_data["rgb"] = _uint8(np.repeat(rgb, per_edge, axis=0))
         self._edges = self.pl.add_mesh(
             tubes,
             scalars="rgb",
@@ -1758,7 +1762,7 @@ def _rgb(color: Any) -> tuple[float, float, float]:
 
 
 def _uint8(rgb: Array) -> Array:
-    """Float RGB in 0-1 as 0-255 ``uint8``, for per-cell ``rgb`` scalars."""
+    """Float RGB in 0-1 as 0-255 ``uint8``, for per-point ``rgb`` scalars."""
     return np.round(np.asarray(rgb) * 255).astype(np.uint8)
 
 
