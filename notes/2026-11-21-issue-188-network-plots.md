@@ -66,3 +66,10 @@
 24. Crop of a movie comes from opaque nodes at their largest radius in one contrasting color.
 25. content_box / annotate_pair / montage on white need neither pyvista nor matplotlib.
 26. Memory-growth test is macOS-only and slow-marked.
+
+## CI round 1 on PR #189 (f42aa68, 2026-11-22): docs and brainiak green; tests red on all three OSes
+- Linux: not a branch regression. ubuntu-latest moved from 24.04 (Mesa 25.2.8) to 26.04 (Mesa 26.0.8), where an actor colored by cell data draws nothing (main fails the same way in an Ubuntu 26.04 container). Fix 93e465f: edge and node colors are per-point. macOS images pixel-identical before/after.
+- Windows: test helper used os.kill(pid, 0) (invalid on Windows) and workers appended to one shared log file. Fix 1dfaff0 (tests only). Unverified until CI.
+- macOS runners: one layout test differed (same cell-color lookup on the virtual GPU, expected fixed by 93e465f); on 3.10, numpy 2.2.6 emits a spurious matmul RuntimeWarning (inputs and result finite), now allowed in test_stats (2a208d8).
+- Reproduce Linux CI locally: Docker, ubuntu:26.04 amd64, apt libegl1 libegl-mesa0, pip install -e ".[dev]". Do this before the first push of any rendering change.
+- CI timings: tests about 10 min per Ubuntu job, 22-29 min per macOS/Windows job; docs 5 min; brainiak 13 min; candidate 17 min.

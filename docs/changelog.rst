@@ -44,6 +44,9 @@ Network plots and animations
   the ch2 mesh), and after about 40 renders in one process macOS printed
   "Context leak detected". This uses VTK's ``vtkCocoaAutoreleasePool`` (VTK
   9.5 and later); with an older VTK, rendering runs as in 0.1.0.
+- Edges and per-node colors are stored as per-point instead of per-cell
+  colors. With Mesa 26's software renderer (Ubuntu 26.04), 0.1.0 drew no
+  edges at all, because actors colored by cell data were not drawn there.
 
 0.1.0
 -----
