@@ -1,5 +1,7 @@
 """Independent formula checks and actual estimator parameter counts."""
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -44,12 +46,31 @@ def test_edge_cases():
 @pytest.mark.parametrize("kernel", ["rbf", "laplace", "mexican_hat"])
 @pytest.mark.parametrize("m", [1, 2])
 def test_fitted_count_and_scoring(kernel, m):
+    """Parameter counts and scores of a fit stopped after one global iteration.
+
+    The fit is cut short on purpose (only counts and scores are checked), so
+    HTFA warns once that it did not converge. With 2 Mexican-hat components,
+    a stage-0 (unpenalized) subject fit also reaches TFA's max_iter=100 and
+    warns; those warnings are not suppressed by HTFA. Exactly these
+    warnings are expected.
+    """
     xs, rs, _ = htfa.make_htfa_data(
         n_subjects=2, grid_shape=(8, 8), K=2, n_samples=15, random_state=1
     )
-    model = htfa.HTFA(
-        K=2, kernel=kernel, n_components=m, max_global_iter=1, random_state=0
-    ).fit(xs, rs)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        model = htfa.HTFA(
+            K=2, kernel=kernel, n_components=m, max_global_iter=1, random_state=0
+        ).fit(xs, rs)
+    got = sorted(
+        (w.category.__name__, str(w.message).split(" did not converge")[0])
+        for w in caught
+    )
+    print("warnings:", [str(w.message) for w in caught])
+    expected = [("ConvergenceWarning", "HTFA")]
+    if (kernel, m) == ("mexican_hat", 2):
+        expected.append(("ConvergenceWarning", "TFA"))
+    assert got == sorted(expected)
     res = htfa.HTFAResults(
         model, [htfa.Subject(x, r) for x, r in zip(xs, rs, strict=True)]
     )
