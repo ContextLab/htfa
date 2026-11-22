@@ -612,13 +612,42 @@ def test_write_animation_crf_size(tmp_path):
 
 
 def test_write_animation_default_unchanged(tmp_path):
-    """The default call is reproducible and is not the explicit crf=23 encode."""
+    """The default call equals a direct imageio encode with the 0.1.0 settings."""
+    import imageio.v2 as iio
+
+    legacy = tmp_path / "legacy.mp4"
+    with iio.get_writer(
+        legacy, fps=10, codec="libx264", quality=8, macro_block_size=2,
+        pixelformat="yuv420p",
+    ) as writer:  # fmt: skip
+        for im in _square_frames():
+            w, h = im.size
+            writer.append_data(np.asarray(im.crop((0, 0, w - w % 2, h - h % 2))))
     a = bn.write_animation(_square_frames(), tmp_path / "a.mp4").read_bytes()
-    b = bn.write_animation(_square_frames(), tmp_path / "b.mp4").read_bytes()
     c = bn.write_animation(_square_frames(), tmp_path / "c.mp4", crf=23).read_bytes()
-    print("sizes (default, default, crf=23):", len(a), len(b), len(c))
-    assert a == b
+    print(
+        "sizes (0.1.0 writer, default, crf=23):",
+        len(legacy.read_bytes()),
+        len(a),
+        len(c),
+    )
+    assert a == legacy.read_bytes()
     assert a != c
+
+
+def test_write_animation_crf_and_faststart(tmp_path):
+    """crf and faststart together: the crf takes effect and moov precedes mdat."""
+    sizes = {}
+    for crf in (10, 40):
+        out = bn.write_animation(
+            _square_frames(), tmp_path / f"b{crf}.mp4", crf=crf, faststart=True
+        )
+        data = out.read_bytes()
+        sizes[crf] = len(data)
+        moov, mdat = data.find(b"moov"), data.find(b"mdat")
+        print(f"crf={crf}: size {len(data)}, moov {moov}, mdat {mdat}")
+        assert 0 < moov < mdat
+    assert sizes[40] < sizes[10]
 
 
 def test_write_animation_faststart(tmp_path):
