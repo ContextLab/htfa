@@ -49,10 +49,12 @@ def test_fitted_count_and_scoring(kernel, m):
     """Parameter counts and scores of a fit stopped after one global iteration.
 
     The fit is cut short on purpose (only counts and scores are checked), so
-    HTFA warns once that it did not converge. With 2 Mexican-hat components,
-    a stage-0 (unpenalized) subject fit also reaches TFA's max_iter=100 and
-    warns; those warnings are not suppressed by HTFA. Exactly these
-    warnings are expected.
+    HTFA warns once that it did not converge; that warning is required. A
+    stage-0 (unpenalized) subject fit may also reach TFA's max_iter=100 and
+    warn (here: with 2 Mexican-hat components), since HTFA does not suppress
+    those; whether it does depends on the numerical libraries, so up to one
+    such TFA ConvergenceWarning per subject is allowed, not required. Any
+    other warning fails the test.
     """
     xs, rs, _ = htfa.make_htfa_data(
         n_subjects=2, grid_shape=(8, 8), K=2, n_samples=15, random_state=1
@@ -67,10 +69,10 @@ def test_fitted_count_and_scoring(kernel, m):
         for w in caught
     )
     print("warnings:", [str(w.message) for w in caught])
-    expected = [("ConvergenceWarning", "HTFA")]
-    if (kernel, m) == ("mexican_hat", 2):
-        expected.append(("ConvergenceWarning", "TFA"))
-    assert got == sorted(expected)
+    induced, optional = ("ConvergenceWarning", "HTFA"), ("ConvergenceWarning", "TFA")
+    assert got.count(induced) == 1
+    assert got.count(optional) <= len(xs)
+    assert [g for g in got if g not in (induced, optional)] == []
     res = htfa.HTFAResults(
         model, [htfa.Subject(x, r) for x, r in zip(xs, rs, strict=True)]
     )

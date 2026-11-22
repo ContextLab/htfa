@@ -2001,6 +2001,35 @@ def test_plot_network_per_node_colors_with_fade(res_htfa):
     assert red.sum() > 20 and blue.sum() > 20
 
 
+def test_fade_by_mass_lightens_per_node_colors():
+    """With per-node colors, fade_by_mass blends each node toward the white
+    background by its opacity a = 0.15 + 0.85 * mass fraction, for nodes of
+    known, distinct mass fractions. A translucent sphere is drawn with its
+    front and back surfaces, each blended at opacity a, so at a node's center
+    the faded render's distance from white is 1 - (1 - a)^2 times the
+    unfaded one's."""
+    mask = _sphere(40.0, 2.0)
+    centers = np.array([[0.0, 50.0, 0.0], [0.0, -10.0, 0.0], [0.0, 0.0, 40.0]])
+    widths = np.array([100.0, 100.0, 100.0])
+    c_eff, _, info = bn.effective_nodes(centers, widths, mask)
+    alpha = 0.15 + 0.85 * np.clip(info["mass_fraction"], 0, 1)
+    kw = {"widths": widths, "mask": mask, "mesh": None,
+          "node_color": ["red", "blue", "green"]}  # fmt: skip
+    plain = _rgb(bn.plot_network(centers, **kw))
+    faded = _rgb(bn.plot_network(centers, fade_by_mass=True, **kw))
+    expect = 1 - (1 - alpha) ** 2
+    for k, (y, z) in enumerate(c_eff[:, 1:]):
+        d_plain = (255 - _window(plain, y, z)).mean()
+        d_faded = (255 - _window(faded, y, z)).mean()
+        print(f"node {k}: mass {info['mass_fraction'][k]:.3f}, opacity "
+              f"{alpha[k]:.3f}, distance from white plain {d_plain:.1f}, faded "
+              f"{d_faded:.1f}, ratio {d_faded / d_plain:.3f}, expected "
+              f"{expect[k]:.3f}")  # fmt: skip
+        assert d_plain > 100
+        assert abs(d_faded / d_plain - expect[k]) < 0.05
+    assert alpha[0] < 0.35 and alpha[1] > 0.99 and 0.4 < alpha[2] < 0.8
+
+
 def test_node_color_bad_shapes():
     """Color counts or shapes that do not match K raise, naming K."""
     four = CENTERS[:4]
@@ -2082,10 +2111,18 @@ def test_scene_set_nodes():
 
 @pytest.mark.parametrize("opacity", [None, np.array([0.5, 1.0])])
 def test_set_nodes_bad_input_leaves_scene_unchanged(opacity):
-    """Bad radii or colors raise before set_nodes touches the scene."""
+    """Bad radii or colors raise before set_nodes touches the scene.
+
+    Actors, radii and colors must be exactly unchanged. The image is compared
+    with a tolerance: translucent rendering (depth peeling, here for the
+    opacity case) can vary by a few pixels between renders of an unchanged
+    scene on Mesa and macOS, so at most 20 pixels may differ. A changed node
+    changes far more: each covers about 140 pixels (radius 6 mm, 6.6 px at
+    this size), and even a 1 mm larger radius adds a rim of about 50 pixels.
+    """
     scene = _scene(TWO, node_opacity=opacity, node_color=["red", "blue"])
     try:
-        image = np.asarray(scene.image())
+        image = np.asarray(scene.image()).astype(int)
         actors, radii = list(scene._nodes), scene.radii.copy()
         colors = scene.node_colors.copy()
         for bad_radii, bad_colors in [
@@ -2102,9 +2139,11 @@ def test_set_nodes_bad_input_leaves_scene_unchanged(opacity):
             assert scene._nodes == actors
             np.testing.assert_array_equal(scene.radii, radii)
             np.testing.assert_array_equal(scene.node_colors, colors)
-            again = np.asarray(scene.image())
-            print("pixels changed:", np.count_nonzero(again != image))
-            np.testing.assert_array_equal(again, image)
+            again = np.asarray(scene.image()).astype(int)
+            changed = np.abs(again - image).max(axis=-1)
+            print("pixels changed:", int((changed > 0).sum()),
+                  "largest channel change:", int(changed.max()))  # fmt: skip
+            assert (changed > 0).sum() <= 20
     finally:
         scene.close()
 
@@ -2281,6 +2320,31 @@ def test_animate_without_connectivity(tmp_path):
         with pytest.raises(ValueError, match="time axis") as err:
             bn.animate_network(TWO, None, tmp_path / "x.mp4", **{**_ANIM, **kw})
         print(kw, "error:", err.value)
+
+
+def test_animate_colors_without_connectivity(tmp_path):
+    """connectivity=None with only (T, K) colors: T frames, node colors change,
+    no edges (the frames equal those of an all-zero connectivity series)."""
+    names = [["red", "blue"], ["blue", "red"], ["green", "blue"]]
+    frames = _movie(tmp_path, "colors", TWO, None, node_color=names)
+    zero = _movie(tmp_path, "zero", TWO, np.zeros((3, 2, 2)), node_color=names)
+    right = (np.arange(320) > _MID)[None]
+    between = np.abs(np.arange(320) - _MID)[None] < 3
+
+    def green(a):
+        return (a[..., 1] - np.maximum(a[..., 0], a[..., 2])) > 50
+
+    for k, (a, b) in enumerate(zip(frames, zero, strict=True)):
+        node0 = [int((f(a) & right).sum()) for f in (lambda x: _hue(x, 0),
+                 lambda x: _hue(x, 2), green)]  # fmt: skip
+        print(
+            f"frame {k + 1}: node 0 red/blue/green px {node0}, drawn px between "
+            f"the nodes {int((_drawn(a) & between).sum())}, px differing from "
+            f"the zero-connectivity frame {int((a != b).any(-1).sum())}"
+        )
+        assert node0[k] > 20 and sum(node0) == node0[k]  # red, then blue, then green
+        assert not (_drawn(a) & between).any()  # no edge crosses between the nodes
+        np.testing.assert_array_equal(a, b)
 
 
 def test_animate_time_axes_must_agree(tmp_path):
@@ -2808,6 +2872,37 @@ def test_plot_network_legend():
     assert _drawn(two[: -2 * band]).sum() > 200  # six gray nodes
 
 
+def test_legend_marks_dots_and_lines():
+    """A dot is a filled circle of radius 12 and a line a 34 x 6 bar, per 30 px
+    of font: measured at fonts 30 (W = 1920) and 15 (W = 960)."""
+    row = [("red", "dot", "dot"), ("blue", "line", "line")]
+    for W, H in ((1920, 1080), (960, 540)):
+        size = max(12, round(30 * W / 1920))
+        _, gap, mark, radius, lw, pad = bn._legend_geometry(size)
+        img = bn.plot_network(CENTERS, legend=row, frame_size=(W, H), **_ANIM)
+        low = _rgb(img)[-_band(W) :]
+        marks = {}
+        for name, mask in (("dot", _pure_red(low)), ("line", _blue(low))):
+            rows, cols = np.nonzero(mask)
+            w, h = cols.max() - cols.min() + 1, rows.max() - rows.min() + 1
+            marks[name] = (int(cols.min()), int(w), int(h), mask.sum() / (w * h))
+        print(f"W={W} font {size}: mark {mark}, radius {radius}, line width {lw}; "
+              "measured (left, width, height, fill):", marks)  # fmt: skip
+        dot, line = marks["dot"], marks["line"]
+        # the dot: a disc 2 * radius + 1 px across, filling about pi / 4 of its box
+        assert abs(dot[1] - (2 * radius + 1)) <= 1
+        assert abs(dot[2] - (2 * radius + 1)) <= 1
+        assert 0.7 < dot[3] < 0.85
+        # the line: mark wide (+1, ends inclusive), lw high, a full bar
+        assert abs(line[1] - (mark + 1)) <= 1 and abs(line[2] - lw) <= 1
+        assert line[3] > 0.9
+        # the dot is centered in its mark; the line starts one entry later
+        label = bn._font(size).getlength("dot")
+        x_dot = dot[0] + radius - mark / 2  # where the dot entry starts
+        print("dot entry starts at", x_dot, "line at", line[0])
+        assert abs(line[0] - (x_dot + mark + pad + label + gap)) <= 2
+
+
 def test_legend_validation():
     """_legend_rows normalizes rows; bad entries and too-wide rows raise."""
     one = bn._legend_rows([("red", "a", "dot"), ((0, 0, 1.0), "b", "line")])
@@ -2922,7 +3017,11 @@ def test_animate_views_caption_legend(tmp_path):
 
 
 def test_animate_views_spin(tmp_path):
-    """views with spin: every view turns; the frames differ."""
+    """views with spin: every view turns; the frames differ.
+
+    Each panel changes on its own and equals the single-view spin movie of
+    its view (the 3 columns next to the divider are left out).
+    """
     frames = _movie(
         tmp_path, "vspin", CENTERS, _conn(), views=("left", "dorsal"),
         spin=(0, 0, 1), n_frames=3,
@@ -2932,7 +3031,23 @@ def test_animate_views_spin(tmp_path):
     print("frame shapes", sizes, "px differing from frame 1", diffs)
     assert len(sizes) == 1 and min(diffs) > 100
     # not cropped: two full 320 x 200 views side by side under the titles
-    assert frames[0].shape == (200 + _head(640), 640, 3)
+    head = _head(640)
+    assert frames[0].shape == (200 + head, 640, 3)
+    panels = {"left": slice(0, 317), "dorsal": slice(323, 640)}
+    singles = {"left": slice(0, 317), "dorsal": slice(3, 320)}
+    for view, cols in panels.items():
+        single = _movie(
+            tmp_path, f"spin_{view}", CENTERS, _conn(), view=view, spin=(0, 0, 1),
+            n_frames=3,
+        )  # fmt: skip
+        panel = [a[head:, cols] for a in frames]
+        moved = [int((panel[k] != panel[0]).any(-1).sum()) for k in (1, 2)]
+        same = [int((p != s[:, singles[view]]).any(-1).sum())
+                for p, s in zip(panel, single, strict=True)]  # fmt: skip
+        print(view, "panel px differing from frame 1", moved,
+              "px differing from the single-view spin", same)  # fmt: skip
+        assert min(moved) > 100
+        assert same == [0, 0, 0]
 
 
 def test_legacy_caption_path_unchanged(tmp_path):
@@ -3931,15 +4046,27 @@ def test_n_jobs_blank_render(tmp_path):
 
 
 def test_animate_network_forwards_encoding(tmp_path):
-    """crf and faststart reach write_animation (sequential and parallel)."""
-    sizes = {}
-    for crf in (10, 40):
-        out = bn.animate_network(
-            CENTERS, _frames(), tmp_path / f"c{crf}.mp4", crf=crf, **_ANIM
-        )
-        sizes[crf] = out.stat().st_size
-    print("file sizes by crf:", sizes)
-    assert sizes[40] < sizes[10]
+    """crf and faststart reach write_animation (sequential and parallel).
+
+    x264 writes its settings, ``crf=<value>`` among them, into the stream, so
+    the encoded file shows the crf it was given.
+    """
+    for jobs in (1, 2):
+        sizes = {}
+        for crf in (10, 40):
+            out = bn.animate_network(
+                CENTERS, _frames(), tmp_path / f"c{crf}_{jobs}.mp4", crf=crf,
+                n_jobs=jobs, **_ANIM,
+            )  # fmt: skip
+            data = out.read_bytes()
+            sizes[crf] = len(data)
+            count = _mp4_count(out)
+            print(
+                f"n_jobs={jobs} crf={crf}: {sizes[crf]} bytes, {count} frames, "
+                f"x264 settings say crf={crf}: {f'crf={crf}.0'.encode() in data}"
+            )
+            assert count == 3 and f"crf={crf}.0".encode() in data
+        assert sizes[40] < sizes[10]
     for jobs in (1, 2):
         data = bn.animate_network(
             CENTERS, _frames(), tmp_path / f"fs{jobs}.mp4", faststart=True,
