@@ -73,3 +73,7 @@
 - macOS runners: one layout test differed (same cell-color lookup on the virtual GPU, expected fixed by 93e465f); on 3.10, numpy 2.2.6 emits a spurious matmul RuntimeWarning (inputs and result finite), now allowed in test_stats (2a208d8).
 - Reproduce Linux CI locally: Docker, ubuntu:26.04 amd64, apt libegl1 libegl-mesa0, pip install -e ".[dev]". Do this before the first push of any rendering change.
 - CI timings: tests about 10 min per Ubuntu job, 22-29 min per macOS/Windows job; docs 5 min; brainiak 13 min; candidate 17 min.
+
+## CI round 2 (59a1e15): docs, brainiak green; test matrix 14 of 15 green (all Linux, all macOS, Windows 3.10-3.13)
+- Windows 3.14: test_n_jobs_temp_folder_removed read an empty record file: a worker the pool terminated had created its record but not yet written it. Test records are now written under a .tmp name and renamed (tests only).
+- Local at 59a1e15: make test 1216 passed, 19 skipped; make docs succeeded; lint clean.

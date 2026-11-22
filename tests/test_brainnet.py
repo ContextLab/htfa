@@ -3487,20 +3487,27 @@ def _record(log, text):
     Processes appending to one file can overwrite each other's lines on
     Windows (append there seeks to the end, then writes), so each record is a
     file of its own, named so that sorting the names gives the order of writing.
+    The file is written under a ``.tmp`` name and then renamed: a worker the
+    pool terminates in the middle of writing leaves no record, not an empty one
+    (seen on Windows CI: a record file with no text).
     """
     import tempfile
     import time
 
     Path(log).mkdir(exist_ok=True)
-    fd, _ = tempfile.mkstemp(prefix=f"{time.time_ns():020d}-", dir=log)
+    fd, tmp = tempfile.mkstemp(prefix=f"{time.time_ns():020d}-", suffix=".tmp", dir=log)
     with os.fdopen(fd, "w") as f:
         f.write(text)
+    os.replace(tmp, tmp[: -len(".tmp")])
 
 
 def _records(log):
-    """The records added to ``log`` by `_record`, in order (none if no folder)."""
+    """The finished records added to ``log`` by `_record`, in order (none if
+    there is no folder)."""
     log = Path(log)
-    return [p.read_text() for p in sorted(log.iterdir())] if log.exists() else []
+    if not log.exists():
+        return []
+    return [p.read_text() for p in sorted(log.iterdir()) if p.suffix != ".tmp"]
 
 
 def _pids(log):
