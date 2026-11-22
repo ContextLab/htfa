@@ -3458,7 +3458,22 @@ def _frame_dirs():
 
 
 def _alive(pid):
-    """Whether process ``pid`` exists (a worker the pool has not reaped)."""
+    """Whether process ``pid`` exists and has not exited (on POSIX: a worker
+    the pool has not reaped)."""
+    if sys.platform == "win32":
+        # os.kill(pid, 0) is no probe on Windows (WinError 87; other signals
+        # terminate the process): open the process and see whether it exited.
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        synchronize, query_limited = 0x00100000, 0x1000
+        handle = kernel32.OpenProcess(synchronize | query_limited, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == 5  # access denied: it exists
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == 0x102  # WAIT_TIMEOUT
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -3466,15 +3481,35 @@ def _alive(pid):
     return True
 
 
-def _pids(path):
-    """Process ids written one per line to ``path`` (none if it does not exist)."""
-    path = Path(path)
-    return [int(s) for s in path.read_text().split()] if path.exists() else []
+def _record(log, text):
+    """Add ``text`` to ``log``, a folder holding one file per record.
+
+    Processes appending to one file can overwrite each other's lines on
+    Windows (append there seeks to the end, then writes), so each record is a
+    file of its own, named so that sorting the names gives the order of writing.
+    """
+    import tempfile
+    import time
+
+    Path(log).mkdir(exist_ok=True)
+    fd, _ = tempfile.mkstemp(prefix=f"{time.time_ns():020d}-", dir=log)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
 
 
-def _write_pid(path):
-    with open(path, "a") as f:
-        f.write(f"{os.getpid()}\n")
+def _records(log):
+    """The records added to ``log`` by `_record`, in order (none if no folder)."""
+    log = Path(log)
+    return [p.read_text() for p in sorted(log.iterdir())] if log.exists() else []
+
+
+def _pids(log):
+    """Process ids recorded by `_write_pid` in ``log``."""
+    return [int(s) for s in _records(log)]
+
+
+def _write_pid(log):
+    _record(log, str(os.getpid()))
 
 
 _ISOLATED = """
@@ -3675,11 +3710,10 @@ def _scenario_temp_folder_removed(files):
     workload.start()
     # compose is a closure, pickled by value like a notebook function; it
     # captures the log path and a stamp of image data
-    log, stamp = files / "seen.jsonl", np.full((8, 8, 3), (12, 34, 56), np.uint8)
+    log, stamp = files / "seen", np.full((8, 8, 3), (12, 34, 56), np.uint8)
 
     def compose(images, t):
-        with open(log, "a") as f:
-            f.write(json.dumps([os.getpid(), t, _frame_dirs()]) + "\n")
+        _record(log, json.dumps([os.getpid(), t, _frame_dirs()]))
         img = images[0].copy()
         img.paste(Image.fromarray(stamp), (0, 0))
         return img
@@ -3688,7 +3722,7 @@ def _scenario_temp_folder_removed(files):
         CENTERS, _frames(), files / "ok.mp4", n_jobs=2, compose=compose,
         frames_dir=files / "ok", **_ANIM,
     )  # fmt: skip
-    seen = [json.loads(s) for s in log.read_text().splitlines()]
+    seen = [json.loads(s) for s in _records(log)]
     print("worker calls (pid, t, folders seen):", seen)
     assert len(seen) == 3 and all(len(set(s[2]) - set(before)) == 1 for s in seen)
     assert sorted(s[1] for s in seen) == [0.0, 1.0, 2.0]
@@ -3704,7 +3738,7 @@ def _scenario_temp_folder_removed(files):
     after = _frame_dirs()
     print("after success:", after)
     assert after == before
-    errors, called = files / "errors.txt", files / "called.txt"
+    errors, called = files / "errors", files / "called"
 
     def refuse(images, t):
         _write_pid(called)  # every compose call, in every worker, first of all
@@ -3884,7 +3918,7 @@ def _scenario_restart_after_worker_death(files):
     import time
 
     files = Path(files)
-    marker, log = files / "died.txt", files / "drawn.jsonl"
+    marker, log = files / "died.txt", files / "drawn"
 
     def compose(images, t):
         if t == 2 and not marker.exists():
@@ -3895,8 +3929,7 @@ def _scenario_restart_after_worker_death(files):
                 time.sleep(0.05)
             marker.write_text(str(os.getpid()))
             os._exit(1)
-        with open(log, "a") as f:
-            f.write(json.dumps([os.getpid(), t]) + "\n")
+        _record(log, json.dumps([os.getpid(), t]))
         return images[0]
 
     E = np.stack([_conn(), -_conn(), _conn(0.6), -_conn(0.6)])
@@ -3907,7 +3940,7 @@ def _scenario_restart_after_worker_death(files):
     count = _mp4_count(out)
     names = sorted(p.name for p in (files / "f").iterdir())
     died = int(marker.read_text())
-    drawn = [json.loads(s) for s in log.read_text().splitlines()]
+    drawn = [json.loads(s) for s in _records(log)]
     print("worker that died:", died, "frames:", count, names)
     print("frames composed (pid, t), in order:", drawn)
     assert marker.exists() and count == 4
@@ -3940,7 +3973,7 @@ def _scenario_gives_up(files):
     from joblib.externals.loky.process_executor import TerminatedWorkerError
 
     files = Path(files)
-    pids = files / "pids.txt"
+    pids = files / "pids"
     before = _frame_dirs()
     start = time.perf_counter()
     # one frame: each pool gets one task and one worker, which records its pid
@@ -3976,7 +4009,7 @@ def _scenario_unpicklable_compose(files):
     )
 
     files = Path(files)
-    log = files / "unpickled.txt"
+    log = files / "unpickled"
     with pytest.raises(BrokenProcessPool) as err:
         bn.animate_network(
             CENTERS, _frames()[:1], files / "u.mp4", n_jobs=2,
@@ -4030,7 +4063,7 @@ def _scenario_blank_render(files):
     # one frame: each pool runs one task, whose worker records its pid when it
     # unpickles the captions (the blank check stops the frame before compose
     # or captions would run)
-    log = files / "pids.txt"
+    log = files / "pids"
     with pytest.raises(RuntimeError, match="5 restarts") as err:
         bn.animate_network(
             CENTERS, E, files / "par.mp4", n_jobs=2, captions=_PidCaptions(str(log)),
