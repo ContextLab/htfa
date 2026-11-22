@@ -8,6 +8,7 @@ the directed-forgetting-network-dynamics repository and skips without it.
 """
 
 import os
+import sys
 import warnings
 from pathlib import Path
 
@@ -2522,12 +2523,120 @@ for i in range(1, 101):
 """
 
 
+_NESTING = """
+import sys, tempfile, threading
+from pathlib import Path
+import numpy as np
+from htfa import brainnet as bn
+
+opts, edge_opts = bn._style({{"size": (320, 200)}})
+centers = np.array({centers})
+for n in (0, 1):
+    views = ["left"] * n
+    # closed in creation order (oldest first), which crashed with a pool per _Views
+    a = bn._Views(centers, np.ones(6), None, views, opts)
+    b = bn._Views(centers, np.ones(6), None, views, opts)
+    a.close()
+    b.close()
+    print("creation-order close, views:", n, flush=True)
+    # built on one thread, closed on another
+    box = []
+    t = threading.Thread(
+        target=lambda: box.append(bn._Views(centers, np.ones(6), None, views, opts))
+    )
+    t.start()
+    t.join()
+    box[0].close()
+    print("cross-thread close, views:", n, flush=True)
+# a public call on another thread: its pool is made and drained there
+shots = []
+t = threading.Thread(
+    target=lambda: shots.append(bn.plot_network(centers, size=(320, 200), snap=False))
+)
+t.start()
+t.join()
+print("plot_network on a thread:", shots[0].size, flush=True)
+
+
+def compose(images, t):
+    # a public call nested inside a movie's pool
+    inner = bn.plot_network(centers, size=(160, 100), snap=False, mesh=None)
+    images[0].paste(inner, (0, 0))
+    return images[0]
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    out = bn.animate_network(
+        centers, np.ones((2, 6, 6)), Path(tmp) / "n.mp4", compose=compose,
+        size=(320, 200), snap=False,
+    )
+    print("nested plot_network in compose:", out.stat().st_size > 0, flush=True)
+print("finished")
+"""
+
+
+def test_autorelease_pools_nest_and_cross_threads():
+    """No object owns an autorelease pool, so _Views close in any order and on
+    any thread, and public calls nest (a compose calling plot_network).
+
+    With a pool per `_Views`, closing two in creation order aborted the
+    process (SIGABRT, "Invalid autorelease pools are a fatal error") and
+    closing one on another thread crashed it (SIGSEGV), so this runs in its own
+    process.
+    """
+    import subprocess
+
+    run = subprocess.run(
+        [sys.executable, "-c", _NESTING.format(centers=CENTERS.tolist())],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    print("exit code", run.returncode, "stdout:", run.stdout, "stderr:", run.stderr,
+          sep="\n")  # fmt: skip
+    assert run.returncode == 0
+    assert run.stdout.splitlines()[-1] == "finished"
+    assert "nested plot_network in compose: True" in run.stdout
+
+
+def test_autorelease_without_pool_class():
+    """With no pool class (other systems, or VTK < 9.5) scenes render as with one.
+
+    `_autorelease(None)` is the path a VTK without ``vtkCocoaAutoreleasePool``
+    takes. That `_autorelease_pool_class` returns None for such a VTK is not
+    tested: this machine's VTK has the class, and patching VTK is not allowed.
+    """
+    import vtkmodules
+
+    cls = bn._autorelease_pool_class()
+    print("VTK", vtkmodules.__version__, sys.platform, "pool class:", cls)
+    if sys.platform == "darwin":
+        assert cls is not None and cls.__name__ == "vtkCocoaAutoreleasePool"
+    else:
+        assert cls is None
+    scene_opts, edge_opts = bn._style({"size": (320, 200)})
+    with bn._autorelease(None):
+        views = bn._Views(CENTERS, np.ones(6), None, ["left"], scene_opts)
+        try:
+            (image,) = views.draw(None, edge_opts)
+        finally:
+            views.close()
+    ref = bn.plot_network(CENTERS, sizes=np.ones(6), view="left", **_ANIM)
+    print("differing px", int((_rgb(image) != _rgb(ref)).any(-1).sum()))
+    np.testing.assert_array_equal(_rgb(image), _rgb(ref))
+
+
 @pytest.mark.slow
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="tests the release of macOS (Cocoa) render windows; other systems "
+    "have no autorelease pool",
+)
 def test_repeated_renders_release_memory(ch2):
     """100 renders in one process: peak memory stops growing, no context leak.
 
     Each render opens and closes VTK render windows. Before they were released
-    (on macOS: the autorelease pool of `_Views`), the peak resident memory
+    (on macOS: the autorelease pool of `_autorelease`), the peak resident memory
     grew by 5 to 9 MB per render with the ch2 mesh at this size, without
     leveling off, and macOS printed "Context leak detected" after about 40 renders.
     With them released it still rises over the first 60 or so renders (the
@@ -2536,7 +2645,6 @@ def test_repeated_renders_release_memory(ch2):
     that nothing else is measured.
     """
     import subprocess
-    import sys
 
     run = subprocess.run(
         [sys.executable, "-c", _RENDER_LOOP.format(centers=CENTERS.tolist())],
@@ -2547,6 +2655,9 @@ def test_repeated_renders_release_memory(ch2):
     print("stdout (render, peak MB):", run.stdout, "stderr:", run.stderr, sep="\n")
     assert run.returncode == 0
     peaks = dict(np.array(run.stdout.split(), float).reshape(-1, 2))
+    for i in range(20, 101, 10):
+        growth = (peaks[i] - peaks[i - 10]) / 10
+        print(f"renders {i - 9}-{i}: peak growth {growth:.2f} MB per render")
     per_render = (peaks[100] - peaks[60]) / 40
     print(f"peak growth over renders 61-100: {per_render:.2f} MB per render")
     assert per_render < 3.0

@@ -37,6 +37,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -1640,20 +1641,54 @@ class _Scene:
         self.pl.close()
 
 
+def _autorelease_pool_class() -> Any:
+    """VTK's ``vtkCocoaAutoreleasePool`` class on macOS, else None.
+
+    Also None with VTK older than 9.5, which does not have the class: such
+    installations render without a pool, as htfa 0.1.0 did. pyvista (with
+    VTK) is loaded through `lazy_import` first, so a missing ``brain3d``
+    extra is installed (or reported) as for any other plot.
+    """
+    if sys.platform != "darwin":
+        return None
+    lazy_import("pyvista", "brain3d", "network plots")
+    try:
+        from vtkmodules.vtkRenderingUI import vtkCocoaAutoreleasePool
+    except ImportError:  # VTK < 9.5
+        return None
+    return vtkCocoaAutoreleasePool
+
+
+@contextmanager
+def _autorelease(pool_class: Any) -> Iterator[None]:
+    """A Cocoa autorelease pool of ``pool_class`` (none if None), drained on exit.
+
+    VTK's Cocoa render windows hand their OpenGL contexts and buffers to an
+    autorelease pool, and a Python process without a Cocoa event loop never
+    drains one, so without a pool every render window stays in memory (5 to
+    9 MB per render with the ch2 mesh at 320 x 200; macOS prints "Context
+    leak detected" after about 40 of them). Pools must be released on the
+    thread that made them, newest first, so no object owns one: the function
+    that builds, draws and closes scenes enters this in its own body, around
+    all of that, and nested calls (a ``compose`` that calls `plot_network`)
+    nest their pools strictly.
+    """
+    pool = None if pool_class is None else pool_class()
+    try:
+        yield
+    finally:
+        if pool is not None:
+            pool.Release()
+
+
 class _Views:
     """One `_Scene` per view, drawn together frame by frame.
 
     Built from plain (picklable) arguments: ``scene_opts`` as returned by
     `_style` (its ``view`` is replaced by each name of ``views``) and
     ``scene_kwargs``, the other `_Scene` keywords. If a scene fails to build,
-    those already built are closed.
-
-    On macOS the scenes live inside a Cocoa autorelease pool, released by
-    `close` after the scenes are closed. VTK's Cocoa render windows hand their
-    OpenGL contexts and buffers to an autorelease pool, and a Python process
-    without a Cocoa event loop never drains one, so without this every render
-    window stays in memory (5 to 9 MB per render with the ch2 mesh at 320 x
-    200; macOS prints "Context leak detected" after about 40 of them).
+    those already built are closed. Build, draw and close it inside
+    `_autorelease` (as `plot_network` and `_movie_views` do).
     """
 
     def __init__(
@@ -1665,11 +1700,6 @@ class _Views:
         scene_opts: dict[str, Any],
         **scene_kwargs: Any,
     ) -> None:
-        self._pool: Any = None
-        if sys.platform == "darwin":
-            from vtkmodules.vtkRenderingUI import vtkCocoaAutoreleasePool
-
-            self._pool = vtkCocoaAutoreleasePool()
         self.scenes: list[_Scene] = []
         self._spin: list[tuple[Array, float]] = []
         try:
@@ -1719,9 +1749,6 @@ class _Views:
     def close(self) -> None:
         for scene in self.scenes:
             scene.close()
-        if self._pool is not None:
-            self._pool.Release()
-            self._pool = None
 
 
 def _rgb(color: Any) -> tuple[float, float, float]:
@@ -2040,28 +2067,30 @@ def plot_network(
     E = None
     if connectivity is not None:
         E = _connectivity(connectivity, len(centers), 2)
-    scenes = _Views(
-        centers,
-        node_sizes,
-        load_mesh(mesh),
-        [scene_opts["view"]] if layout is None else layout[0],
-        scene_opts,
-        node_opacity=opacity,
-        component_surfaces=surfaces,
-        component_weights=None if components is None else components.mixing,
-        lobe_negative_color=lobe_negative_color,
-    )
+    brain = load_mesh(mesh)
     crop = None
-    try:
-        if layout is not None:
-            # crop around the nodes and mesh only, as in animate_network, so
-            # edges never change the framing
-            crop = content_box(
-                scenes.draw(None, edge_opts), background=scene_opts["background"]
-            )
-        images = scenes.draw(E, edge_opts)
-    finally:
-        scenes.close()
+    with _autorelease(_autorelease_pool_class()):
+        scenes = _Views(
+            centers,
+            node_sizes,
+            brain,
+            [scene_opts["view"]] if layout is None else layout[0],
+            scene_opts,
+            node_opacity=opacity,
+            component_surfaces=surfaces,
+            component_weights=None if components is None else components.mixing,
+            lobe_negative_color=lobe_negative_color,
+        )
+        try:
+            if layout is not None:
+                # crop around the nodes and mesh only, as in animate_network,
+                # so edges never change the framing
+                crop = content_box(
+                    scenes.draw(None, edge_opts), background=scene_opts["background"]
+                )
+            images = scenes.draw(E, edge_opts)
+        finally:
+            scenes.close()
     if layout is None:
         img = images[0]
     else:
@@ -2481,8 +2510,7 @@ def animate_network(
         compose,
     )
     if n_jobs == 1:
-        scenes = _movie_views(build, rotations)
-        try:
+        with _movie_views(build, rotations) as scenes:
             movie = movie._replace(crop=_movie_crop(scenes, movie))
 
             def frames() -> Iterator[Any]:
@@ -2491,19 +2519,14 @@ def animate_network(
                     yield _frame_out(img, k, jpeg_quality, folder)
 
             return write_animation(frames(), out, fps=fps, crf=crf, faststart=faststart)
-        finally:
-            scenes.close()
     # select the offscreen window here (Linux without a display), so that the
     # workers inherit the choice instead of each probing for it
     _headless_window()
     work = Path(tempfile.mkdtemp(prefix="htfa-frames-"))
     try:
         if layout is not None and compose is None:
-            scenes = _movie_views(build, None)
-            try:
+            with _movie_views(build, None) as scenes:
                 movie = movie._replace(crop=_movie_crop(scenes, movie))
-            finally:
-                scenes.close()
 
         def drawn() -> Iterator[Any]:
             _draw_parallel(build, movie, n_jobs, work)
@@ -2601,16 +2624,21 @@ def _is_blank(img: Any, background: Any) -> bool:
     return bool(corners.any()) and float(dark.mean()) > 0.05
 
 
-def _movie_views(build: _ViewsArgs, rotations: Array | None) -> _Views:
-    """The scenes of a movie, with the spin camera fitted when there is a spin."""
-    scenes = _Views(*build[:5], **build.kwargs)
-    if rotations is not None:
+@contextmanager
+def _movie_views(build: _ViewsArgs, rotations: Array | None) -> Iterator[_Views]:
+    """The scenes of a movie, with the spin camera fitted when there is a spin.
+
+    They are built inside `_autorelease` and closed, before its pool is
+    drained, when the ``with`` block ends.
+    """
+    with _autorelease(_autorelease_pool_class()):
+        scenes = _Views(*build[:5], **build.kwargs)
         try:
-            scenes.fit_spin(rotations)
-        except BaseException:
+            if rotations is not None:
+                scenes.fit_spin(rotations)
+            yield scenes
+        finally:
             scenes.close()
-            raise
-    return scenes
 
 
 def _movie_crop(scenes: _Views, movie: _Movie) -> tuple[int, int, int, int] | None:
@@ -2667,15 +2695,12 @@ def _draw_chunk(build: _ViewsArgs, movie: _Movie, ks: list[int], work: str) -> N
     Each file is written under a temporary name and renamed, so it exists only
     when complete. The scenes are built here and closed when the task ends.
     """
-    scenes = _movie_views(build, movie.rotations)
-    try:
+    with _movie_views(build, movie.rotations) as scenes:
         for k in ks:
             img = _draw_frame(scenes, movie, k, check_blank=True)
             path = os.path.join(work, f"{k:05d}.png")
             img.save(path + ".part", format="PNG")
             os.replace(path + ".part", path)
-    finally:
-        scenes.close()
 
 
 def _draw_parallel(build: _ViewsArgs, movie: _Movie, n_jobs: int, work: Path) -> None:

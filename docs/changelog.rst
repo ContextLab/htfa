@@ -42,7 +42,8 @@ Network plots and animations
 - On macOS, network plots and animations release their closed render windows.
   In 0.1.0 each render kept its window in memory (5 to 9 MB per render with
   the ch2 mesh), and after about 40 renders in one process macOS printed
-  "Context leak detected".
+  "Context leak detected". This uses VTK's ``vtkCocoaAutoreleasePool`` (VTK
+  9.5 and later); with an older VTK, rendering runs as in 0.1.0.
 
 0.1.0
 -----
