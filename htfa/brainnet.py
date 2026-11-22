@@ -1835,9 +1835,9 @@ def plot_network(
         Edge weights (upper triangle used). ``None`` draws nodes only.
     sizes : array of shape (K,), optional
         Node sizes; mapped linearly onto 2-7 mm radii (`node_radius`; see the
-        ``radius_*`` style options). (1, K) and (K, 1) arrays count as (K,);
-        any other 2D array raises ``ValueError`` here (one row per window is
-        for `animate_network`).
+        ``radius_*`` style options). K values in any shape, such as (1, K)
+        or (K, 1), count as (K,); a (T, K) array with T > 1 raises
+        ``ValueError`` here (one row per window is for `animate_network`).
         Defaults to the (effective, with ``snap``) widths, or equal sizes
         (4 mm) when no widths are known.
     widths : array of shape (K,), optional
@@ -1956,8 +1956,10 @@ def plot_network(
     ValueError
         If ``view`` is given together with ``views``, ``views``, ``legend``
         or ``frame_size`` is malformed, a legend row is wider than
-        ``frame_size``, ``sizes`` is not (K,), or ``node_color`` has a shape
-        other than one color or K colors.
+        ``frame_size``, ``sizes`` does not hold exactly K values (K values
+        in any shape, such as (1, K) or (K, 1), are accepted; (T, K) sizes
+        are for `animate_network`), or ``node_color`` has a shape other than
+        one color or K colors.
 
     Examples
     --------

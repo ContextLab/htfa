@@ -23,8 +23,9 @@ Network plots and animations
   still computes ISFC.
 - ``views`` draws several views side by side, ``legend`` adds rows of colored
   dots and lines with labels, and ``frame_size`` sets the exact frame size.
-  One crop box serves every view and frame. Passing any of the three selects
-  the layout path; otherwise output is as in 0.1.0.
+  One crop box serves every view and frame; with ``spin`` the views are not
+  cropped. Passing any of the three selects the layout path. A call that uses
+  none of the new options gives the same output as in 0.1.0.
 - :func:`htfa.animate_network` accepts ``compose``, a callable
   ``compose(images, t)`` that builds each frame from the per-view images, and
   ``n_jobs``, which draws frames in worker processes. With ``n_jobs`` other
