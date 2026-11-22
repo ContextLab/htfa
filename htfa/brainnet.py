@@ -38,7 +38,7 @@ import urllib.request
 import zipfile
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -2103,6 +2103,9 @@ def animate_network(
     legend: Any = None,
     frame_size: tuple[int, int] | None = None,
     compose: Callable[[list[Any], float], Any] | None = None,
+    n_jobs: int = 1,
+    crf: int | None = None,
+    faststart: bool = False,
     **style: Any,
 ) -> Path:
     """Render a ``(T, K, K)`` connectivity series as an mp4 or GIF.
@@ -2198,6 +2201,22 @@ def animate_network(
     jpeg_quality : int, optional
         JPEG-compress each frame at this quality before it goes into the
         movie. Lower quality values increase compression artifacts.
+    n_jobs : int, default 1
+        Number of worker processes drawing frames (joblib's convention:
+        ``-1`` uses every CPU). With 1, frames are drawn in this process and
+        encoded as they are drawn. Otherwise this call starts its own pool
+        (not joblib's shared one), each worker draws a contiguous run of
+        frames into a temporary folder (removed afterwards, also after an
+        error), and the movie is encoded from there once all are drawn.
+        ``compose`` and a ``captions`` callable then run in the workers, so
+        they must be picklable by cloudpickle (functions defined in a
+        notebook are). A view rendered (nearly) black on a light background
+        (more than 5 percent of its pixels with every channel below 10) or a
+        worker that dies stops the pool; a new one redraws the missing
+        frames, up to 5 times, then ``RuntimeError``. Other errors are
+        raised at once.
+    crf, faststart
+        mp4 encoding options, as in `write_animation`.
 
     Returns
     -------
@@ -2224,6 +2243,15 @@ def animate_network(
     >>> animate_network(centers, C, "spin.gif", fps=12, duration=4,
     ...                 spin=(0, 0, 1), size=(480, 300))  # doctest: +SKIP
     """
+    if (
+        isinstance(n_jobs, bool)
+        or not isinstance(n_jobs, (int, np.integer))
+        or n_jobs == 0
+    ):
+        raise ValueError(
+            "n_jobs must be a nonzero integer (1: draw in this process, -1: "
+            f"every CPU), got {n_jobs!r}"
+        )
     if compose is not None and (
         legend is not None or captions is not None or frame_size is not None
     ):
@@ -2312,58 +2340,229 @@ def animate_network(
     folder = None if frames_dir is None else Path(frames_dir)
     if folder is not None:
         folder.mkdir(parents=True, exist_ok=True)
-    scenes = _Views(
+    build = _ViewsArgs(
         centers,
         node_sizes,
         load_mesh(mesh),
         [scene_opts["view"]] if layout is None else layout[0],
         scene_opts,
-        node_opacity=opacity,
-        component_surfaces=surfaces,
-        component_weights=None if components is None else components.mixing,
-        lobe_negative_color=lobe_negative_color,
+        {
+            "node_opacity": opacity,
+            "component_surfaces": surfaces,
+            "component_weights": None if components is None else components.mixing,
+            "lobe_negative_color": lobe_negative_color,
+        },
     )
-    crop = None
+    movie = _Movie(
+        times,
+        T,
+        E,
+        edge_opts,
+        interpolation,
+        radii,
+        colors,
+        rotations,
+        caption,
+        layout,
+        None,
+        scene_opts["background"],
+        compose,
+    )
+    if n_jobs == 1:
+        scenes = _movie_views(build, rotations)
+        try:
+            movie = movie._replace(crop=_movie_crop(scenes, movie))
 
-    def frames() -> Iterator[Any]:
-        if rotations is not None:
-            scenes.fit_spin(rotations)
-        for k, t in enumerate(times):
-            # fixed (K, K) edges: the same matrix at every t
-            at = None
-            if E is not None:
-                at = E[0] if len(E) == 1 else _at_time(E, float(t), interpolation)
-            images = scenes.draw(
-                at,
-                edge_opts,
-                None if radii is None else _at_time(radii, float(t), interpolation),
-                None if colors is None else colors[_nearest(float(t), T)],
-                None if rotations is None else rotations[k],
-            )
-            text = None if caption is None else caption(float(t))
-            img = _finish_frame(
-                images, float(t), text, layout, crop, scene_opts["background"], compose
-            )
-            if jpeg_quality is not None:
-                img = _jpeg(img, jpeg_quality)
-            if folder is not None:
-                ext = ".png" if jpeg_quality is None else ".jpg"
-                _save(img, folder / f"{k + 1}{ext}", jpeg_quality)
-            yield img
+            def frames() -> Iterator[Any]:
+                for k in range(len(times)):
+                    img = _draw_frame(scenes, movie, k)
+                    yield _frame_out(img, k, jpeg_quality, folder)
 
+            return write_animation(frames(), out, fps=fps, crf=crf, faststart=faststart)
+        finally:
+            scenes.close()
+    # select the offscreen window here (Linux without a display), so that the
+    # workers inherit the choice instead of each probing for it
+    _headless_window()
+    work = Path(tempfile.mkdtemp(prefix="htfa-frames-"))
     try:
-        # compose gets the uncropped views
-        if layout is not None and compose is None and rotations is None:
-            # one crop for all views and frames: no edges, the largest spheres
-            # (the scene starts with them, see above)
-            crop = content_box(
-                scenes.draw(None, edge_opts), background=scene_opts["background"]
-            )
-        elif layout is not None and compose is None:
-            crop = (0, 0, *scenes.scenes[0].size)
-        return write_animation(frames(), out, fps=fps)
+        if layout is not None and compose is None:
+            scenes = _movie_views(build, None)
+            try:
+                movie = movie._replace(crop=_movie_crop(scenes, movie))
+            finally:
+                scenes.close()
+
+        def drawn() -> Iterator[Any]:
+            _draw_parallel(build, movie, n_jobs, work)
+            for k in range(len(times)):
+                yield _frame_out(_open(work / f"{k:05d}.png"), k, jpeg_quality, folder)
+
+        return write_animation(drawn(), out, fps=fps, crf=crf, faststart=faststart)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+class _ViewsArgs(NamedTuple):
+    """Plain (picklable) arguments of `_Views`: a worker builds its own."""
+
+    centers: Array
+    node_sizes: Array
+    mesh: tuple[Array, Array] | None
+    views: list[str]
+    scene_opts: dict[str, Any]
+    kwargs: dict[str, Any]
+
+
+class _Movie(NamedTuple):
+    """What draws each frame of `animate_network`, as plain (picklable) values."""
+
+    times: Array  # window time of each movie frame
+    T: int  # number of windows
+    E: Array | None  # (T, K, K) or (1, K, K) connectivity, or None
+    edge_opts: dict[str, Any]
+    interpolation: str
+    radii: Array | None  # (T, K) radii
+    colors: Array | None  # (T, K, 3) colors
+    rotations: Array | None  # (n, 3, 3) spin
+    caption: Callable[[float], str] | None
+    layout: Any  # as returned by _layout_args
+    crop: tuple[int, int, int, int] | None
+    background: Any
+    compose: Callable[[list[Any], float], Any] | None
+
+
+_MAX_RESTARTS = 5  # new pools after a blank render or a dead worker
+
+
+class _BlankRender(RuntimeError):
+    """A view came back (nearly) black: a failed off-screen render."""
+
+
+def _is_blank(img: Any, background: Any) -> bool:
+    """Whether ``img`` is a failed render: over 5 percent of pixels near black.
+
+    Near black is a max channel below 10 (0-255). A dark ``background`` (max
+    channel below 40) is not checked: the result is then always False.
+    """
+    if max(_rgb(background)) * 255 < 40:
+        return False
+    a = np.asarray(img.convert("RGB"))
+    return float((a.max(axis=2) < 10).mean()) > 0.05
+
+
+def _movie_views(build: _ViewsArgs, rotations: Array | None) -> _Views:
+    """The scenes of a movie, with the spin camera fitted when there is a spin."""
+    scenes = _Views(*build[:5], **build.kwargs)
+    if rotations is not None:
+        try:
+            scenes.fit_spin(rotations)
+        except BaseException:
+            scenes.close()
+            raise
+    return scenes
+
+
+def _movie_crop(scenes: _Views, movie: _Movie) -> tuple[int, int, int, int] | None:
+    """The one crop box of a movie's layout (None without layout or with compose)."""
+    if movie.layout is None or movie.compose is not None:
+        return None  # compose gets the uncropped views
+    if movie.rotations is not None:
+        return (0, 0, *scenes.scenes[0].size)
+    # one crop for all views and frames: no edges, the largest spheres (the
+    # scenes start with them)
+    return content_box(scenes.draw(None, movie.edge_opts), background=movie.background)
+
+
+def _draw_frame(
+    scenes: _Views, movie: _Movie, k: int, check_blank: bool = False
+) -> Any:
+    """Movie frame ``k`` (before `_frame_out`); `_BlankRender` if checked and black."""
+    t = float(movie.times[k])
+    # fixed (K, K) edges: the same matrix at every t
+    at = None
+    if movie.E is not None:
+        E = movie.E
+        at = E[0] if len(E) == 1 else _at_time(E, t, movie.interpolation)
+    images = scenes.draw(
+        at,
+        movie.edge_opts,
+        None if movie.radii is None else _at_time(movie.radii, t, movie.interpolation),
+        None if movie.colors is None else movie.colors[_nearest(t, movie.T)],
+        None if movie.rotations is None else movie.rotations[k],
+    )
+    if check_blank:
+        for v, img in enumerate(images):
+            if _is_blank(img, movie.background):
+                raise _BlankRender(f"view {v + 1} of frame {k + 1} rendered black")
+    text = None if movie.caption is None else movie.caption(t)
+    return _finish_frame(
+        images, t, text, movie.layout, movie.crop, movie.background, movie.compose
+    )
+
+
+def _frame_out(img: Any, k: int, jpeg_quality: int | None, folder: Path | None) -> Any:
+    """Movie frame ``k`` as encoded: JPEG round trip, copy in ``frames_dir``."""
+    if jpeg_quality is not None:
+        img = _jpeg(img, jpeg_quality)
+    if folder is not None:
+        ext = ".png" if jpeg_quality is None else ".jpg"
+        _save(img, folder / f"{k + 1}{ext}", jpeg_quality)
+    return img
+
+
+def _draw_chunk(build: _ViewsArgs, movie: _Movie, ks: list[int], work: str) -> None:
+    """Worker task: draw frames ``ks`` into ``work`` as ``NNNNN.png`` (0-based).
+
+    Each file is written under a temporary name and renamed, so it exists only
+    when complete. The scenes are built here and closed when the task ends.
+    """
+    scenes = _movie_views(build, movie.rotations)
+    try:
+        for k in ks:
+            img = _draw_frame(scenes, movie, k, check_blank=True)
+            path = os.path.join(work, f"{k:05d}.png")
+            img.save(path + ".part", format="PNG")
+            os.replace(path + ".part", path)
     finally:
         scenes.close()
+
+
+def _draw_parallel(build: _ViewsArgs, movie: _Movie, n_jobs: int, work: Path) -> None:
+    """Draw every frame of ``movie`` into ``work`` with this call's own pool.
+
+    Frames are split into contiguous chunks, one per worker. After a blank
+    render or a dead worker the pool is stopped with its workers and a new
+    one draws the frames still missing, up to `_MAX_RESTARTS` times.
+    """
+    from joblib import effective_n_jobs
+    from joblib.externals.loky import ProcessPoolExecutor, as_completed
+    from joblib.externals.loky.process_executor import BrokenProcessPool
+
+    n = len(movie.times)
+    error: BaseException | None = None
+    for attempt in range(_MAX_RESTARTS + 2):
+        missing = [k for k in range(n) if not (work / f"{k:05d}.png").exists()]
+        if not missing:
+            return
+        if attempt > _MAX_RESTARTS:
+            raise RuntimeError(
+                f"{len(missing)} of {n} frames not drawn after {_MAX_RESTARTS} "
+                f"restarts of the worker pool; last error: {error!r}"
+            ) from error
+        chunks = np.array_split(missing, min(effective_n_jobs(n_jobs), len(missing)))
+        pool = ProcessPoolExecutor(max_workers=len(chunks))
+        try:
+            futures = [
+                pool.submit(_draw_chunk, build, movie, c.tolist(), str(work))
+                for c in chunks
+            ]
+            for future in as_completed(futures):
+                future.result()
+        except (_BlankRender, BrokenProcessPool) as err:
+            error = err
+        finally:
+            pool.shutdown(wait=True, kill_workers=True)
 
 
 # ------------------------------------------------------------------ animations

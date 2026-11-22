@@ -3015,3 +3015,271 @@ def test_compose_odd_size_mp4(tmp_path):
         reader.close()
     print(shape)
     assert shape[:2] == (200, 320)
+
+
+# ------------------------------------------------------- parallel rendering
+# Worker-side callables reach the worker processes pickled (cloudpickle), so
+# they carry their marker or log path through functools.partial: a global set
+# in this process does not reach them.
+
+
+def _frame_dirs():
+    """htfa frame folders now in the temporary directory."""
+    import tempfile
+
+    return sorted(p.name for p in Path(tempfile.gettempdir()).glob("htfa-frames-*"))
+
+
+def _alive(pid):
+    """Whether process ``pid`` exists (a worker the pool has not reaped)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _listing_compose(log, images, t):
+    """Record the htfa frame folders visible to the worker; the first view as is."""
+    import json
+
+    with open(log, "a") as f:
+        f.write(json.dumps([os.getpid(), t, _frame_dirs()]) + "\n")
+    return images[0]
+
+
+def _raising_compose(log, images, t):
+    """Raise ValueError for t == 2 (logging each such call); else the first view."""
+    if t == 2:
+        with open(log, "a") as f:
+            f.write(f"{os.getpid()} {t}\n")
+        raise ValueError(f"compose refuses t={t}")
+    return images[0]
+
+
+def _die_once_compose(marker, images, t):
+    """End this worker process the first time t == 2 is drawn (marker records it)."""
+    if t == 2 and not os.path.exists(marker):
+        Path(marker).write_text(str(os.getpid()))
+        os._exit(1)
+    return images[0]
+
+
+def _die_compose(images, t):
+    os._exit(1)
+
+
+def _mp4_count(path):
+    import imageio.v2 as iio
+
+    reader = iio.get_reader(path, "ffmpeg")
+    try:
+        return reader.count_frames()
+    finally:
+        reader.close()
+
+
+def _jobs_pair(tmp_path, name, connectivity, n, suffix=".mp4", **kw):
+    """The same movie with n_jobs=1 and n_jobs=2; returns both frame folders."""
+    import time
+
+    folders = []
+    for jobs in (1, 2):
+        folder = tmp_path / f"{name}{jobs}"
+        start = time.perf_counter()
+        out = bn.animate_network(
+            CENTERS, connectivity, tmp_path / f"{name}{jobs}{suffix}",
+            frames_dir=folder, n_jobs=jobs, **{**_ANIM, **kw},
+        )  # fmt: skip
+        names = sorted(p.name for p in folder.iterdir())
+        print(f"{name} n_jobs={jobs}: {time.perf_counter() - start:.1f} s, {names}")
+        assert out.stat().st_size > 0
+        folders.append(folder)
+    return folders
+
+
+def _assert_same_frames(folders, names):
+    for folder in folders:
+        assert sorted(p.name for p in folder.iterdir()) == sorted(names)
+    for name in names:
+        d = bn.image_diff(folders[0] / name, folders[1] / name)
+        print(name, "image_diff n_jobs=1 vs 2:", d)
+        assert d < 1e-3
+
+
+def test_n_jobs_matches_sequential(tmp_path):
+    """Two views, legend, captions, (T, K) sizes: n_jobs=2 frames equal n_jobs=1."""
+    T = 6
+    E = np.stack([_conn(0.6 * np.cos(t)) * (-1) ** t for t in range(T)])
+    sizes = np.random.default_rng(1).random((T, len(CENTERS))) + 0.5
+    folders = _jobs_pair(
+        tmp_path, "par", E, T, sizes=sizes, views=("left", "dorsal"),
+        legend=PN_LEGEND, captions=[f"window {t}" for t in range(T)],
+    )  # fmt: skip
+    _assert_same_frames(folders, [f"{k}.png" for k in range(1, T + 1)])
+    for jobs in (1, 2):
+        count = _mp4_count(tmp_path / f"par{jobs}.mp4")
+        print(f"n_jobs={jobs} movie frames:", count)
+        assert count == T
+
+
+def test_n_jobs_temp_folder_removed(tmp_path):
+    """The call's frame folder exists while workers draw, and is removed after
+    success and after a compose ValueError (raised once, not retried)."""
+    import json
+
+    before = _frame_dirs()
+    print("htfa frame folders before:", before)
+    log = tmp_path / "seen.jsonl"
+    from functools import partial
+
+    bn.animate_network(
+        CENTERS, _frames(), tmp_path / "ok.mp4", n_jobs=2,
+        compose=partial(_listing_compose, str(log)), **_ANIM,
+    )  # fmt: skip
+    seen = [json.loads(s) for s in log.read_text().splitlines()]
+    print("worker calls (pid, t, folders seen):", seen)
+    assert len(seen) == 3 and all(len(set(s[2]) - set(before)) == 1 for s in seen)
+    workers = {s[0] for s in seen}
+    assert os.getpid() not in workers  # drawn in workers
+    alive = [pid for pid in workers if _alive(pid)]
+    print("worker pids", workers, "still alive after the call:", alive)
+    assert not alive
+    after = _frame_dirs()
+    print("after success:", after)
+    assert after == before
+    errors = tmp_path / "errors.txt"
+    with pytest.raises(ValueError, match="compose refuses t=2.0") as err:
+        bn.animate_network(
+            CENTERS, _frames(), tmp_path / "bad.mp4", n_jobs=2,
+            compose=partial(_raising_compose, str(errors)), **_ANIM,
+        )  # fmt: skip
+    print("raised:", type(err.value).__name__, err.value)
+    calls = errors.read_text().splitlines()
+    print("compose calls at t=2:", calls, "alive:", _alive(int(calls[0].split()[0])))
+    assert len(calls) == 1 and not _alive(int(calls[0].split()[0]))
+    assert not (tmp_path / "bad.mp4").exists()
+    after = _frame_dirs()
+    print("after error:", after)
+    assert after == before
+
+
+def test_n_jobs_more_workers_than_frames(tmp_path):
+    """T=1 with n_jobs=2 and T=2 with n_jobs=8 write complete movies."""
+    for T, jobs in ((1, 2), (2, 8)):
+        E = np.stack([_conn(), -_conn()])[:T]
+        out = bn.animate_network(
+            CENTERS, E, tmp_path / f"m{T}.mp4", n_jobs=jobs,
+            frames_dir=tmp_path / f"f{T}", **_ANIM,
+        )  # fmt: skip
+        count = _mp4_count(out)
+        names = sorted(p.name for p in (tmp_path / f"f{T}").iterdir())
+        print(f"T={T} n_jobs={jobs}: {count} movie frames, {names}")
+        assert count == T and names == [f"{k}.png" for k in range(1, T + 1)]
+
+
+def test_n_jobs_jpeg_and_gif(tmp_path):
+    """jpeg_quality gives .jpg frames as in the sequential path; GIF output works."""
+    folders = _jobs_pair(tmp_path, "jpg", _frames(), 3, jpeg_quality=80)
+    _assert_same_frames(folders, [f"{k}.jpg" for k in (1, 2, 3)])
+    folders = _jobs_pair(tmp_path, "gif", _frames(), 3, suffix=".gif")
+    _assert_same_frames(folders, [f"{k}.png" for k in (1, 2, 3)])
+    for jobs in (1, 2):
+        with Image.open(tmp_path / f"gif{jobs}.gif") as g:
+            print(f"n_jobs={jobs} gif frames:", g.n_frames, g.size)
+            assert g.n_frames == 3 and g.size == (320, 200)
+
+
+def test_n_jobs_spin(tmp_path):
+    """Spin frames drawn by two workers equal the sequential ones."""
+    folders = _jobs_pair(tmp_path, "spin", _conn(), 4, n_frames=4, spin=(0, 0, 1))
+    _assert_same_frames(folders, [f"{k}.png" for k in (1, 2, 3, 4)])
+
+
+def test_is_blank():
+    black = Image.new("RGB", (320, 200), "black")
+    assert bn._is_blank(black, "white")
+    assert bn._is_blank(black, (0.9, 0.9, 0.9))
+    # a dark background is not checked
+    assert not bn._is_blank(black, "black")
+    assert not bn._is_blank(black, (0.15, 0.1, 0.1))  # max channel 38 < 40
+    render = bn.plot_network(CENTERS, _conn(), **_ANIM)
+    a = np.asarray(render)
+    print("render near-black fraction:", (a.max(axis=2) < 10).mean())
+    assert not bn._is_blank(render, "white")
+    # 10 percent of the pixels black on white is blank; 4 percent is not
+    for frac, want in ((0.10, True), (0.04, False)):
+        a = np.full((200, 320, 3), 255, np.uint8)
+        a[: int(200 * frac)] = 0
+        blank = bn._is_blank(Image.fromarray(a), "white")
+        print(f"{frac:.0%} black rows -> blank={blank}")
+        assert blank is want
+
+
+def test_n_jobs_restart_after_worker_death(tmp_path):
+    """A worker that dies on one frame is replaced; the movie is complete."""
+    from functools import partial
+
+    marker = tmp_path / "died.txt"
+    E = np.stack([_conn(), -_conn(), _conn(0.6), -_conn(0.6)])
+    out = bn.animate_network(
+        CENTERS, E, tmp_path / "r.mp4", n_jobs=2, frames_dir=tmp_path / "f",
+        compose=partial(_die_once_compose, str(marker)), **_ANIM,
+    )  # fmt: skip
+    count = _mp4_count(out)
+    names = sorted(p.name for p in (tmp_path / "f").iterdir())
+    print("worker that died:", marker.read_text(), "frames:", count, names)
+    assert marker.exists() and count == 4
+    assert names == [f"{k}.png" for k in (1, 2, 3, 4)]
+
+
+def test_n_jobs_gives_up(tmp_path):
+    """Workers that always die: RuntimeError after 5 restarts, folder removed."""
+    import time
+
+    before = _frame_dirs()
+    start = time.perf_counter()
+    with pytest.raises(RuntimeError, match="5 restarts") as err:
+        bn.animate_network(
+            CENTERS, _frames(), tmp_path / "g.mp4", n_jobs=2, compose=_die_compose,
+            **_ANIM,
+        )  # fmt: skip
+    elapsed = time.perf_counter() - start
+    print(f"gave up after {elapsed:.1f} s:", err.value)
+    assert elapsed < 300
+    assert _frame_dirs() == before
+    assert not (tmp_path / "g.mp4").exists()
+
+
+def test_animate_network_forwards_encoding(tmp_path):
+    """crf and faststart reach write_animation (sequential and parallel)."""
+    sizes = {}
+    for crf in (10, 40):
+        out = bn.animate_network(
+            CENTERS, _frames(), tmp_path / f"c{crf}.mp4", crf=crf, **_ANIM
+        )
+        sizes[crf] = out.stat().st_size
+    print("file sizes by crf:", sizes)
+    assert sizes[40] < sizes[10]
+    for jobs in (1, 2):
+        data = bn.animate_network(
+            CENTERS, _frames(), tmp_path / f"fs{jobs}.mp4", faststart=True,
+            n_jobs=jobs, **_ANIM,
+        ).read_bytes()  # fmt: skip
+        moov, mdat = data.find(b"moov"), data.find(b"mdat")
+        print(f"faststart n_jobs={jobs}: moov at {moov}, mdat at {mdat}")
+        assert 0 < moov < mdat
+    for kw in ({"crf": 23}, {"faststart": True}):
+        with pytest.raises(ValueError, match="mp4 only"):
+            bn.animate_network(CENTERS, _frames(), tmp_path / "x.gif", **kw, **_ANIM)
+
+
+@pytest.mark.parametrize("n_jobs", [0, 1.5, True, "2"])
+def test_n_jobs_validation(tmp_path, n_jobs):
+    with pytest.raises(ValueError, match="n_jobs") as err:
+        bn.animate_network(
+            CENTERS, _frames(), tmp_path / "v.mp4", n_jobs=n_jobs, **_ANIM
+        )
+    print(err.value)
+    assert repr(n_jobs) in str(err.value)
+    assert not (tmp_path / "v.mp4").exists()
