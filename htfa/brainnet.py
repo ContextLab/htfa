@@ -26,6 +26,7 @@ cached (see `mesh_cache_dir`).
 from __future__ import annotations
 
 import math
+import numbers
 import os
 import shutil
 import subprocess
@@ -36,8 +37,9 @@ import urllib.error
 import urllib.request
 import zipfile
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -56,6 +58,7 @@ __all__ = [
     "animate_network",
     "annotate_pair",
     "config_style",
+    "content_box",
     "effective_nodes",
     "fetch_mesh",
     "image_diff",
@@ -499,19 +502,38 @@ def _centers(centers: Any) -> Array:
     return c
 
 
-def _per_node(values: Any, K: int, what: str) -> Array:
-    v = np.asarray(values, dtype=np.float64).ravel()
-    if v.shape != (K,):
-        raise ValueError(f"{what} has {v.size} entries for {K} nodes")
-    return v
+def _per_node(
+    values: Any, K: int, what: str, frames: bool = False, hint: bool = True
+) -> Array:
+    """``values`` as shape (K,); with ``frames``, (T, K) with T > 1 is kept.
+
+    K values in any shape, such as (1, K) or (K, 1), are flattened to (K,).
+    Other values raise ``ValueError``; with ``frames`` and ``hint`` its message
+    names both shapes, (K,) or (T, K).
+    """
+    v = np.asarray(values, dtype=np.float64)
+    if frames and v.ndim == 2 and v.shape[1] == K and len(v) > 1:
+        return v
+    if v.size != K:
+        want = " ((K,) or (T, K))" if frames and hint else ""
+        raise ValueError(
+            f"{what} has {v.size} entries for {K} nodes{want}, shape {v.shape}"
+        )
+    return v.ravel()
 
 
-def _nodes(nodes: Any, sizes: Any, subject: Any) -> tuple[Array, Array]:
-    """Centers and sizes from an HTFAResults, a fitted TFA/HTFA, or an array."""
+def _nodes(
+    nodes: Any, sizes: Any, subject: Any, time_sizes: bool = True
+) -> tuple[Array, Array]:
+    """Centers and sizes from an HTFAResults, a fitted TFA/HTFA, or an array.
+
+    (T, K) sizes are kept; ``time_sizes`` (the caller takes them) adds that
+    shape to the message of a size error.
+    """
     centers, widths = _fit_nodes(nodes, subject)
     K = len(centers)
     if sizes is not None:
-        return centers, _per_node(sizes, K, "sizes")
+        return centers, _per_node(sizes, K, "sizes", frames=True, hint=time_sizes)
     return centers, np.ones(K) if widths is None else widths
 
 
@@ -975,8 +997,12 @@ def _display_nodes(
     mask: Any,
     scale_by_mass: bool = False,
     fade_by_mass: bool | float = False,
+    time_sizes: bool = True,
 ) -> tuple[Array, Array, Array | None]:
-    """Centers, sizes and per-node opacities (or None) the plots draw."""
+    """Centers, sizes ((K,) or (T, K)) and per-node opacities (or None) to draw.
+
+    ``time_sizes``: whether the caller takes (T, K) sizes (see `_nodes`).
+    """
     centers, fit_widths = _fit_nodes(nodes, subject)
     K = len(centers)
     w = fit_widths if widths is None else _per_node(widths, K, "widths")
@@ -991,7 +1017,10 @@ def _display_nodes(
     if not snap:
         if scale_by_mass or floor is not None:
             raise ValueError("scale_by_mass and fade_by_mass need snap=True")
-        return (*_nodes(nodes, w if sizes is None else sizes, subject), None)
+        return (
+            *_nodes(nodes, w if sizes is None else sizes, subject, time_sizes),
+            None,
+        )
     if w is None and (scale_by_mass or floor is not None):
         raise ValueError("scale_by_mass and fade_by_mass need node widths (widths=)")
     if mask is None:
@@ -1003,7 +1032,7 @@ def _display_nodes(
         name, comp_c, comp_w, pi = shape
         centers, w_eff, info = effective_nodes(comp_c, comp_w, mask, name, pi)
     if sizes is not None:
-        node_sizes = _per_node(sizes, K, "sizes")
+        node_sizes = _per_node(sizes, K, "sizes", frames=True, hint=time_sizes)
     else:
         node_sizes = np.ones(K) if w is None else w_eff
     if scale_by_mass:
@@ -1173,13 +1202,25 @@ def _network_geometry(
     fade_by_mass: bool | float,
     node_mode: str,
     lobe_level: float,
+    time_sizes: bool = True,
 ) -> tuple:
-    """Common static/movie geometry, with factor IDs for expanding edges."""
+    """Common static/movie geometry, with factor IDs for expanding edges.
+
+    ``time_sizes``: whether the caller takes (T, K) sizes (see `_nodes`).
+    """
     shape = _fit_shape(nodes, subject)
     if not component_mode(node_mode, shape is not None):
         return (
             *_display_nodes(
-                nodes, sizes, widths, subject, snap, mask, scale_by_mass, fade_by_mass
+                nodes,
+                sizes,
+                widths,
+                subject,
+                snap,
+                mask,
+                scale_by_mass,
+                fade_by_mass,
+                time_sizes,
             ),
             None,
             None,
@@ -1211,6 +1252,72 @@ def _network_geometry(
     return centers, components.widths, None, components, surfaces
 
 
+def _radii(sizes: Array, scene_opts: dict[str, Any]) -> Array:
+    """Positive node radii in mm from sizes of any shape, such as (K,) or (T, K).
+
+    One `node_radius` call with the ``radius_range``, ``radius_kb`` and
+    ``radius_clip`` of ``scene_opts`` (see `_style`), so (T, K) sizes are
+    scaled jointly over all timepoints.
+    """
+    rng = scene_opts["radius_range"]
+    k, b = (None, None) if scene_opts["radius_kb"] is None else scene_opts["radius_kb"]
+    radii = node_radius(sizes, rng[0], rng[1], k=k, b=b, clip=scene_opts["radius_clip"])
+    if not np.all(radii > 0):
+        raise ValueError(
+            f"node radii must be positive, got min {radii.min():.3g} mm; "
+            "set radius_clip"
+        )
+    return radii
+
+
+def _check_view(view: Any) -> None:
+    if not isinstance(view, str) or view not in VIEWS:
+        raise ValueError(f"unknown view {view!r}; choose from {sorted(VIEWS)}")
+
+
+_VIEW_TITLES = {
+    "left": "Left lateral",
+    "lateral": "Left lateral",
+    "right": "Right lateral",
+}
+
+
+def _view_titles(views: Any) -> tuple[list[str], list[str]]:
+    """View names and panel titles from ``views``.
+
+    Each entry of ``views`` is a name from `VIEWS` or a ``(name, title)``
+    pair. Default titles: "Left lateral" (``left``, ``lateral``), "Right
+    lateral" (``right``), else the capitalized name; with a single view, no
+    title unless one is given.
+    """
+    if isinstance(views, str) or not isinstance(views, Sequence) or not len(views):
+        raise ValueError(
+            "views must be a non-empty sequence of view names or (name, title) "
+            f"pairs, got {views!r}"
+        )
+    names, titles = [], []
+    for entry in views:
+        if isinstance(entry, str):
+            name, title = entry, None
+        elif (
+            isinstance(entry, Sequence)
+            and len(entry) == 2
+            and all(isinstance(x, str) for x in entry)
+        ):
+            name, title = entry
+        else:
+            raise ValueError(
+                "each view must be a name or a (name, title) pair of str, "
+                f"got {entry!r}"
+            )
+        _check_view(name)
+        if title is None:
+            title = "" if len(views) == 1 else _VIEW_TITLES.get(name, name.capitalize())
+        names.append(name)
+        titles.append(title)
+    return names, titles
+
+
 class _Scene:
     """Off-screen plotter holding mesh and nodes; edges change per frame."""
 
@@ -1232,20 +1339,34 @@ class _Scene:
         component_surfaces: list | None = None,
         component_weights: Array | None = None,
         lobe_negative_color: Any = "teal",
+        supersample: int = _SUPERSAMPLE,
     ) -> None:
         pv = lazy_import("pyvista", "brain3d", "network plots")
-        if view not in VIEWS:
-            raise ValueError(f"unknown view {view!r}; choose from {sorted(VIEWS)}")
-        self.centers = centers
-        k, b = (None, None) if radius_kb is None else radius_kb
-        self.radii = node_radius(
-            sizes, radius_range[0], radius_range[1], k=k, b=b, clip=radius_clip
-        )
-        if not np.all(self.radii > 0):
+        _check_view(view)
+        if (
+            isinstance(supersample, bool)
+            or not isinstance(supersample, (int, np.integer))
+            or supersample < 1
+        ):
             raise ValueError(
-                f"node radii must be positive, got min {self.radii.min():.3g} mm; "
-                "set radius_clip"
+                f"supersample must be a positive integer, got {supersample!r}"
             )
+        if component_surfaces is not None and not _is_color(node_color):
+            raise ValueError(
+                f"component lobes take one node_color, got {len(node_color)} "
+                "colors; use node_mode='summary' for per-node colors"
+            )
+        self.node_colors = _node_colors(node_color, len(centers))
+        self.node_color = node_color  # as given: one color is drawn as in 0.1.0
+        self.centers = centers
+        self.radii = _radii(
+            sizes,
+            {
+                "radius_range": radius_range,
+                "radius_kb": radius_kb,
+                "radius_clip": radius_clip,
+            },
+        )
         self.component_surfaces = component_surfaces
         self.component_weights = component_weights
         self.lobe_negative_color = lobe_negative_color
@@ -1256,7 +1377,7 @@ class _Scene:
         self.size = (int(size[0]), int(size[1]))
         self.view_dir, self.view_up = (np.asarray(v, float) for v in VIEWS[view])
         self.verts = None if mesh is None else np.asarray(mesh[0], float)
-        s = _SUPERSAMPLE
+        s = int(supersample)
         _headless_window()
         pl = pv.Plotter(
             off_screen=True,
@@ -1265,12 +1386,11 @@ class _Scene:
         )
         # Depth peeling (needed for the translucent mesh and edges) draws no
         # translucent geometry into a multisampled framebuffer on Mesa
-        # (llvmpipe, Linux CI). The 2x supersampling above anti-aliases.
+        # (llvmpipe, Linux CI). The supersampling above anti-aliases.
         pl.render_window.SetMultiSamples(0)
+        self._nodes: list = []
         try:
-            self._build(
-                pv, pl, mesh, view, node_color, mesh_color, mesh_opacity, background
-            )
+            self._build(pv, pl, mesh, view, mesh_color, mesh_opacity, background)
         except BaseException:
             pl.close()
             raise
@@ -1283,13 +1403,11 @@ class _Scene:
         pl: Any,
         mesh: tuple[Array, Array] | None,
         view: str,
-        node_color: Any,
         mesh_color: Any,
         mesh_opacity: float,
         background: Any,
     ) -> None:
         """Add the background, mesh, nodes, camera and light to ``pl``."""
-        centers = self.centers
         pl.set_background(background)
         if mesh is not None:
             verts, faces = mesh
@@ -1310,7 +1428,7 @@ class _Scene:
                 )
                 pl.add_mesh(
                     surface,
-                    color=node_color if sign > 0 else self.lobe_negative_color,
+                    color=self.node_color if sign > 0 else self.lobe_negative_color,
                     opacity=(0.2 + 0.6 * float(alpha)) * (0.35 if sign < 0 else 1.0),
                     smooth_shading=True,
                     show_scalar_bar=False,
@@ -1325,23 +1443,7 @@ class _Scene:
                     else np.vstack([self.verts, geometry])
                 )
         else:
-            spheres = [
-                pv.Sphere(radius=r, center=c, theta_resolution=40, phi_resolution=40)
-                for c, r in zip(centers, self.radii, strict=True)
-            ]
-            if self.node_opacity is None:
-                pl.add_mesh(
-                    pv.merge(spheres), color=node_color, smooth_shading=True, **_DULL
-                )
-            else:
-                for sphere, alpha in zip(spheres, self.node_opacity, strict=True):
-                    pl.add_mesh(
-                        sphere,
-                        color=node_color,
-                        opacity=float(alpha),
-                        smooth_shading=True,
-                        **_DULL,
-                    )
+            self._add_nodes(pv, pl)
         pl.enable_depth_peeling(number_of_peels=8)
         pl.enable_parallel_projection()
         direction, up = VIEWS[view]
@@ -1363,6 +1465,90 @@ class _Scene:
                 positional=False,
             )
         )
+
+    def _add_nodes(self, pv: Any, pl: Any, **add: Any) -> None:
+        """Add spheres of ``self.radii`` in the node colors to ``pl``.
+
+        One merged mesh without node opacity (per-node colors as per-point
+        ``rgb`` scalars), else one actor per sphere. One color is passed to
+        ``add_mesh`` as given (``self.node_color``), with the 0.1.0 call
+        arguments. ``add`` holds extra ``add_mesh`` arguments (``render=False``
+        when replacing nodes). The actors are kept in ``self._nodes``.
+        """
+        spheres = [
+            pv.Sphere(radius=r, center=c, theta_resolution=40, phi_resolution=40)
+            for c, r in zip(self.centers, self.radii, strict=True)
+        ]
+        colors = self.node_colors
+        if self.node_opacity is None and colors.ndim == 1:
+            self._nodes = [
+                pl.add_mesh(
+                    pv.merge(spheres),
+                    color=self.node_color,
+                    smooth_shading=True,
+                    **_DULL,
+                    **add,
+                )
+            ]
+        elif self.node_opacity is None:
+            # Point, not cell, colors, as for the edges (see `set_edges`).
+            for sphere, rgb in zip(spheres, _uint8(colors), strict=True):
+                sphere.point_data["rgb"] = np.tile(rgb, (sphere.n_points, 1))
+            self._nodes = [
+                pl.add_mesh(
+                    pv.merge(spheres),
+                    scalars="rgb",
+                    rgb=True,
+                    smooth_shading=True,
+                    show_scalar_bar=False,
+                    **_DULL,
+                    **add,
+                )
+            ]
+        else:
+            per_node = [self.node_color] * len(spheres) if colors.ndim == 1 else colors
+            self._nodes = [
+                pl.add_mesh(
+                    sphere,
+                    color=rgb,
+                    opacity=float(alpha),
+                    smooth_shading=True,
+                    **_DULL,
+                    **add,
+                )
+                for sphere, rgb, alpha in zip(
+                    spheres, per_node, self.node_opacity, strict=True
+                )
+            ]
+
+    def set_nodes(self, radii: Array, colors: Array | None = None) -> None:
+        """Replace the node spheres.
+
+        Parameters
+        ----------
+        radii : array of shape (K,)
+            Sphere radii in mm. Edges set afterwards start at these surfaces.
+        colors : color, or array of shape (3,) or (K, 3), optional
+            New node colors (see `_node_colors`); default: keep the current.
+        """
+        if self.component_surfaces is not None:
+            raise ValueError(
+                "component lobes use fitted geometry; set_nodes needs "
+                "node_mode='summary'"
+            )
+        K = len(self.centers)
+        radii = np.asarray(radii, dtype=np.float64)
+        if radii.shape != (K,) or not np.all(np.isfinite(radii) & (radii > 0)):
+            raise ValueError(
+                f"set_nodes needs K={K} finite, positive radii in mm, got shape "
+                f"{radii.shape} and values {radii}"
+            )
+        if colors is not None:  # validated, like radii, before anything changes
+            self.node_color, self.node_colors = colors, _node_colors(colors, K)
+        self.pl.remove_actor(self._nodes, render=False)
+        self.radii = radii
+        pv = lazy_import("pyvista", "brain3d", "network plots")
+        self._add_nodes(pv, self.pl, render=False)
 
     def set_edges(
         self,
@@ -1386,10 +1572,11 @@ class _Scene:
         else:
             radius, opacity = np.full(len(w), 0.25), 1.0
         tubes = _tubes(self.centers, self.radii, i, j, radius)
-        per_edge = tubes.n_cells // len(i)
-        tubes.cell_data["rgb"] = np.round(
-            np.repeat(rgb, per_edge, axis=0) * 255
-        ).astype(np.uint8)
+        # Point, not cell, colors: Mesa 26's llvmpipe (Ubuntu 26.04) draws
+        # nothing for an actor colored by cell scalars. Each tube has its own
+        # points, so every point of a tube gets that edge's color.
+        per_edge = tubes.n_points // len(i)
+        tubes.point_data["rgb"] = _uint8(np.repeat(rgb, per_edge, axis=0))
         self._edges = self.pl.add_mesh(
             tubes,
             scalars="rgb",
@@ -1458,10 +1645,186 @@ class _Scene:
         self.pl.close()
 
 
+def _autorelease_pool_class() -> Any:
+    """VTK's ``vtkCocoaAutoreleasePool`` class on macOS, else None.
+
+    Also None with VTK older than 9.5, which does not have the class: such
+    installations render without a pool, as htfa 0.1.0 did. pyvista (with
+    VTK) is loaded through `lazy_import` first, so a missing ``brain3d``
+    extra is installed (or reported) as for any other plot.
+    """
+    if sys.platform != "darwin":
+        return None
+    lazy_import("pyvista", "brain3d", "network plots")
+    try:
+        from vtkmodules.vtkRenderingUI import vtkCocoaAutoreleasePool
+    except ImportError:  # VTK < 9.5
+        return None
+    return vtkCocoaAutoreleasePool
+
+
+@contextmanager
+def _autorelease(pool_class: Any) -> Iterator[None]:
+    """A Cocoa autorelease pool of ``pool_class`` (none if None), drained on exit.
+
+    VTK's Cocoa render windows hand their OpenGL contexts and buffers to an
+    autorelease pool, and a Python process without a Cocoa event loop never
+    drains one, so without a pool every render window stays in memory (5 to
+    9 MB per render with the ch2 mesh at 320 x 200; macOS prints "Context
+    leak detected" after about 40 of them). Pools must be released on the
+    thread that made them, newest first, so no object owns one: the function
+    that builds, draws and closes scenes enters this in its own body, around
+    all of that, and nested calls (a ``compose`` that calls `plot_network`)
+    nest their pools strictly.
+    """
+    pool = None if pool_class is None else pool_class()
+    try:
+        yield
+    finally:
+        if pool is not None:
+            pool.Release()
+
+
+class _Views:
+    """One `_Scene` per view, drawn together frame by frame.
+
+    Built from plain (picklable) arguments: ``scene_opts`` as returned by
+    `_style` (its ``view`` is replaced by each name of ``views``) and
+    ``scene_kwargs``, the other `_Scene` keywords. If a scene fails to build,
+    those already built are closed. Build, draw and close it inside
+    `_autorelease` (as `plot_network` and `_movie_views` do).
+    """
+
+    def __init__(
+        self,
+        centers: Array,
+        node_sizes: Array,
+        mesh: tuple[Array, Array] | None,
+        views: Sequence[str],
+        scene_opts: dict[str, Any],
+        **scene_kwargs: Any,
+    ) -> None:
+        self.scenes: list[_Scene] = []
+        self._spin: list[tuple[Array, float]] = []
+        try:
+            for view in views:
+                self.scenes.append(
+                    _Scene(
+                        centers,
+                        node_sizes,
+                        mesh,
+                        **{**scene_opts, "view": view},
+                        **scene_kwargs,
+                    )
+                )
+        except BaseException:
+            self.close()
+            raise
+
+    def fit_spin(self, rotations: Array) -> None:
+        """Fit each view's spin camera to ``rotations`` (see `_Scene.fit_spin`)."""
+        self._spin = [scene.fit_spin(rotations) for scene in self.scenes]
+
+    def draw(
+        self,
+        E: Array | None,
+        edge_opts: dict[str, Any],
+        radii: Array | None = None,
+        colors: Array | None = None,
+        rotation: Array | None = None,
+    ) -> list[Any]:
+        """One image per view.
+
+        Per scene: new spheres if ``radii`` or ``colors`` is given
+        (`_Scene.set_nodes`), the camera turned by ``rotation`` (needs
+        `fit_spin` first), the edges of ``E`` if given, then the image.
+        """
+        images = []
+        for k, scene in enumerate(self.scenes):
+            if radii is not None or colors is not None:
+                scene.set_nodes(scene.radii if radii is None else radii, colors)
+            if rotation is not None:
+                scene.orbit(rotation, *self._spin[k])
+            if E is not None:
+                scene.set_edges(E, **edge_opts)
+            images.append(scene.image())
+        return images
+
+    def close(self) -> None:
+        for scene in self.scenes:
+            scene.close()
+
+
 def _rgb(color: Any) -> tuple[float, float, float]:
     pv = lazy_import("pyvista", "brain3d", "network plots")
     r, g, b = pv.Color(color).float_rgb
     return float(r), float(g), float(b)
+
+
+def _uint8(rgb: Array) -> Array:
+    """Float RGB in 0-1 as 0-255 ``uint8``, for per-point ``rgb`` scalars."""
+    return np.round(np.asarray(rgb) * 255).astype(np.uint8)
+
+
+def _rgb255(color: Any) -> tuple[int, int, int]:
+    """``color`` as 0-255 ints.
+
+    ``"white"``, the default background of the image helpers, needs no
+    pyvista, so `content_box`, `annotate_pair` and `montage` on white images
+    work without the 3D extras.
+    """
+    if isinstance(color, str) and color.lower() == "white":
+        return 255, 255, 255
+    r, g, b = (int(v) for v in _uint8(np.asarray(_rgb(color))))
+    return r, g, b
+
+
+def _is_light(background: Any) -> bool:
+    """Whether ``background`` is light: mean 0-255 channel 128 or more."""
+    return sum(_rgb255(background)) / 3 >= 128
+
+
+def _is_color(color: Any) -> bool:
+    """Whether ``color`` is one color: a name or hex string, or 3 or 4 numbers."""
+    try:
+        a = np.asarray(color)
+    except ValueError:  # a ragged sequence
+        return False
+    return a.ndim == 0 or (a.ndim == 1 and len(a) in (3, 4) and a.dtype.kind in "iuf")
+
+
+def _node_colors(node_color: Any, K: int, T: int | None = None) -> Array:
+    """Node colors as float RGB in 0-1, alpha dropped.
+
+    Returns shape (3,) for one color, (K, 3) for K colors (a sequence of K
+    color specs or a (K, 3) or (K, 4) array) and, only when ``T`` is given,
+    (T, K, 3) for per-frame colors ((T, K) color specs or a (T, K, 3) or
+    (T, K, 4) array). A flat sequence of 3 or 4 numbers is always one color.
+    """
+
+    def grid(colors: Any, shape: tuple[int, ...]) -> Array | None:
+        """``colors`` as RGB of leading shape ``shape``, or None if not that."""
+        if not shape:
+            return np.asarray(_rgb(colors)) if _is_color(colors) else None
+        if _is_color(colors) or len(colors) != shape[0] or not len(colors):
+            return None
+        rows = [grid(c, shape[1:]) for c in colors]
+        return None if any(r is None for r in rows) else np.stack(rows)
+
+    frames = "" if T is None else f", or (T, K) colors with T={T}"
+    for shape in [(), (K,)] + ([] if T is None else [(T, K)]):
+        try:
+            colors = grid(node_color, shape)
+        except ValueError as err:
+            raise ValueError(
+                f"node_color must be one color or K={K} colors{frames}: {err}"
+            ) from err
+        if colors is not None:
+            return colors
+    raise ValueError(
+        f"node_color must be one color, K={K} colors (shape (K, 3) or (K, 4))"
+        f"{frames}; got shape {np.asarray(node_color, dtype=object).shape}"
+    )
 
 
 def _connectivity(connectivity: Any, K: int, ndim: int) -> Array:
@@ -1469,6 +1832,8 @@ def _connectivity(connectivity: Any, K: int, ndim: int) -> Array:
     if E.ndim != ndim or E.shape[-2:] != (K, K):
         want = "(K, K)" if ndim == 2 else "(T, K, K) (or (K, K) with duration)"
         raise ValueError(f"connectivity must be {want} with K={K}, got {E.shape}")
+    if E.size == 0:
+        raise ValueError(f"connectivity has no windows, got shape {E.shape}")
     if not np.all(np.isfinite(E)):
         raise ValueError("connectivity contains NaN or inf")
     return E
@@ -1513,6 +1878,7 @@ def _style(kwargs: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         "radius_range": tuple(kwargs.pop("radius_range", (2.0, 7.0))),
         "radius_kb": kwargs.pop("radius_kb", None),
         "radius_clip": kwargs.pop("radius_clip", None),
+        "supersample": kwargs.pop("supersample", _SUPERSAMPLE),
     }
     edges = {
         "threshold": float(kwargs.pop("threshold", 0.25)),
@@ -1546,6 +1912,9 @@ def plot_network(
     lobe_negative_color: Any = "teal",
     out: str | os.PathLike | None = None,
     jpeg_quality: int | None = None,
+    views: Sequence[Any] | None = None,
+    legend: Any = None,
+    frame_size: tuple[int, int] | None = None,
     **style: Any,
 ) -> Any:
     """Render nodes and thresholded edges BrainNet Viewer-style.
@@ -1559,7 +1928,9 @@ def plot_network(
         Edge weights (upper triangle used). ``None`` draws nodes only.
     sizes : array of shape (K,), optional
         Node sizes; mapped linearly onto 2-7 mm radii (`node_radius`; see the
-        ``radius_*`` style options).
+        ``radius_*`` style options). K values in any shape, such as (1, K)
+        or (K, 1), count as (K,); a (T, K) array with T > 1 raises
+        ``ValueError`` here (one row per window is for `animate_network`).
         Defaults to the (effective, with ``snap``) widths, or equal sizes
         (4 mm) when no widths are known.
     widths : array of shape (K,), optional
@@ -1618,6 +1989,37 @@ def plot_network(
     jpeg_quality : int, optional
         If given, the image is JPEG-compressed at this quality before it is
         returned or saved. JPEG at 75 makes thin edges paler.
+    views : sequence, optional
+        Several views side by side, each a name of `VIEWS` or a
+        ``(name, title)`` pair (not together with ``view``). Each view is
+        rendered at ``size`` and all are cropped to one box around the
+        content of a render without edges (`content_box` with
+        ``background``), so edges never change the framing, then laid out as
+        `annotate_pair` does: titles above the views, a divider between
+        them. Default titles: "Left lateral" (``left``, ``lateral``),
+        "Right lateral" (``right``), else the capitalized name; an empty
+        title hides it, and a single view has no title unless one is given.
+    legend : list, optional
+        One legend row, a list of ``(color, label, kind)`` with ``kind``
+        ``"dot"`` or ``"line"``, or a list of such rows; drawn centered
+        below the views with font size ``max(12, round(30 * W / 1920))``,
+        one band 64 pixels high per 30 pixels of font for each row. W is the
+        ``frame_size`` width or, without it, the summed width of the cropped
+        views (the title fonts follow the same W). Without ``frame_size`` the
+        image widens to hold the widest row (views centered), and the fonts
+        keep the size set by the views' width; with it, a wider row raises
+        ``ValueError``.
+    frame_size : (W, H) positive ints, optional
+        Exact size of the image: titles and legend are drawn at width W and
+        the views are scaled (Lanczos, up or down) to fit the space left,
+        centered. (`animate_network` needs even W and H for an mp4.)
+        Without it, W is the summed width of the cropped views (trimmed with
+        the height to even numbers).
+
+        Passing any of ``views``, ``legend`` or ``frame_size`` takes this
+        layout path; the title and legend bands take the ``background``
+        color, with black text on a light background and white text on a
+        dark one. Without them the single ``view`` is returned uncropped.
     **style
         ``threshold`` (0.25; edges with ``|E| > threshold`` are drawn),
         ``view`` (``"lateral"`` = ``"left"``, ``"right"``, ``"dorsal"``,
@@ -1625,19 +2027,47 @@ def plot_network(
         ((1600, 1000) pixels), ``edge_style`` (``"intensity"``: diameter
         ``|E|`` mm at opacity 0.7; ``"flat"``: 0.5 mm, opaque),
         ``positive_color`` ("red"), ``negative_color`` ("blue"),
-        ``node_color`` (0.502 gray), ``mesh_color`` (0.95 gray),
+        ``node_color`` (0.502 gray; one color, or K colors as a sequence
+        of K color specs or a (K, 3) or (K, 4) array, alpha ignored; a
+        flat sequence of 3 or 4 numbers is always one color, so three
+        nodes with numeric colors need a (3, 3) array; any other shape
+        raises ``ValueError`` naming the shape received and K; component
+        lobes take one color), ``mesh_color`` (0.95 gray),
         ``mesh_opacity`` (0.2), ``background`` ("white"),
         ``radius_range`` ((2, 7) mm: radii of the smallest and largest
         size), ``radius_kb`` (a fixed ``(k, b)``: radius ``k * size + b``
         mm, comparable across plots), ``radius_clip`` (``(min, max)`` mm
-        applied to the radii); see `node_radius`. See also
+        applied to the radii); see `node_radius`. ``supersample`` (2:
+        the scene is rendered at this multiple of ``size`` and scaled
+        down, for anti-aliasing; 1 is faster and more jagged). See also
         `config_style`.
 
     Returns
     -------
     PIL.Image.Image
         The RGB image.
+
+    Raises
+    ------
+    ValueError
+        If ``view`` is given together with ``views``, ``views``, ``legend``
+        or ``frame_size`` is malformed, a legend row is wider than
+        ``frame_size``, ``sizes`` does not hold exactly K values (K values
+        in any shape, such as (1, K) or (K, 1), are accepted; (T, K) sizes
+        are for `animate_network`), or ``node_color`` has a shape other than
+        one color or K colors.
+
+    Examples
+    --------
+    Two views side by side, one color per node, a legend row, and a 1920 x
+    1080 frame:
+
+    >>> img = plot_network(
+    ...     centers, E, node_color=colors, views=["left", "right"],
+    ...     legend=[("red", "positive", "line"), ("blue", "negative", "line")],
+    ...     frame_size=(1920, 1080))  # doctest: +SKIP
     """
+    layout = _layout_args(views, legend, frame_size, style)
     scene_opts, edge_opts = _style(dict(style))
     centers, node_sizes, opacity, components, surfaces = _network_geometry(
         nodes,
@@ -1650,28 +2080,49 @@ def plot_network(
         fade_by_mass,
         node_mode,
         lobe_level,
+        time_sizes=False,
     )
+    if node_sizes.ndim != 1:
+        raise ValueError(
+            f"plot_network takes sizes of shape (K,), got {node_sizes.shape}; "
+            "(T, K) sizes are for animate_network"
+        )
     if components is not None and connectivity is not None:
         connectivity = components.connectivity(connectivity)
     E = None
     if connectivity is not None:
         E = _connectivity(connectivity, len(centers), 2)
-    scene = _Scene(
-        centers,
-        node_sizes,
-        load_mesh(mesh),
-        **scene_opts,
-        node_opacity=opacity,
-        component_surfaces=surfaces,
-        component_weights=None if components is None else components.mixing,
-        lobe_negative_color=lobe_negative_color,
-    )
-    try:
-        if E is not None:
-            scene.set_edges(E, **edge_opts)
-        img = scene.image()
-    finally:
-        scene.close()
+    brain = load_mesh(mesh)
+    crop = None
+    with _autorelease(_autorelease_pool_class()):
+        scenes = _Views(
+            centers,
+            node_sizes,
+            brain,
+            [scene_opts["view"]] if layout is None else layout[0],
+            scene_opts,
+            node_opacity=opacity,
+            component_surfaces=surfaces,
+            component_weights=None if components is None else components.mixing,
+            lobe_negative_color=lobe_negative_color,
+        )
+        try:
+            if layout is not None:
+                # crop around the nodes and mesh only, as in animate_network,
+                # so edges never change the framing
+                crop = content_box(
+                    scenes.draw(None, edge_opts), background=scene_opts["background"]
+                )
+            images = scenes.draw(E, edge_opts)
+        finally:
+            scenes.close()
+    if layout is None:
+        img = images[0]
+    else:
+        _, titles, rows, size = layout
+        img = _layout(
+            images, titles, None, rows, crop, None, size, scene_opts["background"]
+        )
     if jpeg_quality is not None:
         img = _jpeg(img, jpeg_quality)
     if out is not None:
@@ -1736,7 +2187,7 @@ def _nearest(t: float, T: int) -> int:
 
 
 def _at_time(E: Array, t: float, interpolation: str) -> Array:
-    """Connectivity at fractional window index ``t``."""
+    """A (T, ...) series (connectivity or radii) at fractional window index ``t``."""
     if interpolation == "nearest":
         return E[_nearest(t, len(E))]
     lo = min(int(np.floor(t)), len(E) - 1)
@@ -1770,6 +2221,13 @@ def animate_network(
     captions: Sequence[str] | Callable[[float], str] | None = None,
     frames_dir: str | os.PathLike | None = None,
     jpeg_quality: int | None = None,
+    views: Sequence[Any] | None = None,
+    legend: Any = None,
+    frame_size: tuple[int, int] | None = None,
+    compose: Callable[[list[Any], float], Any] | None = None,
+    n_jobs: int = 1,
+    crf: int | None = None,
+    faststart: bool = False,
     **style: Any,
 ) -> Path:
     """Render a ``(T, K, K)`` connectivity series as an mp4 or GIF.
@@ -1777,20 +2235,40 @@ def animate_network(
     By default the movie has one frame per connectivity window, and the
     camera, mesh, nodes and threshold stay fixed. ``duration`` (or
     ``n_frames``) sets the number of frames instead, interpolating between
-    windows, and ``spin`` turns the brain.
+    windows, and ``spin`` turns the brain. A call that gives none of
+    ``views``, ``legend``, ``frame_size``, ``compose``, ``n_jobs``, ``crf``,
+    ``faststart``, (T, K) ``sizes`` or colors, or ``None`` connectivity is
+    drawn and encoded as in 0.1.0. ``views``, ``legend`` or ``frame_size``
+    take the layout path described under `plot_network`.
 
     Parameters
     ----------
-    nodes, sizes, widths, subject, mesh, snap, mask, scale_by_mass, fade_by_mass
+    nodes, widths, subject, mesh, snap, mask, scale_by_mass, fade_by_mass
         As in `plot_network` (``snap`` is on by default).
+    sizes : array of shape (K,) or (T, K), optional
+        Node sizes as in `plot_network`, or one row per window. (T, K)
+        sizes are mapped to radii in one `node_radius` call over the whole
+        array, so radii are comparable across frames; between windows they
+        follow ``interpolation``, like the edges, and edges start at each
+        frame's sphere surfaces. ``scale_by_mass`` multiplies every row.
     node_mode, lobe_level, lobe_negative_color
         As in `plot_network`; the same component geometry and repeated edges
-        are used in every frame.
+        are used in every frame. Component lobes take neither (T, K) sizes
+        nor per-frame colors.
     **style
-        As in `plot_network`.
-    connectivity : array of shape (T, K, K), or (K, K) with duration
-        One edge matrix per window. A single ``(K, K)`` matrix needs
-        ``duration`` or ``n_frames`` and gives fixed edges (for a spin).
+        As in `plot_network`. ``node_color`` may also hold per-frame colors:
+        (T, K) color specs or an array of shape (T, K, 3) or (T, K, 4). A
+        frame uses the colors of the nearest window; colors are not blended.
+        A flat sequence of 3 or 4 numbers is one color, as in `plot_network`.
+        In a GIF, colors outside the shared palette (see `write_animation`)
+        are approximated by palette colors.
+    connectivity : array of shape (T, K, K) or (K, K), or None
+        One edge matrix per window. A single ``(K, K)`` matrix gives fixed
+        edges (for a spin) and needs ``duration``, ``n_frames``, or (T, K)
+        ``sizes`` or colors. ``None`` draws no edges and needs (T, K)
+        ``sizes`` or colors (in `htfa.HTFAResults.animate_network`, ``None``
+        instead computes ISFC). All time axes (connectivity, ``sizes``,
+        ``node_color`` and a ``captions`` sequence) must have the same T.
     out : path
         ``.mp4`` (H.264 via imageio-ffmpeg) or ``.gif``. An mp4 is encoded
         while frames render, holding one frame in memory at a time. A GIF
@@ -1826,16 +2304,77 @@ def animate_network(
         ``view``; any spin, even ``(0, 0, 0)``, uses the centered, fitted
         zoom.
     captions : sequence of T str, or callable, optional
-        Text shown in a white band above each frame (not over the brain).
+        Text shown in a white band above each frame (not over the brain);
+        with ``views``, ``legend`` or ``frame_size``, a line under the view
+        titles in a band of the ``background`` color.
         A sequence gives the caption of each window (a movie frame takes
         that of the nearest window); a callable is called with each frame's
         window time ``t`` (a float) and returns its caption.
+    views, legend, frame_size
+        As in `plot_network`; an odd ``frame_size`` W or H raises
+        ``ValueError`` for an mp4 (H.264 needs even sizes) and is kept
+        exactly in a GIF. In a movie, one crop box serves all views and
+        frames, so the brain does not move: it is taken once, before the
+        first frame, around one render of each view without edges and with
+        each node at its largest radius, opaque and in one color that
+        contrasts with the ``background`` (so a node hidden in the first
+        frame is not cropped away). With ``spin`` every view turns and the
+        views are not cropped.
+    compose : callable, optional
+        ``compose(images, t) -> image`` replaces the layout step. ``images``
+        is the list of PIL RGB images of one frame, one per view (just one
+        without ``views``), uncropped and at ``size``; ``t`` is the frame's
+        window time (a float). The returned PIL image is the frame as is:
+        no caption, titles, legend or crop is added, so ``compose`` cannot
+        be combined with ``legend``, ``captions`` or ``frame_size``
+        (``ValueError``). With ``n_jobs`` other than 1 it runs in the worker
+        processes. Every frame must have the same size (an mp4 is trimmed to
+        even sizes); a return value that is not a PIL image raises
+        ``ValueError``.
     frames_dir : path, optional
         Also save each frame there as ``1.png``, ``2.png``, ... (``.jpg``
         with ``jpeg_quality``).
     jpeg_quality : int, optional
         JPEG-compress each frame at this quality before it goes into the
         movie. Lower quality values increase compression artifacts.
+    n_jobs : int, default 1
+        Number of worker processes drawing frames (joblib's convention:
+        ``-1`` uses every CPU; 0 or a non-integer raises ``ValueError``).
+        With 1, frames are drawn in this process and
+        encoded as they are drawn. Otherwise this call starts its own pool
+        (not joblib's shared one), each worker draws a contiguous run of
+        frames into a temporary folder (removed afterwards, also after an
+        error; a folder that cannot be removed raises ``OSError`` or, when
+        an error is already raised, is chained to it as its innermost
+        ``__context__``), and the movie is encoded from
+        there once all are drawn. ``compose`` and a ``captions`` callable
+        then run in the workers, so they must be picklable by cloudpickle
+        (functions defined in a notebook are). A view rendered black on a
+        light background (more than 5 percent of its pixels, and at least
+        one corner pixel, with every channel below 10; not checked when the
+        ``background`` is dark, max channel below 40 of 255) or a worker that
+        dies stops the pool; a new one redraws the missing frames, up to 5 times,
+        then ``RuntimeError``. Other errors are raised at once, among them
+        joblib's ``BrokenProcessPool`` for a ``compose`` or ``captions``
+        that cannot be unpickled in a worker.
+
+        Each worker pays a fixed start-up cost (about 4 s before its first
+        frame on a 12-core Apple M-series Mac: process start, imports, scene
+        building) and writes every frame as a PNG (about 0.06 s at 1920 x
+        1080), which this process reads back and encodes after the last
+        frame is drawn. On that machine a
+        300-frame movie (two 1200 x 750 views, ``frame_size=(1920, 1080)``,
+        edges and per-frame sizes) took 61 s with ``n_jobs=1`` and 50, 35
+        and 31 s with 2, 3 and 4; a 30-frame movie of the same kind took
+        about the same time with 1 and 3 (9 s). Workers help with long
+        movies and not with short ones.
+    crf : int, optional
+        x264 constant rate factor of an mp4, 0 to 51 (higher is smaller and
+        blurrier); passed to `write_animation`. Default ``None``: the 0.1.0
+        encoding (imageio ``quality=8``, which is CRF 10).
+    faststart : bool, default False
+        Move the mp4 index to the start of the file, so that browsers can
+        play it while it downloads; passed to `write_animation`.
 
     Returns
     -------
@@ -1861,7 +2400,39 @@ def animate_network(
 
     >>> animate_network(centers, C, "spin.gif", fps=12, duration=4,
     ...                 spin=(0, 0, 1), size=(480, 300))  # doctest: +SKIP
+
+    Suppose ``S`` has shape (30, K) and ``colors`` has shape (30, K, 3). A
+    movie of two views with per-frame node sizes and colors, a legend and
+    four worker processes; ``S`` is scaled jointly over all frames, and
+    ``crf`` and ``faststart`` set the encoding:
+
+    >>> animate_network(
+    ...     centers, E, "net.mp4", sizes=S, node_color=colors,
+    ...     views=["left", "right"],
+    ...     legend=[("red", "positive", "line"), ("blue", "negative", "line")],
+    ...     frame_size=(1920, 1080), n_jobs=4, crf=18,
+    ...     faststart=True)  # doctest: +SKIP
     """
+    if (
+        isinstance(n_jobs, bool)
+        or not isinstance(n_jobs, (int, np.integer))
+        or n_jobs == 0
+    ):
+        raise ValueError(
+            "n_jobs must be a nonzero integer (1: draw in this process, -1: "
+            f"every CPU), got {n_jobs!r}"
+        )
+    if compose is not None and not callable(compose):
+        raise ValueError(f"compose must be a callable or None, got {compose!r}")
+    if compose is not None and (
+        legend is not None or captions is not None or frame_size is not None
+    ):
+        raise ValueError(
+            "compose makes the whole frame: give it without legend, captions "
+            f"or frame_size; got legend={legend!r}, captions={captions!r}, "
+            f"frame_size={frame_size!r}"
+        )
+    layout = _layout_args(views, legend, frame_size, style)
     scene_opts, edge_opts = _style(dict(style))
     if interpolation not in ("linear", "nearest"):
         raise ValueError(
@@ -1871,6 +2442,17 @@ def animate_network(
     out = Path(out)
     if out.suffix.lower() not in (".mp4", ".gif"):
         raise ValueError(f"out must end in .mp4 or .gif, got {out.name!r}")
+    if (
+        layout is not None
+        and layout[3] is not None
+        and out.suffix.lower() == ".mp4"
+        and (layout[3][0] % 2 or layout[3][1] % 2)
+    ):
+        raise ValueError(
+            "an mp4 needs an even frame_size (H.264 in yuv420p stores color at "
+            f"half resolution in both directions), got {frame_size!r}; use even "
+            "numbers or a .gif"
+        )
     centers, node_sizes, opacity, components, surfaces = _network_geometry(
         nodes,
         sizes,
@@ -1886,11 +2468,44 @@ def animate_network(
     if components is not None and connectivity is not None:
         connectivity = components.connectivity(connectivity)
     K = len(centers)
-    if n is not None and np.ndim(connectivity) == 2:
-        E = _connectivity(connectivity, K, 2)[None]
-    else:
+    node_color = scene_opts["node_color"]
+    colors = None  # per-frame colors, (T, K, 3)
+    if components is None and not _is_color(node_color):
+        colors = _node_colors(node_color, K, len(node_color))
+        colors = colors if colors.ndim == 3 else None
+    axes = {}  # the length of each time axis
+    E = None
+    if connectivity is not None and np.ndim(connectivity) == 3:
         E = _connectivity(connectivity, K, 3)
-    T = len(E)
+        axes["connectivity"] = len(E)
+    if node_sizes.ndim == 2:
+        axes["sizes"] = len(node_sizes)
+    if colors is not None:
+        axes["node_color"] = len(colors)
+    if len(set(axes.values())) > 1:
+        raise ValueError(
+            "time axes disagree: "
+            + ", ".join(f"{name} has T={t}" for name, t in axes.items())
+        )
+    if connectivity is None:
+        if not axes:
+            raise ValueError(
+                "connectivity=None needs a time axis in sizes ((T, K)) or in "
+                "node_color ((T, K) colors)"
+            )
+    elif E is None and np.ndim(connectivity) == 2 and (n is not None or axes):
+        E = _connectivity(connectivity, K, 2)[None]
+    elif E is None:
+        E = _connectivity(connectivity, K, 3)  # raises: the shape is wrong
+    T = next(iter(axes.values()), 1)
+    # (T, K) radii, scaled jointly over all timepoints
+    radii = None if node_sizes.ndim == 1 else _radii(node_sizes, scene_opts)
+    if radii is not None:
+        # The scene starts with each node's largest sphere (the spin zoom fits it).
+        node_sizes = radii.max(axis=0)
+        scene_opts.update(radius_kb=(1.0, 0.0), radius_clip=None)
+    if colors is not None:
+        scene_opts["node_color"] = colors[0]
     if callable(captions):
         caption: Callable[[float], str] | None = captions
     elif captions is not None:
@@ -1908,45 +2523,289 @@ def animate_network(
     folder = None if frames_dir is None else Path(frames_dir)
     if folder is not None:
         folder.mkdir(parents=True, exist_ok=True)
-    scene = _Scene(
+    build = _ViewsArgs(
         centers,
         node_sizes,
         load_mesh(mesh),
-        **scene_opts,
-        node_opacity=opacity,
-        component_surfaces=surfaces,
-        component_weights=None if components is None else components.mixing,
-        lobe_negative_color=lobe_negative_color,
+        [scene_opts["view"]] if layout is None else layout[0],
+        scene_opts,
+        {
+            "node_opacity": opacity,
+            "component_surfaces": surfaces,
+            "component_weights": None if components is None else components.mixing,
+            "lobe_negative_color": lobe_negative_color,
+        },
+    )
+    movie = _Movie(
+        times,
+        T,
+        E,
+        edge_opts,
+        interpolation,
+        radii,
+        colors,
+        rotations,
+        caption,
+        layout,
+        None,
+        scene_opts["background"],
+        compose,
+    )
+    movie = movie._replace(crop=_movie_crop(build, movie))
+    if n_jobs == 1:
+        with _movie_views(build, rotations) as scenes:
+
+            def frames() -> Iterator[Any]:
+                for k in range(len(times)):
+                    img = _draw_frame(scenes, movie, k)
+                    yield _frame_out(img, k, jpeg_quality, folder)
+
+            return write_animation(frames(), out, fps=fps, crf=crf, faststart=faststart)
+    # select the offscreen window here (Linux without a display), so that the
+    # workers inherit the choice instead of each probing for it
+    _headless_window()
+    work = Path(tempfile.mkdtemp(prefix="htfa-frames-"))
+    try:
+
+        def drawn() -> Iterator[Any]:
+            _draw_parallel(build, movie, n_jobs, work)
+            for k in range(len(times)):
+                yield _frame_out(_open(work / f"{k:05d}.png"), k, jpeg_quality, folder)
+
+        result = write_animation(drawn(), out, fps=fps, crf=crf, faststart=faststart)
+    except BaseException as err:
+        _remove_work(work, err)
+        raise
+    _remove_work(work, None)
+    return result
+
+
+def _remove_work(work: Path, err: BaseException | None) -> None:
+    """Remove a call's temporary frame folder.
+
+    If that fails, an ``OSError`` naming the folder (caused by the removal
+    error) is raised when no error ``err`` is already on its way. Otherwise
+    ``err`` stays the error that propagates, and that ``OSError`` becomes the
+    ``__context__`` of the last exception in the chain a traceback of ``err``
+    shows, so the traceback shows it too.
+    """
+    try:
+        shutil.rmtree(work)
+    except OSError as cleanup:
+        failure = OSError(f"the temporary frame folder {work} was not removed")
+        if err is None:
+            raise failure from cleanup
+        failure.__cause__ = cleanup
+        cleanup.__context__ = None  # set to err by the except: no cycle
+        # the end of the chain a traceback shows (causes, else contexts)
+        last, seen = err, {id(err)}
+        while True:
+            shown = last.__cause__ or (
+                None if last.__suppress_context__ else last.__context__
+            )
+            if shown is None or id(shown) in seen:
+                break
+            last = shown
+            seen.add(id(last))
+        last.__context__ = failure
+        last.__suppress_context__ = False
+
+
+class _ViewsArgs(NamedTuple):
+    """Plain (picklable) arguments of `_Views`: a worker builds its own."""
+
+    centers: Array
+    node_sizes: Array
+    mesh: tuple[Array, Array] | None
+    views: list[str]
+    scene_opts: dict[str, Any]
+    kwargs: dict[str, Any]
+
+
+class _Movie(NamedTuple):
+    """What draws each frame of `animate_network`, as plain (picklable) values."""
+
+    times: Array  # window time of each movie frame
+    T: int  # number of windows
+    E: Array | None  # (T, K, K) or (1, K, K) connectivity, or None
+    edge_opts: dict[str, Any]
+    interpolation: str
+    radii: Array | None  # (T, K) radii
+    colors: Array | None  # (T, K, 3) colors
+    rotations: Array | None  # (n, 3, 3) spin
+    caption: Callable[[float], str] | None
+    layout: Any  # as returned by _layout_args
+    crop: tuple[int, int, int, int] | None
+    background: Any
+    compose: Callable[[list[Any], float], Any] | None
+
+
+_MAX_RESTARTS = 5  # new pools after a blank render or a dead worker
+
+
+class _BlankRender(RuntimeError):
+    """A view came back black: a failed off-screen render."""
+
+
+def _is_blank(img: Any, background: Any) -> bool:
+    """Whether ``img`` is a failed (black) render.
+
+    True when more than 5 percent of the pixels and at least one of the four
+    corner pixels are near black (max channel below 10, of 0-255). A failed
+    render is black to its edges, while drawn content (dark nodes, a dark
+    mesh) does not reach a corner. A dark ``background`` (max channel below
+    40) is not checked: the result is then always False.
+    """
+    if max(_rgb(background)) * 255 < 40:
+        return False
+    dark = np.asarray(img.convert("RGB")).max(axis=2) < 10
+    corners = dark[[0, 0, -1, -1], [0, -1, 0, -1]]
+    return bool(corners.any()) and float(dark.mean()) > 0.05
+
+
+@contextmanager
+def _movie_views(build: _ViewsArgs, rotations: Array | None) -> Iterator[_Views]:
+    """The scenes of a movie, with the spin camera fitted when there is a spin.
+
+    They are built inside `_autorelease` and closed, before its pool is
+    drained, when the ``with`` block ends.
+    """
+    with _autorelease(_autorelease_pool_class()):
+        scenes = _Views(*build[:5], **build.kwargs)
+        try:
+            if rotations is not None:
+                scenes.fit_spin(rotations)
+            yield scenes
+        finally:
+            scenes.close()
+
+
+def _movie_crop(build: _ViewsArgs, movie: _Movie) -> tuple[int, int, int, int] | None:
+    """The one crop box of a movie's layout (None without layout or with compose).
+
+    With a spin, the whole view. Otherwise the `content_box` of a reference
+    render of every view in scenes of its own: no edges, every node at its
+    largest radius over time (the scenes start with them) and opaque, in one
+    color that contrasts with the background (black on a light one, else
+    white), so that neither node colors nor which nodes are visible in the
+    first frame change the box.
+    """
+    if movie.layout is None or movie.compose is not None:
+        return None  # compose gets the uncropped views
+    if movie.rotations is not None:
+        w, h = build.scene_opts["size"]
+        return 0, 0, int(w), int(h)
+    ink = "black" if _is_light(movie.background) else "white"
+    reference = build._replace(
+        scene_opts={**build.scene_opts, "node_color": ink},
+        kwargs={**build.kwargs, "node_opacity": None},
+    )
+    with _movie_views(reference, None) as scenes:
+        images = scenes.draw(None, movie.edge_opts)
+    return content_box(images, background=movie.background)
+
+
+def _draw_frame(
+    scenes: _Views, movie: _Movie, k: int, check_blank: bool = False
+) -> Any:
+    """Movie frame ``k`` (before `_frame_out`); `_BlankRender` if checked and black."""
+    t = float(movie.times[k])
+    # fixed (K, K) edges: the same matrix at every t
+    at = None
+    if movie.E is not None:
+        E = movie.E
+        at = E[0] if len(E) == 1 else _at_time(E, t, movie.interpolation)
+    images = scenes.draw(
+        at,
+        movie.edge_opts,
+        None if movie.radii is None else _at_time(movie.radii, t, movie.interpolation),
+        None if movie.colors is None else movie.colors[_nearest(t, movie.T)],
+        None if movie.rotations is None else movie.rotations[k],
+    )
+    if check_blank:
+        for v, img in enumerate(images):
+            if _is_blank(img, movie.background):
+                raise _BlankRender(f"view {v + 1} of frame {k + 1} rendered black")
+    text = None if movie.caption is None else movie.caption(t)
+    return _finish_frame(
+        images, t, text, movie.layout, movie.crop, movie.background, movie.compose
     )
 
-    def frames() -> Iterator[Any]:
-        if rotations is not None:
-            center, scale = scene.fit_spin(rotations)
-        for k, t in enumerate(times):
-            if rotations is not None:
-                scene.orbit(rotations[k], center, scale)
-            scene.set_edges(_at_time(E, float(t), interpolation), **edge_opts)
-            img = scene.image()
-            if caption is not None:
-                img = _with_header(img, [caption(float(t))])
-            if jpeg_quality is not None:
-                img = _jpeg(img, jpeg_quality)
-            if folder is not None:
-                ext = ".png" if jpeg_quality is None else ".jpg"
-                _save(img, folder / f"{k + 1}{ext}", jpeg_quality)
-            yield img
 
-    try:
-        return write_animation(frames(), out, fps=fps)
-    finally:
-        scene.close()
+def _frame_out(img: Any, k: int, jpeg_quality: int | None, folder: Path | None) -> Any:
+    """Movie frame ``k`` as encoded: JPEG round trip, copy in ``frames_dir``."""
+    if jpeg_quality is not None:
+        img = _jpeg(img, jpeg_quality)
+    if folder is not None:
+        ext = ".png" if jpeg_quality is None else ".jpg"
+        _save(img, folder / f"{k + 1}{ext}", jpeg_quality)
+    return img
+
+
+def _draw_chunk(build: _ViewsArgs, movie: _Movie, ks: list[int], work: str) -> None:
+    """Worker task: draw frames ``ks`` into ``work`` as ``NNNNN.png`` (0-based).
+
+    Each file is written under a temporary name and renamed, so it exists only
+    when complete. The scenes are built here and closed when the task ends.
+    """
+    with _movie_views(build, movie.rotations) as scenes:
+        for k in ks:
+            img = _draw_frame(scenes, movie, k, check_blank=True)
+            path = os.path.join(work, f"{k:05d}.png")
+            img.save(path + ".part", format="PNG")
+            os.replace(path + ".part", path)
+
+
+def _draw_parallel(build: _ViewsArgs, movie: _Movie, n_jobs: int, work: Path) -> None:
+    """Draw every frame of ``movie`` into ``work`` with this call's own pool.
+
+    Frames are split into contiguous chunks, one per worker. After a blank
+    render or a dead worker (``TerminatedWorkerError``) the pool is stopped
+    with its workers and a new one draws the frames still missing, up to
+    `_MAX_RESTARTS` times. Any other error, including the other kinds of
+    ``BrokenProcessPool`` (a task or result that cannot be unpickled, which
+    would fail again), is raised at once.
+    """
+    from joblib import effective_n_jobs
+    from joblib.externals.loky import ProcessPoolExecutor, as_completed
+    from joblib.externals.loky.process_executor import TerminatedWorkerError
+
+    n = len(movie.times)
+    error: BaseException | None = None
+    for attempt in range(_MAX_RESTARTS + 2):
+        missing = [k for k in range(n) if not (work / f"{k:05d}.png").exists()]
+        if not missing:
+            return
+        if attempt > _MAX_RESTARTS:
+            raise RuntimeError(
+                f"{len(missing)} of {n} frames not drawn after {_MAX_RESTARTS} "
+                f"restarts of the worker pool; last error: {error!r}"
+            ) from error
+        chunks = np.array_split(missing, min(effective_n_jobs(n_jobs), len(missing)))
+        pool = ProcessPoolExecutor(max_workers=len(chunks))
+        try:
+            futures = [
+                pool.submit(_draw_chunk, build, movie, c.tolist(), str(work))
+                for c in chunks
+            ]
+            for future in as_completed(futures):
+                future.result()
+        except (_BlankRender, TerminatedWorkerError) as err:
+            error = err
+        finally:
+            pool.shutdown(wait=True, kill_workers=True)
 
 
 # ------------------------------------------------------------------ animations
 
 
 def write_animation(
-    images: Iterable[Any], out: str | os.PathLike, fps: float = 10
+    images: Iterable[Any],
+    out: str | os.PathLike,
+    fps: float = 10,
+    *,
+    crf: int | None = None,
+    faststart: bool = False,
 ) -> Path:
     """Write PIL images as an mp4 (H.264, yuv420p) or looping GIF, by suffix.
 
@@ -1961,43 +2820,87 @@ def write_animation(
     (300 frames: about 1.4 GB). Use mp4 for long movies. Pillow stores
     identical consecutive GIF frames once, with their durations added, so
     such a GIF has fewer frames but the same running time.
+
+    Parameters
+    ----------
+    images : iterable of PIL.Image.Image
+        Frames, all the same size.
+    out : str or path-like
+        Output file; the suffix (``.mp4`` or ``.gif``) picks the format.
+    fps : float, default 10
+        Frames per second.
+    crf : int, optional
+        x264 constant rate factor, 0 to 51 (higher is smaller and blurrier).
+        Default ``None``: the 0.1.0 encoding (imageio ``quality=8``, which is
+        CRF 10). Not for GIF (``ValueError``).
+    faststart : bool, default False
+        Move the mp4 index to the start of the file so that browsers can
+        play it while it downloads. Not for GIF (``ValueError``).
     """
     _check_fps(fps)
     out = Path(out)
     suffix = out.suffix.lower()
     if suffix not in (".mp4", ".gif"):
         raise ValueError(f"out must end in .mp4 or .gif, got {out.name!r}")
+    if crf is not None and (
+        isinstance(crf, bool)
+        or not isinstance(crf, (int, np.integer))
+        or not 0 <= crf <= 51
+    ):
+        raise ValueError(f"crf must be an integer from 0 to 51, got {crf!r}")
+    if suffix == ".gif" and (crf is not None or faststart):
+        raise ValueError(
+            f"crf and faststart apply to .mp4 only, got {out.name!r} "
+            f"with crf={crf!r}, faststart={faststart!r}"
+        )
     if suffix == ".gif":
         frames = [im.convert("RGB") for im in images]
         if not frames:
             raise ValueError("no frames to write")
-        if len({f.size for f in frames}) != 1:
-            raise ValueError("all frames must have the same size")
+        for k, f in enumerate(frames):
+            _check_frame_size(f.size, frames[0].size, k + 1)
         _write_gif(frames, out, fps)
         return out
     iio = lazy_import("imageio.v2", "brain3d", "mp4 export")
     lazy_import("imageio_ffmpeg", "brain3d", "mp4 export")
     size = None
+    options: dict[str, Any] = {"quality": 8}
+    if crf is not None:
+        options = {"quality": None, "output_params": ["-crf", str(int(crf))]}
+    if faststart:
+        options["output_params"] = [
+            *options.get("output_params", []),
+            "-movflags",
+            "+faststart",
+        ]
     with iio.get_writer(
         out,
         fps=fps,
         codec="libx264",
-        quality=8,
         macro_block_size=2,
         pixelformat="yuv420p",
+        **options,
     ) as writer:
-        for im in images:
+        for k, im in enumerate(images):
             frame = im.convert("RGB")
             if size is None:
                 size = frame.size
-            elif frame.size != size:
-                raise ValueError("all frames must have the same size")
+            else:
+                _check_frame_size(frame.size, size, k + 1)
             w, h = size
             writer.append_data(np.asarray(frame.crop((0, 0, w - w % 2, h - h % 2))))
     if size is None:
         out.unlink(missing_ok=True)
         raise ValueError("no frames to write")
     return out
+
+
+def _check_frame_size(got: tuple[int, int], expected: tuple[int, int], k: int) -> None:
+    if got != expected:
+        raise ValueError(
+            f"all frames must have the same size: frame {k} is {got}, "
+            f"frame 1 is {expected}"
+        )
 
 
 def _write_gif(frames: list[Any], out: Path, fps: float) -> None:
@@ -2077,14 +2980,55 @@ def _open(x: Any) -> Any:
     return x.convert("RGB")
 
 
-def _content_box(images: Sequence[Any], margin: int = 10) -> tuple[int, int, int, int]:
-    """Smallest box holding every non-white pixel of all images, plus a margin."""
-    w, h = images[0].size
+def content_box(
+    images: Any, margin: int = 10, background: Any = "white"
+) -> tuple[int, int, int, int]:
+    """Smallest box holding every non-background pixel of all images.
+
+    Parameters
+    ----------
+    images : PIL.Image.Image, str, os.PathLike, or sequence of these
+        One image or a sequence of images (PIL images or paths), all of the
+        same size.
+    margin : int, default 10
+        Pixels added on every side of the content, clipped to the image.
+    background : color, default "white"
+        The background color (anything pyvista accepts; white needs no
+        pyvista). A pixel is content when any channel differs from it by
+        more than 5 (of 255).
+
+    Returns
+    -------
+    tuple of int
+        ``(left, top, right, bottom)``, the union of the content boxes. An
+        image that is all background gives the whole image.
+
+    Raises
+    ------
+    ValueError
+        If the images differ in size, ``images`` is empty, or ``margin`` is
+        not a non-negative integer.
+    """
+    if (
+        isinstance(margin, bool)
+        or not isinstance(margin, numbers.Integral)
+        or margin < 0
+    ):
+        raise ValueError(f"margin must be a non-negative integer, got {margin!r}")
+    if isinstance(images, (str, os.PathLike)) or not isinstance(images, Sequence):
+        images = [images]
+    if len(images) == 0:
+        raise ValueError(f"images must not be empty, got {images!r}")
+    ims = [_open(im) for im in images]
+    bg = np.asarray(_rgb255(background))
+    w, h = ims[0].size
     mask = np.zeros((h, w), dtype=bool)
-    for im in images:
+    for im in ims:
         if im.size != (w, h):
-            raise ValueError("all images must have the same size")
-        mask |= np.asarray(im).min(axis=2) < 250
+            raise ValueError(
+                f"all images must have the same size, got {ims[0].size} and {im.size}"
+            )
+        mask |= (np.abs(np.asarray(im).astype(int) - bg) > 5).any(axis=2)
     if not mask.any():
         return 0, 0, w, h
     rows, cols = np.flatnonzero(mask.any(axis=1)), np.flatnonzero(mask.any(axis=0))
@@ -2154,41 +3098,294 @@ def annotate_pair(
     PIL.Image.Image
         Text sits only in the header band, never over the brain.
     """
+    return _layout([left, right], titles, caption or None, None, crop, width, None)
+
+
+def _frame_size(frame_size: Any) -> tuple[int, int] | None:
+    """``frame_size`` as two ints, checked to be positive (or None)."""
+    if frame_size is None:
+        return None
+    if (
+        isinstance(frame_size, str)
+        or not isinstance(frame_size, Sequence)
+        or len(frame_size) != 2
+        or not all(
+            isinstance(v, numbers.Integral) and not isinstance(v, bool) and int(v) > 0
+            for v in frame_size
+        )
+    ):
+        raise ValueError(
+            f"frame_size must be two positive integers (W, H), got {frame_size!r}"
+        )
+    return int(frame_size[0]), int(frame_size[1])
+
+
+def _legend_rows(legend: Any) -> list[list[tuple[tuple[int, int, int], str, str]]]:
+    """Legend rows of ``(rgb, label, kind)``, ``rgb`` as 0-255 ints.
+
+    ``legend`` is one row, a list of ``(color, label, kind)`` with ``kind``
+    ``"dot"`` or ``"line"``, or a list of such rows.
+    """
+
+    def seq(x: Any) -> bool:
+        return isinstance(x, (list, tuple))
+
+    if not seq(legend) or not legend:
+        raise ValueError(
+            "legend must be a non-empty list of (color, label, kind) entries or "
+            f"of such rows, got {legend!r}"
+        )
+    nested = all(seq(row) and all(seq(e) for e in row) for row in legend)
+    rows = []
+    for r, row in enumerate(legend if nested else [legend], 1):
+        if not row:
+            raise ValueError(f"legend row {r} is empty")
+        entries = []
+        for entry in row:
+            if not (
+                seq(entry)
+                and len(entry) == 3
+                and isinstance(entry[1], str)
+                and entry[2] in ("dot", "line")
+            ):
+                raise ValueError(
+                    "legend entries are (color, label, kind) with kind 'dot' or "
+                    f"'line'; row {r} has {entry!r}"
+                )
+            entries.append((_rgb255(entry[0]), entry[1], entry[2]))
+        rows.append(entries)
+    return rows
+
+
+def _finish_frame(
+    images: Sequence[Any],
+    t: float,
+    text: str | None,
+    layout: tuple[list[str], list[str] | None, list | None, tuple[int, int] | None]
+    | None,
+    crop: tuple[int, int, int, int] | None,
+    background: Any,
+    compose: Callable[[list[Any], float], Any] | None,
+) -> Any:
+    """One movie frame from the per-view images of time ``t``.
+
+    ``compose`` (when given) makes the frame from ``images`` and ``t``; else
+    the layout (or, without one, the caption header) does.
+    """
+    if compose is not None:
+        img = compose(list(images), t)
+        if not hasattr(img, "convert"):
+            raise ValueError(f"compose must return a PIL image, got {img!r} at t={t}")
+        return _open(img)
+    if layout is None:
+        return images[0] if text is None else _with_header(images[0], [text])
+    _, titles, rows, size = layout
+    return _layout(images, titles, text, rows, crop, None, size, background)
+
+
+def _layout_args(
+    views: Any, legend: Any, frame_size: Any, style: dict[str, Any]
+) -> tuple[list[str], list[str] | None, list | None, tuple[int, int] | None] | None:
+    """Checked ``(names, titles, legend rows, frame_size)`` of the layout path.
+
+    None (the single-view path) when none of ``views``, ``legend`` and
+    ``frame_size`` is given; ``style`` is checked for a ``view`` given with
+    ``views``. ``titles`` is None (no title band) when all are empty.
+    """
+    if views is None and legend is None and frame_size is None:
+        return None
+    if views is not None and "view" in style:
+        raise ValueError(
+            f"give view or views, not both; got view={style['view']!r} and "
+            f"views={views!r}"
+        )
+    names, titles = _view_titles(
+        [style.get("view", "lateral")] if views is None else views
+    )
+    rows = None if legend is None else _legend_rows(legend)
+    return names, titles if any(titles) else None, rows, _frame_size(frame_size)
+
+
+def _layout(
+    images: Sequence[Any],
+    titles: Sequence[str] | None,
+    caption: str | None,
+    legend: list | None,
+    crop: tuple[int, int, int, int] | None,
+    width: int | None,
+    frame_size: tuple[int, int] | None,
+    background: Any = "white",
+) -> Any:
+    """Images side by side under their titles and a caption, legend rows below.
+
+    Parameters
+    ----------
+    images : sequence of paths or PIL images
+        Views of equal size.
+    titles : sequence of str, or None
+        One per image; ``"\\n"`` starts a smaller subtitle line. A sequence
+        always reserves the title rows (as `annotate_pair` does, even for
+        empty titles); ``None`` leaves them out, and with no caption there
+        is no header band at all.
+    caption : str or None
+        A line centered under the titles; ``None`` leaves out its row.
+    legend : list or None
+        Rows from `_legend_rows`, centered below the views.
+    crop : (left, top, right, bottom) or None
+        Region of each image to show; default `content_box` of all images
+        with ``background``.
+    width : int or None
+        Frame width with panes of ``width // N`` pixels (`annotate_pair`).
+    frame_size : (W, H) or None
+        Exact frame size; the cropped views are scaled (Lanczos, up or down,
+        keeping their aspect ratio) to fit the space between the bands and
+        centered; a legend row wider than W raises ``ValueError``. With
+        neither ``width`` nor ``frame_size``, views keep their cropped size,
+        the frame is as wide as the views or, if wider, the widest legend
+        row plus one entry gap on each side (views centered), and it is
+        trimmed to even width and height. Font sizes follow the views'
+        summed width (or the given W), also when the legend widens the
+        frame.
+    background : color
+        Frame and band color. Text is black when the background's mean
+        channel is 128 or more, else white; subtitle and divider grays are
+        mirrored likewise (``255 - gray``).
+
+    Returns
+    -------
+    PIL.Image.Image
+    """
     Image = _pil()
     draw_mod = lazy_import("PIL.ImageDraw", "brain3d", "annotations")
-    ims = [_open(left), _open(right)]
-    box = crop or _content_box(ims)
-    pane_w = width // 2
-    pane_h = round(pane_w * (box[3] - box[1]) / (box[2] - box[0]))
-    tsize = max(16, width // 32)
+    ims = [_open(im) for im in images]
+    has_titles = titles is not None
+    titles = [""] * len(ims) if titles is None else titles
+    if len(titles) != len(ims):
+        raise ValueError(f"{len(titles)} titles for {len(ims)} images")
+    box = crop or content_box(ims, background=background)
+    n, bw, bh = len(ims), box[2] - box[0], box[3] - box[1]
+    W = frame_size[0] if frame_size else width or n * bw
+    bg, light = _rgb255(background), _is_light(background)
+
+    def ink(v: int) -> tuple[int, int, int]:
+        return (v, v, v) if light else (255 - v, 255 - v, 255 - v)
+
+    tsize = max(16, W // 32)
     ssize = int(tsize * 0.8)
     n_sub = max(len(t.split("\n")) for t in titles) - 1
-    head = int(
-        tsize * 1.5
-        + n_sub * ssize * 1.3
-        + (ssize * 1.6 if caption else 0)
-        + tsize * 0.4
-    )
+    if has_titles:
+        top, cap_y = (
+            tsize * 1.5 + n_sub * ssize * 1.3,
+            int(tsize * 1.6 + n_sub * ssize * 1.3),
+        )
+    else:
+        top, cap_y = tsize * 0.2, int(tsize * 0.3)
+    head = 0
+    if has_titles or caption is not None:
+        head = int(top + (ssize * 1.6 if caption is not None else 0) + tsize * 0.4)
+    rows = legend or []
+    lsize = max(12, round(30 * W / 1920))
+    band = round(64 * lsize / 30)
+    legend_h = band * len(rows)
+    if rows and not frame_size and not width:
+        # a natural frame widens to hold the widest legend row
+        gap = _legend_geometry(lsize)[1]
+        W = max(W, math.ceil(max(_legend_row_widths(rows, lsize))) + 2 * gap)
+    if frame_size:
+        H = frame_size[1]
+        space = H - head - legend_h
+        if space < 1:
+            raise ValueError(
+                f"frame_size {frame_size} leaves no room for the views under "
+                f"{head} px of titles and above {legend_h} px of legend"
+            )
+        s = min(W / (n * bw), space / bh)
+        pw, ph = max(1, int(bw * s)), max(1, int(bh * s))
+    else:
+        pw = width // n if width else bw
+        ph = round(pw * bh / bw)
+        H = head + ph + legend_h
+    x0, y0 = (W - n * pw) // 2, head + (H - head - legend_h - ph) // 2
     ft, fs = _font(tsize), _font(ssize)
-    canvas = Image.new("RGB", (width, head + pane_h), "white")
+    canvas = Image.new("RGB", (W, H), bg)
     d = draw_mod.Draw(canvas)
     for k, (im, title) in enumerate(zip(ims, titles, strict=True)):
-        canvas.paste(
-            im.crop(box).resize((pane_w, pane_h), Image.LANCZOS), (k * pane_w, head)
-        )
+        canvas.paste(im.crop(box).resize((pw, ph), Image.LANCZOS), (x0 + k * pw, y0))
         lines = title.split("\n")
-        xc = k * pane_w + pane_w / 2
-        _center_text(d, xc, int(tsize * 0.3), lines[0], ft, (0, 0, 0))
+        xc = x0 + k * pw + pw / 2
+        _center_text(d, xc, int(tsize * 0.3), lines[0], ft, ink(0))
         for m, line in enumerate(lines[1:]):
-            _center_text(
-                d, xc, int(tsize * 1.5 + m * ssize * 1.3), line, fs, (60, 60, 60)
-            )
-    if caption:
-        _center_text(
-            d, width / 2, int(tsize * 1.6 + n_sub * ssize * 1.3), caption, fs, (0, 0, 0)
-        )
-    d.line([(pane_w, head), (pane_w, head + pane_h)], fill=(200, 200, 200), width=2)
+            _center_text(d, xc, int(tsize * 1.5 + m * ssize * 1.3), line, fs, ink(60))
+    if caption is not None:
+        _center_text(d, W / 2, cap_y, caption, fs, ink(0))
+    for k in range(1, n):
+        x = x0 + k * pw
+        d.line([(x, y0), (x, y0 + ph)], fill=ink(200), width=2)
+    if rows:
+        _draw_legend(d, rows, W, H - legend_h, band, lsize, ink(0))
+    if not frame_size and not width:
+        canvas = canvas.crop((0, 0, W - W % 2, H - H % 2))
     return canvas
+
+
+def _legend_geometry(size: int) -> tuple[Any, int, int, int, int, int]:
+    """Legend ``(font, gap, mark, radius, line width, pad)`` for font ``size``.
+
+    Per 30 px of font: gap 40 between entries, mark width 34, dot radius 12,
+    line width 6, mark to text 10.
+    """
+    gap, mark, radius, lw, pad = (round(v * size / 30) for v in (40, 34, 12, 6, 10))
+    return _font(size), gap, mark, radius, lw, pad
+
+
+def _legend_row_widths(rows: list, size: int) -> list[float]:
+    """Width in pixels of each legend row at font ``size``."""
+    font, gap, mark, _, _, pad = _legend_geometry(size)
+    return [
+        sum(mark + pad + font.getlength(label) for _, label, _ in row)
+        + gap * (len(row) - 1)
+        for row in rows
+    ]
+
+
+def _draw_legend(
+    d: Any,
+    rows: list,
+    W: int,
+    top: int,
+    band: int,
+    size: int,
+    fill: tuple[int, int, int],
+) -> None:
+    """Draw legend rows (`_legend_rows`) as bands of height ``band`` from ``top``.
+
+    ``size`` is the font size (see `_legend_geometry`). Entries are
+    centered as a group in the frame width ``W``; a wider row raises.
+    """
+    font, gap, mark, radius, lw, pad = _legend_geometry(size)
+    for r, (row, total) in enumerate(
+        zip(rows, _legend_row_widths(rows, size), strict=True)
+    ):
+        widths = [mark + pad + font.getlength(label) for _, label, _ in row]
+        if total > W:
+            raise ValueError(
+                f"legend row {r + 1} is {total:.0f} px wide, more than the {W} px "
+                f"frame: {[label for _, label, _ in row]}"
+            )
+        x, yc = (W - total) / 2, top + r * band + band / 2
+        for (rgb, label, kind), w in zip(row, widths, strict=True):
+            if kind == "dot":
+                cx = x + mark / 2
+                d.ellipse(
+                    [cx - radius, yc - radius, cx + radius, yc + radius], fill=rgb
+                )
+            else:
+                d.line([(x, yc), (x + mark, yc)], fill=rgb, width=max(1, lw))
+            t = d.textbbox((0, 0), label, font=font)
+            d.text(
+                (x + mark + pad, yc - (t[1] + t[3]) / 2), label, font=font, fill=fill
+            )
+            x += w + gap
 
 
 def montage(
@@ -2226,7 +3423,7 @@ def montage(
     grid = [[_open(x) for x in row] for row in images]
     if len(grid) != len(row_labels) or any(len(r) != len(col_labels) for r in grid):
         raise ValueError("images must be len(row_labels) rows of len(col_labels)")
-    box = crop or _content_box([im for row in grid for im in row])
+    box = crop or content_box([im for row in grid for im in row])
     cell_h = round(cell_width * (box[3] - box[1]) / (box[2] - box[0]))
     tsize, lsize = 40, 34
     ft, fl = _font(tsize), _font(lsize)

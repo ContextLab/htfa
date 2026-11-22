@@ -1,5 +1,7 @@
 """Independent formula checks and actual estimator parameter counts."""
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -44,12 +46,40 @@ def test_edge_cases():
 @pytest.mark.parametrize("kernel", ["rbf", "laplace", "mexican_hat"])
 @pytest.mark.parametrize("m", [1, 2])
 def test_fitted_count_and_scoring(kernel, m):
+    """Parameter counts and scores of a fit stopped after one global iteration.
+
+    The fit is cut short on purpose (only counts and scores are checked), so
+    HTFA warns once that it did not converge; that warning is required. A
+    stage-0 (unpenalized) subject fit may also reach TFA's max_iter=100 and
+    warn (here: with 2 Mexican-hat components), since HTFA does not suppress
+    those; whether it does depends on the numerical libraries, so up to one
+    such TFA ConvergenceWarning per subject is allowed, not required, as is
+    one numpy build's spurious matmul RuntimeWarning (see below). Any other
+    warning fails the test.
+    """
     xs, rs, _ = htfa.make_htfa_data(
         n_subjects=2, grid_shape=(8, 8), K=2, n_samples=15, random_state=1
     )
-    model = htfa.HTFA(
-        K=2, kernel=kernel, n_components=m, max_global_iter=1, random_state=0
-    ).fit(xs, rs)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        model = htfa.HTFA(
+            K=2, kernel=kernel, n_components=m, max_global_iter=1, random_state=0
+        ).fit(xs, rs)
+    got = sorted(
+        (w.category.__name__, str(w.message).split(" did not converge")[0])
+        for w in caught
+    )
+    print("warnings:", [str(w.message) for w in caught])
+    induced, optional = ("ConvergenceWarning", "HTFA"), ("ConvergenceWarning", "TFA")
+    # numpy 2.2.6's Accelerate build on Apple silicon (Python 3.10 on macOS)
+    # raises this from the float32 G @ G.T in the engine's Hessian on finite
+    # inputs, with a finite result equal to einsum's; the same product
+    # repeated does not warn. A spurious floating-point flag, allowed (not
+    # required); the finite rss below shows that the fit has no NaN.
+    spurious = ("RuntimeWarning", "invalid value encountered in matmul")
+    assert got.count(induced) == 1
+    assert got.count(optional) <= len(xs)
+    assert [g for g in got if g not in (induced, optional, spurious)] == []
     res = htfa.HTFAResults(
         model, [htfa.Subject(x, r) for x, r in zip(xs, rs, strict=True)]
     )
@@ -62,7 +92,8 @@ def test_fitted_count_and_scoring(kernel, m):
     rss = sum(
         np.linalg.norm(x - res.reconstruct(i)) ** 2 for i, x in enumerate(standardized)
     )
-    assert score.rss == pytest.approx(rss)
+    print("rss", rss, "score.rss", score.rss)
+    assert np.isfinite(rss) and score.rss == pytest.approx(rss)
     assert score.n_observations == 2 * 64 * 15
 
 

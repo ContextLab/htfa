@@ -268,6 +268,7 @@ anchors but does not move or resize the spatial fields.
 
    htfa.plot_network
    htfa.animate_network
+   htfa.content_box
    htfa.plot_timecourse
    htfa.brainnet.read_node
    htfa.brainnet.write_node

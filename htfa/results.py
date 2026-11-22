@@ -1124,8 +1124,10 @@ class HTFAResults:
         `display_nodes`, which returns the drawn centers and widths): the
         mask defaults to the subject's voxels, or all subjects' voxels for
         the template. ``snap=False`` draws the fitted centers and widths.
-        Other keyword arguments go to `htfa.brainnet.plot_network`. Needs the
-        ``brain3d`` extra.
+        Other keyword arguments go to `htfa.brainnet.plot_network`, among
+        them ``node_color`` (one color, or one per factor), ``views``,
+        ``legend`` and ``frame_size`` (several views and a legend in one
+        image). Needs the ``brain3d`` extra.
         """
         subject = self._target(subject, group)
         if subject == "global" and self.global_centers is None:
@@ -1147,12 +1149,16 @@ class HTFAResults:
 
         ``connectivity`` defaults to ``isfc(window)`` for ``"global"`` and to
         ``dynamic_connectivity(subject, window)`` otherwise; ``group`` as in
-        `plot_network`. Nodes are
+        `plot_network`. ``connectivity=None`` here still computes these
+        defaults, unlike ``connectivity=None`` in
+        `htfa.brainnet.animate_network` (no edges); for a movie without
+        edges call that function. Nodes are
         snapped by default as in `plot_network`. Other keyword arguments go to
         `htfa.brainnet.animate_network`, among them ``fps`` (frame rate),
         ``duration`` (seconds; frames interpolated between windows, see
-        ``interpolation``) and ``spin`` (turns about x, y, z). Needs the
-        ``brain3d`` extra.
+        ``interpolation``), ``spin`` (turns about x, y, z), ``node_color``,
+        ``views``, ``legend``, ``frame_size``, ``compose``, ``n_jobs``,
+        ``crf`` and ``faststart``. Needs the ``brain3d`` extra.
 
         Examples
         --------
