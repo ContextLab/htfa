@@ -25,7 +25,8 @@ After approval:
    Verify that its archive targets the approved release, then add the DOI badge.
    Do not mint or insert a provisional DOI during preparation.
 
-Configure index identity carefully: project name is `htfa`, version `0.1.0`.
+Configure index identity carefully: project name is `htfa`; the version is the
+one in `pyproject.toml`, described in the [release overview](../docs/changelog.rst).
 GitHub environment protection and index trusted-publisher setup are NOT complete
 merely because this example exists. No TestPyPI or PyPI upload has been performed.
 

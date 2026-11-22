@@ -82,3 +82,13 @@
 - Tests: all Linux and all Windows jobs green (Windows 3.14 included); macOS jobs were still queued at the next push (they were green in round 2; only a test helper changed since).
 - Candidate workflow (executes every tutorial against the wheel, 120-minute job limit): a Windows job was cancelled at the limit in rounds 2 and 3. Tutorial 10 took 25.5 min on the Windows runner vs 7 min before this branch. Fix fd55f59: the new sections render about 64 frames instead of 400 (local total 37-40 s vs 33 s at main, 52 s before the fix). The n_jobs=1 vs 4 timing comparison left the tutorial.
 - Candidate timings on Windows, for reference: pytest about 25 min, tutorial 05 about 43 min, tutorial 15 about 17 min; the job is close to its limit even without this branch (1 h 47 min on 2026-10-29 for Python 3.14).
+
+## 2026-11-22 evening: merged, release drafted
+- CI round 4 on 42846c2: all 34 checks green (tests 3 h 45 min wall, candidate 5 h 27 min wall; macOS runner queue dominated; Windows wheel jobs 48-78 min after the tutorial fix).
+- User said: "merge, draft the release, recompile rtd, then i'll review before you push to pypi".
+- PR #189 squash-merged to main as daf8c0f (repo convention); branch epic/network-plots-188 kept so single commits can still be reverted.
+- Draft GitHub release "HTFA 0.2.0" (tag v0.2.0 not created; target daf8c0f). Notes text: scratchpad release-0.2.0.md, also in the draft.
+- Read the Docs build 36087128 of latest was triggered by the merge.
+- NOT done, waits for the user's review and explicit go: PyPI/TestPyPI upload, publishing the draft release (creates the tag and a Zenodo archive), DOI badge. Procedure: release-preparation/README.md (trusted publishers and GitHub environments are not configured; publish.yml.example is inactive; its README still says version 0.1.0).
+- Remaining tidy-up after the user's review: delete .superpowers/sdd/2026-11-21-network-plots-188/, decide whether to delete the merged branch.
+- User asked that the README not name a specific version: release-preparation/README.md now points to pyproject.toml and docs/changelog.rst (README.md had no version number). Pushed straight to main at the user's choice; the draft release is re-pointed at that commit.
