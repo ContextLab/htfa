@@ -26,6 +26,7 @@ cached (see `mesh_cache_dir`).
 from __future__ import annotations
 
 import math
+import numbers
 import os
 import shutil
 import subprocess
@@ -2103,12 +2104,20 @@ def content_box(
     Raises
     ------
     ValueError
-        If the images differ in size.
+        If the images differ in size, ``images`` is empty, or ``margin`` is
+        not a non-negative integer.
     """
-    if isinstance(images, (list, tuple)):
-        ims = [_open(im) for im in images]
-    else:
-        ims = [_open(images)]
+    if (
+        isinstance(margin, bool)
+        or not isinstance(margin, numbers.Integral)
+        or margin < 0
+    ):
+        raise ValueError(f"margin must be a non-negative integer, got {margin!r}")
+    if isinstance(images, (str, os.PathLike)) or not isinstance(images, Sequence):
+        images = [images]
+    if len(images) == 0:
+        raise ValueError(f"images must not be empty, got {images!r}")
+    ims = [_open(im) for im in images]
     bg = np.round(np.asarray(_rgb(background)) * 255)
     w, h = ims[0].size
     mask = np.zeros((h, w), dtype=bool)

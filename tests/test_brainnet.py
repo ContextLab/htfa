@@ -955,6 +955,37 @@ def test_content_box_all_background_and_sizes():
         bn.content_box([Image.new("RGB", (10, 10)), Image.new("RGB", (10, 12))])
 
 
+def test_content_box_sequences_empty_and_margin():
+    from collections import UserList
+
+    a = _boxed("white", (10, 10, 10))
+    b = _boxed("white", (10, 10, 10), rect=(60, 5, 70, 15))
+    assert bn.content_box(UserList([a, b]), margin=0) == (20, 5, 70, 45)
+    assert bn.content_box((a,), margin=0) == (20, 30, 40, 45)
+    for bad in ([], ()):
+        with pytest.raises(ValueError, match="empty"):
+            bn.content_box(bad)
+    for bad in (2.5, "3", -1, None, True):
+        with pytest.raises(ValueError, match="margin") as err:
+            bn.content_box(a, margin=bad)
+        print("margin", repr(bad), "->", err.value)
+
+
+def test_content_box_threshold_is_exactly_five():
+    for channel in range(3):
+        for delta, content in ((5, False), (6, True)):
+            color = [255, 255, 255]
+            color[channel] -= delta
+            box = bn.content_box(_boxed("white", tuple(color)), margin=0)
+            print("channel", channel, "delta", delta, "->", box)
+            assert box == ((20, 30, 40, 45) if content else (0, 0, 100, 60))
+    # same rule against a non-white background, in the other direction
+    box = bn.content_box(_boxed((100, 100, 100), (106, 100, 100)), 0, (100, 100, 100))
+    assert box == (20, 30, 40, 45)
+    box = bn.content_box(_boxed((100, 100, 100), (105, 100, 100)), 0, (100, 100, 100))
+    assert box == (0, 0, 100, 60)
+
+
 def test_content_box_exported():
     assert htfa.content_box is htfa.brainnet.content_box
     assert "content_box" in htfa.__all__ and "content_box" in bn.__all__
