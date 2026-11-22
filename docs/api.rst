@@ -285,6 +285,7 @@ anchors but does not move or resize the spatial fields.
    htfa.brainnet.write_animation
    htfa.brainnet.image_diff
    htfa.brainnet.annotate_pair
+   htfa.brainnet.content_box
    htfa.brainnet.montage
    htfa.timecourse.global_connectivity
    htfa.timecourse.edge_count

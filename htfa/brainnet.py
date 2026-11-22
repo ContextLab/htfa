@@ -56,6 +56,7 @@ __all__ = [
     "animate_network",
     "annotate_pair",
     "config_style",
+    "content_box",
     "effective_nodes",
     "fetch_mesh",
     "image_diff",
@@ -2077,14 +2078,46 @@ def _open(x: Any) -> Any:
     return x.convert("RGB")
 
 
-def _content_box(images: Sequence[Any], margin: int = 10) -> tuple[int, int, int, int]:
-    """Smallest box holding every non-white pixel of all images, plus a margin."""
-    w, h = images[0].size
+def content_box(
+    images: Any, margin: int = 10, background: Any = "white"
+) -> tuple[int, int, int, int]:
+    """Smallest box holding every non-background pixel of all images.
+
+    Parameters
+    ----------
+    images : PIL.Image.Image, str, os.PathLike, or sequence of these
+        One image or a sequence of images (PIL images or paths), all of the
+        same size.
+    margin : int, default 10
+        Pixels added on every side of the content, clipped to the image.
+    background : color, default "white"
+        The background color (anything pyvista accepts). A pixel is content
+        when any channel differs from it by more than 5 (of 255).
+
+    Returns
+    -------
+    tuple of int
+        ``(left, top, right, bottom)``, the union of the content boxes. An
+        image that is all background gives the whole image.
+
+    Raises
+    ------
+    ValueError
+        If the images differ in size.
+    """
+    if isinstance(images, (list, tuple)):
+        ims = [_open(im) for im in images]
+    else:
+        ims = [_open(images)]
+    bg = np.round(np.asarray(_rgb(background)) * 255)
+    w, h = ims[0].size
     mask = np.zeros((h, w), dtype=bool)
-    for im in images:
+    for im in ims:
         if im.size != (w, h):
-            raise ValueError("all images must have the same size")
-        mask |= np.asarray(im).min(axis=2) < 250
+            raise ValueError(
+                f"all images must have the same size, got {ims[0].size} and {im.size}"
+            )
+        mask |= (np.abs(np.asarray(im).astype(int) - bg) > 5).any(axis=2)
     if not mask.any():
         return 0, 0, w, h
     rows, cols = np.flatnonzero(mask.any(axis=1)), np.flatnonzero(mask.any(axis=0))
@@ -2157,7 +2190,7 @@ def annotate_pair(
     Image = _pil()
     draw_mod = lazy_import("PIL.ImageDraw", "brain3d", "annotations")
     ims = [_open(left), _open(right)]
-    box = crop or _content_box(ims)
+    box = crop or content_box(ims)
     pane_w = width // 2
     pane_h = round(pane_w * (box[3] - box[1]) / (box[2] - box[0]))
     tsize = max(16, width // 32)
@@ -2226,7 +2259,7 @@ def montage(
     grid = [[_open(x) for x in row] for row in images]
     if len(grid) != len(row_labels) or any(len(r) != len(col_labels) for r in grid):
         raise ValueError("images must be len(row_labels) rows of len(col_labels)")
-    box = crop or _content_box([im for row in grid for im in row])
+    box = crop or content_box([im for row in grid for im in row])
     cell_h = round(cell_width * (box[3] - box[1]) / (box[2] - box[0]))
     tsize, lsize = 40, 34
     ft, fl = _font(tsize), _font(lsize)

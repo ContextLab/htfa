@@ -917,6 +917,50 @@ def test_image_diff_known_values(tmp_path):
     assert bn.image_diff(a, b) == pytest.approx(30.0)
 
 
+def _boxed(bg, fg, size=(100, 60), rect=(20, 30, 40, 45)):
+    im = Image.new("RGB", size, bg)
+    im.paste(Image.new("RGB", (rect[2] - rect[0], rect[3] - rect[1]), fg), rect[:2])
+    return im
+
+
+def test_content_box_white():
+    im = _boxed("white", (10, 10, 10))
+    box = bn.content_box([im])
+    print("margin 10:", box)
+    assert box == (10, 20, 50, 55)
+    assert bn.content_box([im], margin=0) == (20, 30, 40, 45)
+
+
+def test_content_box_single_image_path_and_union(tmp_path):
+    a = _boxed("white", (10, 10, 10))
+    b = _boxed("white", (10, 10, 10), rect=(60, 5, 70, 15))
+    assert bn.content_box(a, margin=0) == (20, 30, 40, 45)
+    a.save(tmp_path / "a.png")
+    assert bn.content_box(tmp_path / "a.png", margin=0) == (20, 30, 40, 45)
+    assert bn.content_box(str(tmp_path / "a.png"), margin=0) == (20, 30, 40, 45)
+    box = bn.content_box([a, b], margin=0)
+    print("union:", box)
+    assert box == (20, 5, 70, 45)
+
+
+def test_content_box_background():
+    im = _boxed("black", "white")
+    assert bn.content_box(im, margin=0, background="black") == (20, 30, 40, 45)
+    assert bn.content_box(im, margin=0) == (0, 0, 100, 60)
+
+
+def test_content_box_all_background_and_sizes():
+    assert bn.content_box(Image.new("RGB", (100, 60), "white")) == (0, 0, 100, 60)
+    with pytest.raises(ValueError, match="same size"):
+        bn.content_box([Image.new("RGB", (10, 10)), Image.new("RGB", (10, 12))])
+
+
+def test_content_box_exported():
+    assert htfa.content_box is htfa.brainnet.content_box
+    assert "content_box" in htfa.__all__ and "content_box" in bn.__all__
+    assert not hasattr(bn, "_content_box")
+
+
 def test_annotate_pair_and_montage(tmp_path):
     left = bn.plot_network(CENTERS, _conn(), mesh=None)
     right = bn.plot_network(CENTERS, -_conn(), mesh=None)
@@ -924,7 +968,7 @@ def test_annotate_pair_and_montage(tmp_path):
         left, right, ("Original\nsaved files", "Reconstruction"), "TR 3", width=1200
     )
     pair.save(tmp_path / "pair.png")
-    box = bn._content_box([left.convert("RGB"), right.convert("RGB")])
+    box = bn.content_box([left.convert("RGB"), right.convert("RGB")])
     pane_h = round(600 * (box[3] - box[1]) / (box[2] - box[0]))
     head = pair.size[1] - pane_h
     assert pair.size[0] == 1200 and head > 60

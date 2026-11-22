@@ -3,7 +3,7 @@
 from . import datasets as datasets
 from . import stats as stats
 from ._lazy import require, set_autoinstall
-from .brainnet import animate_network, plot_network
+from .brainnet import animate_network, content_box, plot_network
 from .connectivity import dynamic_connectivity, isfc, static_connectivity
 from .fit import fit
 from .groups import group_permutation_test
@@ -22,6 +22,7 @@ __all__ = [
     "Subject",
     "TFA",
     "animate_network",
+    "content_box",
     "dynamic_connectivity",
     "fit",
     "group_permutation_test",
