@@ -1948,7 +1948,12 @@ def animate_network(
 
 
 def write_animation(
-    images: Iterable[Any], out: str | os.PathLike, fps: float = 10
+    images: Iterable[Any],
+    out: str | os.PathLike,
+    fps: float = 10,
+    *,
+    crf: int | None = None,
+    faststart: bool = False,
 ) -> Path:
     """Write PIL images as an mp4 (H.264, yuv420p) or looping GIF, by suffix.
 
@@ -1963,12 +1968,38 @@ def write_animation(
     (300 frames: about 1.4 GB). Use mp4 for long movies. Pillow stores
     identical consecutive GIF frames once, with their durations added, so
     such a GIF has fewer frames but the same running time.
+
+    Parameters
+    ----------
+    images : iterable of PIL.Image.Image
+        Frames, all the same size.
+    out : str or path-like
+        Output file; the suffix (``.mp4`` or ``.gif``) picks the format.
+    fps : float, default 10
+        Frames per second.
+    crf : int, optional
+        x264 constant rate factor, 0 to 51 (higher is smaller and blurrier).
+        Default: the 0.1.0 quality setting (``quality=8``). mp4 only.
+    faststart : bool, default False
+        Move the mp4 index to the start of the file so that browsers can
+        play it while it downloads. mp4 only.
     """
     _check_fps(fps)
     out = Path(out)
     suffix = out.suffix.lower()
     if suffix not in (".mp4", ".gif"):
         raise ValueError(f"out must end in .mp4 or .gif, got {out.name!r}")
+    if crf is not None and (
+        isinstance(crf, bool)
+        or not isinstance(crf, (int, np.integer))
+        or not 0 <= crf <= 51
+    ):
+        raise ValueError(f"crf must be an integer from 0 to 51, got {crf!r}")
+    if suffix == ".gif" and (crf is not None or faststart):
+        raise ValueError(
+            f"crf and faststart apply to .mp4 only, got {out.name!r} "
+            f"with crf={crf!r}, faststart={faststart!r}"
+        )
     if suffix == ".gif":
         frames = [im.convert("RGB") for im in images]
         if not frames:
@@ -1980,13 +2011,22 @@ def write_animation(
     iio = lazy_import("imageio.v2", "brain3d", "mp4 export")
     lazy_import("imageio_ffmpeg", "brain3d", "mp4 export")
     size = None
+    options: dict[str, Any] = {"quality": 8}
+    if crf is not None:
+        options = {"quality": None, "output_params": ["-crf", str(int(crf))]}
+    if faststart:
+        options["output_params"] = [
+            *options.get("output_params", []),
+            "-movflags",
+            "+faststart",
+        ]
     with iio.get_writer(
         out,
         fps=fps,
         codec="libx264",
-        quality=8,
         macro_block_size=2,
         pixelformat="yuv420p",
+        **options,
     ) as writer:
         for im in images:
             frame = im.convert("RGB")

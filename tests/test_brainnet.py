@@ -587,6 +587,63 @@ def test_write_animation_mp4_streams_frames(tmp_path):
     assert (last[60, :155, 0] > 150).all() and (last[60, :155, 2] < 80).all()
 
 
+def _square_frames(n=12):
+    """Real 320 x 200 frames: a red square moving over a white background."""
+    out = []
+    for k in range(n):
+        a = np.full((200, 320, 3), 255, np.uint8)
+        a[60:100, 10 + 20 * k : 50 + 20 * k] = (200, 30, 30)
+        out.append(Image.fromarray(a))
+    return out
+
+
+def test_write_animation_crf_size(tmp_path):
+    """A higher CRF gives a smaller file; both decode to 12 frames of 320 x 200."""
+    import imageio.v2 as iio
+
+    sizes = {}
+    for crf in (10, 40):
+        out = bn.write_animation(_square_frames(), tmp_path / f"c{crf}.mp4", crf=crf)
+        sizes[crf] = out.stat().st_size
+        decoded = iio.mimread(out)
+        assert len(decoded) == 12 and decoded[0].shape[:2] == (200, 320)
+    print("file sizes by crf:", sizes)
+    assert sizes[40] < sizes[10]
+
+
+def test_write_animation_default_unchanged(tmp_path):
+    """The default call is reproducible and is not the explicit crf=23 encode."""
+    a = bn.write_animation(_square_frames(), tmp_path / "a.mp4").read_bytes()
+    b = bn.write_animation(_square_frames(), tmp_path / "b.mp4").read_bytes()
+    c = bn.write_animation(_square_frames(), tmp_path / "c.mp4", crf=23).read_bytes()
+    print("sizes (default, default, crf=23):", len(a), len(b), len(c))
+    assert a == b
+    assert a != c
+
+
+def test_write_animation_faststart(tmp_path):
+    """faststart puts the moov atom before mdat; the default puts it after."""
+    for faststart in (True, False):
+        data = bn.write_animation(
+            _square_frames(), tmp_path / f"f{faststart}.mp4", faststart=faststart
+        ).read_bytes()
+        moov, mdat = data.find(b"moov"), data.find(b"mdat")
+        print(f"faststart={faststart}: moov at {moov}, mdat at {mdat}")
+        assert -1 not in (moov, mdat)
+        assert (moov < mdat) is faststart
+
+
+def test_write_animation_options_validated(tmp_path):
+    frames = _square_frames(2)
+    for crf in (52, -1, 2.5):
+        with pytest.raises(ValueError, match=str(crf)):
+            bn.write_animation(frames, tmp_path / "x.mp4", crf=crf)
+    with pytest.raises(ValueError, match="crf"):
+        bn.write_animation(frames, tmp_path / "x.gif", crf=23)
+    with pytest.raises(ValueError, match="faststart"):
+        bn.write_animation(frames, tmp_path / "x.gif", faststart=True)
+
+
 def test_animate_network_long_mp4(tmp_path):
     """A 40-frame animate_network mp4 decodes to 40 frames with changing edges."""
     import imageio.v2 as iio
