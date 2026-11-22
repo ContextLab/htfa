@@ -3099,6 +3099,34 @@ def _die_once_compose(marker, images, t):
     return images[0]
 
 
+def _locking_compose(fail, images, t):
+    """At t == 0, leave a folder that cannot be emptied in the call's frame
+    folder (and raise ValueError if ``fail``); else the first view."""
+    import tempfile
+
+    if t == 0:
+        (work,) = Path(tempfile.gettempdir()).glob("htfa-frames-*")
+        locked = work / "locked"
+        locked.mkdir()
+        (locked / "file").write_text("x")
+        locked.chmod(0o500)
+        if fail:
+            raise ValueError("compose refuses t=0.0 after locking")
+    return images[0]
+
+
+def _unlock_frame_dirs(names):
+    import shutil
+    import tempfile
+
+    for name in names:
+        work = Path(tempfile.gettempdir()) / name
+        for d in (work, *work.rglob("*")):
+            if d.is_dir():
+                d.chmod(0o700)
+        shutil.rmtree(work)
+
+
 def _die_compose(images, t):
     os._exit(1)
 
@@ -3127,7 +3155,7 @@ def _jobs_pair(tmp_path, name, connectivity, n, suffix=".mp4", **kw):
         )  # fmt: skip
         names = sorted(p.name for p in folder.iterdir())
         print(f"{name} n_jobs={jobs}: {time.perf_counter() - start:.1f} s, {names}")
-        assert out.stat().st_size > 0
+        assert out.stat().st_size > 0 and len(names) == n
         folders.append(folder)
     return folders
 
@@ -3198,6 +3226,52 @@ def test_n_jobs_temp_folder_removed(tmp_path):
     assert after == before
 
 
+@pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() == 0,
+    reason="needs POSIX permissions that bind this user (not root)",
+)
+def test_n_jobs_cleanup_failure_surfaces(tmp_path):
+    """A frame folder that cannot be removed is reported, not ignored: OSError
+    after a written movie, a note (3.10: a warning) on a rendering error."""
+    import contextlib
+    import sys
+    from functools import partial
+
+    before = _frame_dirs()
+    left = []
+    try:
+        with pytest.raises(OSError, match="was not removed") as err:
+            bn.animate_network(
+                CENTERS, _frames(), tmp_path / "ok.mp4", n_jobs=2,
+                compose=partial(_locking_compose, False), **_ANIM,
+            )  # fmt: skip
+        print("after success:", type(err.value).__name__, err.value)
+        assert (tmp_path / "ok.mp4").stat().st_size > 0
+        left = sorted(set(_frame_dirs()) - set(before))
+        print("left behind:", left)
+        assert len(left) == 1
+        _unlock_frame_dirs(left)
+        warns = (
+            pytest.warns(RuntimeWarning, match="was not removed")
+            if sys.version_info < (3, 11)
+            else contextlib.nullcontext()
+        )
+        with warns, pytest.raises(ValueError, match="after locking") as err:
+            bn.animate_network(
+                CENTERS, _frames(), tmp_path / "bad.mp4", n_jobs=2,
+                compose=partial(_locking_compose, True), **_ANIM,
+            )  # fmt: skip
+        notes = getattr(err.value, "__notes__", [])
+        print("rendering error:", err.value, "notes:", notes)
+        if sys.version_info >= (3, 11):
+            assert any("was not removed" in note for note in notes)
+        left = sorted(set(_frame_dirs()) - set(before))
+        assert len(left) == 1
+    finally:
+        _unlock_frame_dirs(sorted(set(_frame_dirs()) - set(before)))
+    assert _frame_dirs() == before
+
+
 def test_n_jobs_more_workers_than_frames(tmp_path):
     """T=1 with n_jobs=2 and T=2 with n_jobs=8 write complete movies."""
     for T, jobs in ((1, 2), (2, 8)):
@@ -3241,12 +3315,20 @@ def test_is_blank():
     a = np.asarray(render)
     print("render near-black fraction:", (a.max(axis=2) < 10).mean())
     assert not bn._is_blank(render, "white")
-    # 10 percent of the pixels black on white is blank; 4 percent is not
-    for frac, want in ((0.10, True), (0.04, False)):
+    # A black rectangle on white: blank when it covers over 5 percent of the
+    # pixels and reaches a corner; drawn content that stays inside is not.
+    for name, rows, cols, want in (
+        ("10% top rows (two corners)", slice(0, 20), slice(None), True),
+        ("10% in the bottom-right corner", slice(140, 200), slice(214, 320), True),
+        ("4% top rows (two corners)", slice(0, 8), slice(None), False),
+        ("10% interior", slice(70, 130), slice(107, 214), False),
+        ("98% interior, white border", slice(1, 199), slice(1, 319), False),
+    ):
         a = np.full((200, 320, 3), 255, np.uint8)
-        a[: int(200 * frac)] = 0
+        a[rows, cols] = 0
+        frac = float((a.max(axis=2) < 10).mean())
         blank = bn._is_blank(Image.fromarray(a), "white")
-        print(f"{frac:.0%} black rows -> blank={blank}")
+        print(f"{name}: black fraction {frac:.3f} -> blank={blank}")
         assert blank is want
 
 
@@ -3285,17 +3367,32 @@ def test_n_jobs_gives_up(tmp_path):
     assert not (tmp_path / "g.mp4").exists()
 
 
-def test_n_jobs_blank_render(tmp_path):
-    """Workers reject a real render that is over 5 percent black on white.
-
-    Large black spheres make every frame fail the blank-render rule, so the
-    pool is restarted 5 times and the call gives up; n_jobs=1 runs no check.
-    """
+def test_n_jobs_dark_nodes_not_blank(tmp_path):
+    """Large black nodes inside a white frame are content, not a failed render."""
     black = {**_ANIM, "node_color": "black", "radius_kb": (0.0, 25.0)}
+    render = bn.plot_network(CENTERS, _conn(), **black)
+    dark = np.asarray(render).max(axis=2) < 10
+    corners = dark[[0, 0, -1, -1], [0, -1, 0, -1]]
+    print("near-black fraction:", round(float(dark.mean()), 3), "corners:", corners)
+    assert dark.mean() > 0.05 and not corners.any()
+    assert not bn._is_blank(render, "white")
+    folders = _jobs_pair(tmp_path, "dark", _frames(), 3, **black)
+    _assert_same_frames(folders, [f"{k}.png" for k in (1, 2, 3)])
+
+
+def test_n_jobs_blank_render(tmp_path):
+    """Workers reject a real render that is black to its corners on white.
+
+    Black spheres of 200 mm radius fill the whole view, so every frame meets
+    the blank-render rule: the pool is restarted 5 times and the call gives
+    up. n_jobs=1 runs no check and writes the movie.
+    """
+    black = {**_ANIM, "node_color": "black", "radius_kb": (0.0, 200.0)}
     E = np.stack([_conn()])
     render = bn.plot_network(CENTERS, _conn(), **black)
-    frac = (np.asarray(render).max(axis=2) < 10).mean()
-    print("near-black fraction of the render:", round(float(frac), 3))
+    dark = np.asarray(render).max(axis=2) < 10
+    corners = dark[[0, 0, -1, -1], [0, -1, 0, -1]]
+    print("near-black fraction:", round(float(dark.mean()), 3), "corners:", corners)
     assert bn._is_blank(render, "white")
     out = bn.animate_network(CENTERS, E, tmp_path / "seq.mp4", **black)
     assert _mp4_count(out) == 1

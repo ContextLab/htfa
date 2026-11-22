@@ -48,8 +48,10 @@ movies through htfa's public functions alone.
 - Project rules: no mocks, a test for every function, no dead code, no
   duplicated code, minimal change.
 - One `pyvista` plotter is one camera. Several views means one scene per view.
-- `_headless_window()` probes GL and changes `os.environ`; each worker
-  process runs it for itself.
+- `_headless_window()` probes GL and changes `os.environ`. A worker
+  process calls it like any process that builds a scene; when the parent
+  has already probed, the worker inherits that choice through the
+  environment and does not probe again (same machine, same answer).
 - joblib is already a core dependency. VTK off-screen rendering is not
   assumed thread-safe, so workers are processes.
 - imageio's `quality` and an explicit `-crf` must not both be passed.
@@ -195,9 +197,13 @@ checks. Otherwise (`effective_n_jobs(n_jobs)` worker processes):
   the encoder. The temporary folder is removed on success and on error.
 
 Blank-render check, in workers only: a view image in which more than
-5 percent of pixels are near black (max channel below 10), while the
-background color is not dark, is a failed render (the tutorial's rule).
-The task raises a private `RuntimeError` subclass.
+5 percent of pixels are near black (max channel below 10) and at least one
+of the four corner pixels is near black, while the background color is not
+dark, is a failed render. This is the tutorial's rule plus the corner
+condition: a failed off-screen render is black to its edges, while drawn
+content does not reach a corner, so dark nodes or a dark mesh on a light
+background are not taken for a failure. The task raises a private
+`RuntimeError` subclass.
 
 Restarts: on a blank render or a dead worker, the pool is stopped with its
 workers, and only the missing frames are redrawn by a new pool, up to

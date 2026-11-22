@@ -35,6 +35,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import warnings
 import zipfile
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
@@ -2207,16 +2208,22 @@ def animate_network(
         encoded as they are drawn. Otherwise this call starts its own pool
         (not joblib's shared one), each worker draws a contiguous run of
         frames into a temporary folder (removed afterwards, also after an
-        error), and the movie is encoded from there once all are drawn.
-        ``compose`` and a ``captions`` callable then run in the workers, so
-        they must be picklable by cloudpickle (functions defined in a
-        notebook are). A view rendered (nearly) black on a light background
-        (more than 5 percent of its pixels with every channel below 10) or a
-        worker that dies stops the pool; a new one redraws the missing
-        frames, up to 5 times, then ``RuntimeError``. Other errors are
-        raised at once.
-    crf, faststart
-        mp4 encoding options, as in `write_animation`.
+        error; a folder that cannot be removed raises ``OSError``, or is
+        noted on the error already raised), and the movie is encoded from
+        there once all are drawn. ``compose`` and a ``captions`` callable
+        then run in the workers, so they must be picklable by cloudpickle
+        (functions defined in a notebook are). A view rendered black on a
+        light background (more than 5 percent of its pixels, and at least
+        one corner pixel, with every channel below 10) or a worker that dies
+        stops the pool; a new one redraws the missing frames, up to 5 times,
+        then ``RuntimeError``. Other errors are raised at once.
+    crf : int, optional
+        x264 constant rate factor of an mp4, 0 to 51 (higher is smaller and
+        blurrier); passed to `write_animation`. Default: the 0.1.0 quality
+        setting.
+    faststart : bool, default False
+        Move the mp4 index to the start of the file, so that browsers can
+        play it while it downloads; passed to `write_animation`.
 
     Returns
     -------
@@ -2400,9 +2407,32 @@ def animate_network(
             for k in range(len(times)):
                 yield _frame_out(_open(work / f"{k:05d}.png"), k, jpeg_quality, folder)
 
-        return write_animation(drawn(), out, fps=fps, crf=crf, faststart=faststart)
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
+        result = write_animation(drawn(), out, fps=fps, crf=crf, faststart=faststart)
+    except BaseException as err:
+        _remove_work(work, err)
+        raise
+    _remove_work(work, None)
+    return result
+
+
+def _remove_work(work: Path, err: BaseException | None) -> None:
+    """Remove a call's temporary frame folder.
+
+    If that fails, ``OSError`` is raised when no error ``err`` is already on
+    its way; otherwise the failure is added to ``err`` as a note (a
+    ``RuntimeWarning`` on Python 3.10, which has no exception notes).
+    """
+    try:
+        shutil.rmtree(work)
+    except OSError as cleanup:
+        note = f"the temporary frame folder {work} was not removed: {cleanup!r}"
+        if err is None:
+            raise OSError(note) from cleanup
+        add_note = getattr(err, "add_note", None)
+        if add_note is None:
+            warnings.warn(note, RuntimeWarning, stacklevel=3)
+        else:
+            add_note(note)
 
 
 class _ViewsArgs(NamedTuple):
@@ -2438,19 +2468,23 @@ _MAX_RESTARTS = 5  # new pools after a blank render or a dead worker
 
 
 class _BlankRender(RuntimeError):
-    """A view came back (nearly) black: a failed off-screen render."""
+    """A view came back black: a failed off-screen render."""
 
 
 def _is_blank(img: Any, background: Any) -> bool:
-    """Whether ``img`` is a failed render: over 5 percent of pixels near black.
+    """Whether ``img`` is a failed (black) render.
 
-    Near black is a max channel below 10 (0-255). A dark ``background`` (max
-    channel below 40) is not checked: the result is then always False.
+    True when more than 5 percent of the pixels and at least one of the four
+    corner pixels are near black (max channel below 10, of 0-255). A failed
+    render is black to its edges, while drawn content (dark nodes, a dark
+    mesh) does not reach a corner. A dark ``background`` (max channel below
+    40) is not checked: the result is then always False.
     """
     if max(_rgb(background)) * 255 < 40:
         return False
-    a = np.asarray(img.convert("RGB"))
-    return float((a.max(axis=2) < 10).mean()) > 0.05
+    dark = np.asarray(img.convert("RGB")).max(axis=2) < 10
+    corners = dark[[0, 0, -1, -1], [0, -1, 0, -1]]
+    return bool(corners.any()) and float(dark.mean()) > 0.05
 
 
 def _movie_views(build: _ViewsArgs, rotations: Array | None) -> _Views:
