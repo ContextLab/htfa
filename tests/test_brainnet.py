@@ -1799,3 +1799,253 @@ def test_spin_camera_fits_a_large_scene(tmp_path):
     print(first.name, "center mean:", middle.mean(), "image min:", a.min())
     # the nodes on the view axis cover the image center
     assert middle.mean() < 200
+
+
+# ------------------------------------------------- per-node colors and nodes
+
+# Two and three nodes on the y axis, far apart, all drawn with 10 mm radii.
+TWO = np.array([[0.0, -50.0, 0.0], [0.0, 50.0, 0.0]])
+THREE = np.array([[0.0, -60.0, 0.0], [0.0, 0.0, 0.0], [0.0, 60.0, 0.0]])
+_SMALL = {"size": (320, 200), "mesh": None, "snap": False, "radius_kb": (0.0, 10.0)}
+# Column between the two nodes of TWO in a 320-pixel-wide left lateral view;
+# node 0 (y = -50) is drawn right of it.
+_MID = (_px(-50, 0)[0] + _px(50, 0)[0]) / 2 * 320 / 1600
+
+
+def _hue(a, channel):
+    """Pixels whose ``channel`` is above 150 and whose other channels are below 90."""
+    others = np.delete(a, channel, axis=-1)
+    return (a[..., channel] > 150) & np.all(others < 90, axis=-1)
+
+
+def _centroid(mask):
+    rows, cols = np.nonzero(mask)
+    return np.array([cols.mean(), rows.mean()])
+
+
+def _drawn(a):
+    return a.min(axis=-1) < 235
+
+
+def _scene(centers, node_opacity=None, **style):
+    scene_opts, _ = bn._style({"size": (320, 200), "radius_kb": (0.0, 6.0), **style})
+    return bn._Scene(
+        centers, np.ones(len(centers)), None, **scene_opts, node_opacity=node_opacity
+    )
+
+
+def test_node_colors_shapes():
+    """One color, K colors and (T, K) colors as float RGB; alpha dropped."""
+    one = bn._node_colors("red", 3)
+    print("one", one)
+    np.testing.assert_array_equal(one, [1.0, 0.0, 0.0])
+    # a flat sequence of 3 or 4 numbers is one color, even for K = 3 or 4
+    # (pyvista stores colors as 8-bit, so values come back to within 1/255)
+    np.testing.assert_allclose(
+        bn._node_colors([0.1, 0.2, 0.3], 3), [0.1, 0.2, 0.3], atol=1 / 255
+    )
+    np.testing.assert_allclose(bn._node_colors((0.0, 0.0, 1.0, 0.5), 4), [0, 0, 1])
+    names = bn._node_colors(["red", "#00ff00", (0.0, 0.0, 1.0)], 3)
+    print("names", names)
+    np.testing.assert_array_equal(names, np.eye(3))
+    rgba = np.c_[np.eye(3), [0.1, 0.5, 1.0]]
+    np.testing.assert_array_equal(bn._node_colors(rgba, 3), np.eye(3))
+    ints = bn._node_colors(np.array([[255, 0, 0], [0, 0, 255]]), 2)
+    np.testing.assert_array_equal(ints, [[1, 0, 0], [0, 0, 1]])
+    # the result is accepted again unchanged
+    np.testing.assert_array_equal(bn._node_colors(names, 3), names)
+    frames = bn._node_colors([["red", "blue"], ["blue", "red"], ["red", "red"]], 2, 3)
+    print("frames", frames.shape)
+    assert frames.shape == (3, 2, 3)
+    np.testing.assert_array_equal(frames[1], [[0, 0, 1], [1, 0, 0]])
+    cube = np.random.default_rng(0).uniform(size=(5, 2, 4))
+    np.testing.assert_allclose(bn._node_colors(cube, 2, 5), cube[..., :3], atol=1e-2)
+    # K colors stay (K, 3) when T is given
+    assert bn._node_colors(["red", "blue"], 2, 5).shape == (2, 3)
+    for bad, K, T in [
+        (["red", "blue"], 3, None),
+        (np.zeros((2, 3)), 4, None),
+        (np.zeros((5, 2, 3)), 2, None),
+        (np.zeros((4, 2, 3)), 2, 5),
+        (["red", "blue", (0.0, 1.0)], 3, None),
+        ("not a color", 2, None),
+    ]:
+        with pytest.raises(ValueError, match=f"K={K}") as err:
+            bn._node_colors(bad, K, T)
+        print("error:", err.value)
+
+
+def test_plot_network_per_node_colors():
+    """K color names color each node; the red blob is where node 0 is drawn."""
+    colored = _rgb(bn.plot_network(TWO, node_color=["red", "blue"], **_SMALL))
+    gray = _rgb(bn.plot_network(TWO, **_SMALL))
+    red, blue = _hue(colored, 0), _hue(colored, 2)
+    # the whole red blob, shaded side included: drawn pixels more red than blue
+    red_blob = _drawn(colored) & (colored[..., 0] > colored[..., 2])
+    first = _drawn(gray) & (np.arange(gray.shape[1]) > _MID)[None]
+    print(
+        "red px", red.sum(), "blue px", blue.sum(), "red blob centroid",
+        _centroid(red_blob), "node 0 centroid (gray render)", _centroid(first),
+        "split column", _MID,
+    )  # fmt: skip
+    assert red.sum() > 100 and blue.sum() > 100
+    assert _centroid(blue)[0] < _MID < _centroid(red)[0]
+    np.testing.assert_allclose(_centroid(red_blob), _centroid(first), atol=1.0)
+
+
+def test_plot_network_color_array_shapes():
+    """(K, 3) and (K, 4) arrays color each node; one numeric color colors all."""
+    eye = _rgb(bn.plot_network(THREE, node_color=np.eye(3), **_SMALL))
+    counts = [int(_hue(eye, c).sum()) for c in range(3)]
+    print("np.eye(3): red/green/blue px", counts)
+    assert min(counts) > 100
+    nested = _rgb(bn.plot_network(THREE, node_color=np.eye(3).tolist(), **_SMALL))
+    print("nested list px", [int(_hue(nested, c).sum()) for c in range(3)])
+    np.testing.assert_allclose(
+        [_hue(nested, c).sum() for c in range(3)], counts, rtol=0.05
+    )
+    one = _rgb(bn.plot_network(THREE, node_color=(1.0, 0.0, 0.0), **_SMALL))
+    one_counts = [int(_hue(one, c).sum()) for c in range(3)]
+    print("(1, 0, 0): red/green/blue px", one_counts)
+    assert one_counts[1] == one_counts[2] == 0
+    assert one_counts[0] > 2.7 * counts[0]
+    # alpha is ignored: a node with alpha 0.1 is as saturated as without it
+    rgba = np.c_[np.eye(3), [0.1, 0.5, 1.0]]
+    alpha = _rgb(bn.plot_network(THREE, node_color=rgba, **_SMALL))
+    alpha_counts = [int(_hue(alpha, c).sum()) for c in range(3)]
+    print("(K, 4): red/green/blue px", alpha_counts)
+    np.testing.assert_allclose(alpha_counts, counts, rtol=0.05)
+
+
+def test_plot_network_per_node_colors_with_fade(res_htfa):
+    """Per-node colors with fade_by_mass (one actor per sphere) show both hues."""
+    colors = ["red", "blue", "red", "blue"]
+    img = _rgb(
+        res_htfa.plot_network(
+            mesh=None, fade_by_mass=True, node_color=colors, size=(320, 200)
+        )
+    )
+    red, blue = _red(img), _blue(img)
+    print("fade_by_mass per-node colors: red px", red.sum(), "blue px", blue.sum())
+    assert red.sum() > 20 and blue.sum() > 20
+
+
+def test_node_color_bad_shapes():
+    """Color counts or shapes that do not match K raise, naming K."""
+    four = CENTERS[:4]
+    for bad in (
+        ["red", "green", "blue"],
+        np.zeros((2, 3)),
+        np.zeros((2, 4, 3)),  # per-frame colors are for animate_network only
+    ):
+        with pytest.raises(ValueError, match="K=4") as err:
+            bn.plot_network(
+                four, node_color=bad, mesh=None, snap=False, size=(320, 200)
+            )
+        print("error:", err.value)
+
+
+def test_per_node_colors_rejected_in_lobe_mode():
+    """Component lobes take one node_color; K colors and set_nodes raise."""
+    centers = np.array([[0.0, -20.0, 0.0], [0.0, 20.0, 0.0]])
+    widths = np.array([60.0, 60.0])
+    mask = _sphere(40.0, 4.0)
+    kw = {"widths": widths, "mask": mask, "mesh": None, "snap": False,
+          "node_mode": "components", "size": (320, 200)}  # fmt: skip
+    with pytest.raises(ValueError, match="component lobes") as err:
+        bn.plot_network(centers, node_color=["red", "blue"], **kw)
+    print("error:", err.value)
+    one = _rgb(bn.plot_network(centers, node_color="red", **kw))
+    print("one color lobes: red px", _red(one).sum())
+    assert _red(one).sum() > 50
+    geometry = bn._network_geometry(
+        centers, None, widths, "global", False, mask, False, False, "components", 0.05
+    )
+    scene_opts, _ = bn._style({"size": (320, 200)})
+    scene = bn._Scene(
+        geometry[0], geometry[1], None, **scene_opts, component_surfaces=geometry[4]
+    )
+    try:
+        with pytest.raises(ValueError, match="component lobes"):
+            scene.set_nodes(np.full(len(geometry[0]), 5.0))
+    finally:
+        scene.close()
+
+
+def test_scene_set_nodes():
+    """set_nodes replaces the spheres: new radii, new or kept colors."""
+    scene = _scene(TWO, node_color=["red", "blue"])
+    try:
+        before = _rgb(scene.image())
+        np.testing.assert_allclose(scene.radii, 6.0)
+        scene.set_nodes(2 * scene.radii, np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]))
+        np.testing.assert_allclose(scene.radii, 12.0)
+        after = _rgb(scene.image())
+        n0, n1 = int(_drawn(before).sum()), int(_drawn(after).sum())
+        print("drawn px before/after doubling the radii", n0, n1)
+        assert n1 > 2 * n0
+        # the colors were swapped: red moved from node 0 to node 1
+        print("red centroid before/after", _centroid(_hue(before, 0)),
+              _centroid(_hue(after, 0)), "split column", _MID)  # fmt: skip
+        assert _centroid(_hue(before, 0))[0] > _MID > _centroid(_hue(after, 0))[0]
+        assert _hue(after, 2).sum() > 2 * _hue(before, 2).sum()
+        # colors=None keeps the current colors
+        scene.set_nodes(scene.radii / 2)
+        again = _rgb(scene.image())
+        print("drawn px after halving", _drawn(again).sum())
+        assert abs(int(_drawn(again).sum()) - n0) <= 0.05 * n0
+        assert _centroid(_hue(again, 0))[0] < _MID
+        # edges set afterwards render with the new radii
+        scene.set_nodes(2 * scene.radii)
+        scene.set_edges(np.array([[0, 0.8], [0.8, 0]]), 0.25, "flat", "red", "blue")
+        assert _drawn(_rgb(scene.image())).sum() > n1
+        for bad in (np.ones(3), np.array([1.0, 0.0]), np.array([1.0, np.nan])):
+            with pytest.raises(ValueError, match="radii") as err:
+                scene.set_nodes(bad)
+            print("error:", err.value)
+        with pytest.raises(ValueError, match="K=2"):
+            scene.set_nodes(scene.radii, ["red", "green", "blue"])
+    finally:
+        scene.close()
+
+
+def test_supersample_style():
+    """supersample sets the render scale; the image keeps the requested size."""
+    assert bn._style({})[0]["supersample"] == bn._SUPERSAMPLE == 2
+    for s in (1, 2):
+        img = bn.plot_network(TWO, supersample=s, **_SMALL)
+        print("supersample", s, "image size", img.size)
+        assert img.size == (320, 200)
+        scene = _scene(TWO, supersample=s)
+        try:
+            print("window size", scene.pl.window_size)
+            assert list(scene.pl.window_size) == [320 * s, 200 * s]
+        finally:
+            scene.close()
+    for bad in (0, -1, 1.5, "2", True):
+        with pytest.raises(ValueError, match="supersample") as err:
+            bn.plot_network(TWO, supersample=bad, **_SMALL)
+        print("error:", err.value)
+
+
+def test_default_scene_actors_unchanged():
+    """One color without opacity is one merged node actor, as in 0.1.0;
+    per-node colors are one actor too, and opacity gives one per sphere."""
+    for style, opacity, n_actors in [
+        ({}, None, 1),
+        ({"node_color": ["red", "blue"]}, None, 1),
+        ({}, np.array([0.5, 1.0]), 2),
+        ({"node_color": ["red", "blue"]}, np.array([0.5, 1.0]), 2),
+    ]:
+        scene = _scene(TWO, node_opacity=opacity, **style)
+        try:
+            old = list(scene._nodes)
+            print(style, "opacity", opacity, "node actors", len(old))
+            assert len(old) == n_actors
+            scene.set_nodes(2 * scene.radii)
+            assert len(scene._nodes) == n_actors
+            actors = list(scene.pl.renderer.actors.values())
+            assert not any(a in actors for a in old)
+            assert all(a in actors for a in scene._nodes)
+        finally:
+            scene.close()

@@ -1234,10 +1234,25 @@ class _Scene:
         component_surfaces: list | None = None,
         component_weights: Array | None = None,
         lobe_negative_color: Any = "teal",
+        supersample: int = _SUPERSAMPLE,
     ) -> None:
         pv = lazy_import("pyvista", "brain3d", "network plots")
         if view not in VIEWS:
             raise ValueError(f"unknown view {view!r}; choose from {sorted(VIEWS)}")
+        if (
+            isinstance(supersample, bool)
+            or not isinstance(supersample, (int, np.integer))
+            or supersample < 1
+        ):
+            raise ValueError(
+                f"supersample must be a positive integer, got {supersample!r}"
+            )
+        if component_surfaces is not None and not _is_color(node_color):
+            raise ValueError(
+                f"component lobes take one node_color, got {len(node_color)} "
+                "colors; use node_mode='summary' for per-node colors"
+            )
+        self.node_colors = _node_colors(node_color, len(centers))
         self.centers = centers
         k, b = (None, None) if radius_kb is None else radius_kb
         self.radii = node_radius(
@@ -1258,7 +1273,7 @@ class _Scene:
         self.size = (int(size[0]), int(size[1]))
         self.view_dir, self.view_up = (np.asarray(v, float) for v in VIEWS[view])
         self.verts = None if mesh is None else np.asarray(mesh[0], float)
-        s = _SUPERSAMPLE
+        s = int(supersample)
         _headless_window()
         pl = pv.Plotter(
             off_screen=True,
@@ -1267,12 +1282,11 @@ class _Scene:
         )
         # Depth peeling (needed for the translucent mesh and edges) draws no
         # translucent geometry into a multisampled framebuffer on Mesa
-        # (llvmpipe, Linux CI). The 2x supersampling above anti-aliases.
+        # (llvmpipe, Linux CI). The supersampling above anti-aliases.
         pl.render_window.SetMultiSamples(0)
+        self._nodes: list = []
         try:
-            self._build(
-                pv, pl, mesh, view, node_color, mesh_color, mesh_opacity, background
-            )
+            self._build(pv, pl, mesh, view, mesh_color, mesh_opacity, background)
         except BaseException:
             pl.close()
             raise
@@ -1285,13 +1299,11 @@ class _Scene:
         pl: Any,
         mesh: tuple[Array, Array] | None,
         view: str,
-        node_color: Any,
         mesh_color: Any,
         mesh_opacity: float,
         background: Any,
     ) -> None:
         """Add the background, mesh, nodes, camera and light to ``pl``."""
-        centers = self.centers
         pl.set_background(background)
         if mesh is not None:
             verts, faces = mesh
@@ -1312,7 +1324,7 @@ class _Scene:
                 )
                 pl.add_mesh(
                     surface,
-                    color=node_color if sign > 0 else self.lobe_negative_color,
+                    color=self.node_colors if sign > 0 else self.lobe_negative_color,
                     opacity=(0.2 + 0.6 * float(alpha)) * (0.35 if sign < 0 else 1.0),
                     smooth_shading=True,
                     show_scalar_bar=False,
@@ -1327,23 +1339,7 @@ class _Scene:
                     else np.vstack([self.verts, geometry])
                 )
         else:
-            spheres = [
-                pv.Sphere(radius=r, center=c, theta_resolution=40, phi_resolution=40)
-                for c, r in zip(centers, self.radii, strict=True)
-            ]
-            if self.node_opacity is None:
-                pl.add_mesh(
-                    pv.merge(spheres), color=node_color, smooth_shading=True, **_DULL
-                )
-            else:
-                for sphere, alpha in zip(spheres, self.node_opacity, strict=True):
-                    pl.add_mesh(
-                        sphere,
-                        color=node_color,
-                        opacity=float(alpha),
-                        smooth_shading=True,
-                        **_DULL,
-                    )
+            self._add_nodes(pv, pl)
         pl.enable_depth_peeling(number_of_peels=8)
         pl.enable_parallel_projection()
         direction, up = VIEWS[view]
@@ -1365,6 +1361,87 @@ class _Scene:
                 positional=False,
             )
         )
+
+    def _add_nodes(self, pv: Any, pl: Any, render: bool = True) -> None:
+        """Add spheres of ``self.radii`` in ``self.node_colors`` to ``pl``.
+
+        One merged mesh without node opacity (per-node colors as per-cell
+        ``rgb`` scalars), else one actor per sphere. The actors are kept in
+        ``self._nodes``.
+        """
+        spheres = [
+            pv.Sphere(radius=r, center=c, theta_resolution=40, phi_resolution=40)
+            for c, r in zip(self.centers, self.radii, strict=True)
+        ]
+        colors = self.node_colors
+        if self.node_opacity is None and colors.ndim == 1:
+            self._nodes = [
+                pl.add_mesh(
+                    pv.merge(spheres),
+                    color=colors,
+                    smooth_shading=True,
+                    render=render,
+                    **_DULL,
+                )
+            ]
+        elif self.node_opacity is None:
+            for sphere, rgb in zip(spheres, _uint8(colors), strict=True):
+                sphere.cell_data["rgb"] = np.tile(rgb, (sphere.n_cells, 1))
+            self._nodes = [
+                pl.add_mesh(
+                    pv.merge(spheres),
+                    scalars="rgb",
+                    rgb=True,
+                    smooth_shading=True,
+                    show_scalar_bar=False,
+                    render=render,
+                    **_DULL,
+                )
+            ]
+        else:
+            per_node = np.broadcast_to(colors, (len(spheres), 3))
+            self._nodes = [
+                pl.add_mesh(
+                    sphere,
+                    color=rgb,
+                    opacity=float(alpha),
+                    smooth_shading=True,
+                    render=render,
+                    **_DULL,
+                )
+                for sphere, rgb, alpha in zip(
+                    spheres, per_node, self.node_opacity, strict=True
+                )
+            ]
+
+    def set_nodes(self, radii: Array, colors: Array | None = None) -> None:
+        """Replace the node spheres.
+
+        Parameters
+        ----------
+        radii : array of shape (K,)
+            Sphere radii in mm. Edges set afterwards start at these surfaces.
+        colors : color, or array of shape (3,) or (K, 3), optional
+            New node colors (see `_node_colors`); default: keep the current.
+        """
+        if self.component_surfaces is not None:
+            raise ValueError(
+                "component lobes use fitted geometry; set_nodes needs "
+                "node_mode='summary'"
+            )
+        K = len(self.centers)
+        radii = np.asarray(radii, dtype=np.float64)
+        if radii.shape != (K,) or not np.all(radii > 0):
+            raise ValueError(
+                f"set_nodes needs K={K} positive radii in mm, got shape "
+                f"{radii.shape} and values {radii}"
+            )
+        if colors is not None:
+            self.node_colors = _node_colors(colors, K)
+        self.pl.remove_actor(self._nodes, render=False)
+        self.radii = radii
+        pv = lazy_import("pyvista", "brain3d", "network plots")
+        self._add_nodes(pv, self.pl, render=False)
 
     def set_edges(
         self,
@@ -1389,9 +1466,7 @@ class _Scene:
             radius, opacity = np.full(len(w), 0.25), 1.0
         tubes = _tubes(self.centers, self.radii, i, j, radius)
         per_edge = tubes.n_cells // len(i)
-        tubes.cell_data["rgb"] = np.round(
-            np.repeat(rgb, per_edge, axis=0) * 255
-        ).astype(np.uint8)
+        tubes.cell_data["rgb"] = _uint8(np.repeat(rgb, per_edge, axis=0))
         self._edges = self.pl.add_mesh(
             tubes,
             scalars="rgb",
@@ -1466,6 +1541,54 @@ def _rgb(color: Any) -> tuple[float, float, float]:
     return float(r), float(g), float(b)
 
 
+def _uint8(rgb: Array) -> Array:
+    """Float RGB in 0-1 as 0-255 ``uint8``, for per-cell ``rgb`` scalars."""
+    return np.round(np.asarray(rgb) * 255).astype(np.uint8)
+
+
+def _is_color(color: Any) -> bool:
+    """Whether ``color`` is one color: a name or hex string, or 3 or 4 numbers."""
+    try:
+        a = np.asarray(color)
+    except ValueError:  # a ragged sequence
+        return False
+    return a.ndim == 0 or (a.ndim == 1 and len(a) in (3, 4) and a.dtype.kind in "iuf")
+
+
+def _node_colors(node_color: Any, K: int, T: int | None = None) -> Array:
+    """Node colors as float RGB in 0-1, alpha dropped.
+
+    Returns shape (3,) for one color, (K, 3) for K colors (a sequence of K
+    color specs or a (K, 3) or (K, 4) array) and, only when ``T`` is given,
+    (T, K, 3) for per-frame colors ((T, K) color specs or a (T, K, 3) or
+    (T, K, 4) array). A flat sequence of 3 or 4 numbers is always one color.
+    """
+
+    def grid(colors: Any, shape: tuple[int, ...]) -> Array | None:
+        """``colors`` as RGB of leading shape ``shape``, or None if not that."""
+        if not shape:
+            return np.asarray(_rgb(colors)) if _is_color(colors) else None
+        if _is_color(colors) or len(colors) != shape[0]:
+            return None
+        rows = [grid(c, shape[1:]) for c in colors]
+        return None if any(r is None for r in rows) else np.stack(rows)
+
+    frames = "" if T is None else f", or (T, K) colors with T={T}"
+    for shape in [(), (K,)] + ([] if T is None else [(T, K)]):
+        try:
+            colors = grid(node_color, shape)
+        except ValueError as err:
+            raise ValueError(
+                f"node_color must be one color or K={K} colors{frames}: {err}"
+            ) from err
+        if colors is not None:
+            return colors
+    raise ValueError(
+        f"node_color must be one color, K={K} colors (shape (K, 3) or (K, 4))"
+        f"{frames}; got shape {np.asarray(node_color, dtype=object).shape}"
+    )
+
+
 def _connectivity(connectivity: Any, K: int, ndim: int) -> Array:
     E = np.asarray(connectivity, dtype=np.float64)
     if E.ndim != ndim or E.shape[-2:] != (K, K):
@@ -1515,6 +1638,7 @@ def _style(kwargs: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         "radius_range": tuple(kwargs.pop("radius_range", (2.0, 7.0))),
         "radius_kb": kwargs.pop("radius_kb", None),
         "radius_clip": kwargs.pop("radius_clip", None),
+        "supersample": kwargs.pop("supersample", _SUPERSAMPLE),
     }
     edges = {
         "threshold": float(kwargs.pop("threshold", 0.25)),
@@ -1627,12 +1751,18 @@ def plot_network(
         ((1600, 1000) pixels), ``edge_style`` (``"intensity"``: diameter
         ``|E|`` mm at opacity 0.7; ``"flat"``: 0.5 mm, opaque),
         ``positive_color`` ("red"), ``negative_color`` ("blue"),
-        ``node_color`` (0.502 gray), ``mesh_color`` (0.95 gray),
+        ``node_color`` (0.502 gray; one color, or K colors as a sequence
+        of K color specs or a (K, 3) or (K, 4) array, alpha ignored; a
+        flat sequence of 3 or 4 numbers is always one color, so three
+        nodes with numeric colors need a (3, 3) array; component lobes
+        take one color), ``mesh_color`` (0.95 gray),
         ``mesh_opacity`` (0.2), ``background`` ("white"),
         ``radius_range`` ((2, 7) mm: radii of the smallest and largest
         size), ``radius_kb`` (a fixed ``(k, b)``: radius ``k * size + b``
         mm, comparable across plots), ``radius_clip`` (``(min, max)`` mm
-        applied to the radii); see `node_radius`. See also
+        applied to the radii); see `node_radius`. ``supersample`` (2:
+        the scene is rendered at this multiple of ``size`` and scaled
+        down, for anti-aliasing; 1 is faster and more jagged). See also
         `config_style`.
 
     Returns
