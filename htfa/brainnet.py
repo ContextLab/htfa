@@ -502,12 +502,12 @@ def _centers(centers: Any) -> Array:
 
 
 def _per_node(values: Any, K: int, what: str, frames: bool = False) -> Array:
-    """``values`` as shape (K,); with ``frames``, (T, K) is kept as it is.
+    """``values`` as shape (K,); with ``frames``, (T, K) with T > 1 is kept.
 
     K values in any shape, such as (1, K) or (K, 1), are flattened to (K,).
     """
     v = np.asarray(values, dtype=np.float64)
-    if frames and v.ndim == 2 and v.shape[1] == K and v.size != K:
+    if frames and v.ndim == 2 and v.shape[1] == K and len(v) > 1:
         return v
     if v.size != K:
         want = " ((K,) or (T, K))" if frames else ""
@@ -1713,7 +1713,7 @@ def _node_colors(node_color: Any, K: int, T: int | None = None) -> Array:
         """``colors`` as RGB of leading shape ``shape``, or None if not that."""
         if not shape:
             return np.asarray(_rgb(colors)) if _is_color(colors) else None
-        if _is_color(colors) or len(colors) != shape[0]:
+        if _is_color(colors) or len(colors) != shape[0] or not len(colors):
             return None
         rows = [grid(c, shape[1:]) for c in colors]
         return None if any(r is None for r in rows) else np.stack(rows)
@@ -1739,6 +1739,8 @@ def _connectivity(connectivity: Any, K: int, ndim: int) -> Array:
     if E.ndim != ndim or E.shape[-2:] != (K, K):
         want = "(K, K)" if ndim == 2 else "(T, K, K) (or (K, K) with duration)"
         raise ValueError(f"connectivity must be {want} with K={K}, got {E.shape}")
+    if E.size == 0:
+        raise ValueError(f"connectivity has no windows, got shape {E.shape}")
     if not np.all(np.isfinite(E)):
         raise ValueError("connectivity contains NaN or inf")
     return E
@@ -2233,8 +2235,10 @@ def animate_network(
         colors = _node_colors(node_color, K, len(node_color))
         colors = colors if colors.ndim == 3 else None
     axes = {}  # the length of each time axis
+    E = None
     if connectivity is not None and np.ndim(connectivity) == 3:
-        axes["connectivity"] = len(connectivity)
+        E = _connectivity(connectivity, K, 3)
+        axes["connectivity"] = len(E)
     if node_sizes.ndim == 2:
         axes["sizes"] = len(node_sizes)
     if colors is not None:
@@ -2244,17 +2248,16 @@ def animate_network(
             "time axes disagree: "
             + ", ".join(f"{name} has T={t}" for name, t in axes.items())
         )
-    E = None
     if connectivity is None:
         if not axes:
             raise ValueError(
                 "connectivity=None needs a time axis in sizes ((T, K)) or in "
                 "node_color ((T, K) colors)"
             )
-    elif np.ndim(connectivity) == 2 and (n is not None or axes):
+    elif E is None and np.ndim(connectivity) == 2 and (n is not None or axes):
         E = _connectivity(connectivity, K, 2)[None]
-    else:
-        E = _connectivity(connectivity, K, 3)
+    elif E is None:
+        E = _connectivity(connectivity, K, 3)  # raises: the shape is wrong
     T = next(iter(axes.values()), 1)
     # (T, K) radii, scaled jointly over all timepoints
     radii = None if node_sizes.ndim == 1 else _radii(node_sizes, scene_opts)

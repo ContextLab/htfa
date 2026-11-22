@@ -2325,9 +2325,29 @@ def test_animate_gif_colored_nodes(tmp_path):
 
 
 def test_animate_scale_by_mass_with_time_sizes(res_htfa, tmp_path):
-    """(T, K) sizes with scale_by_mass on a fit: frames change over time."""
-    sizes = [[1.0, 1.0, 1.0, 1.0], [3.0, 1.0, 1.0, 3.0], [6.0, 1.0, 1.0, 6.0]]
-    _movie(tmp_path, "mass", res_htfa, None, sizes=sizes, scale_by_mass=True, snap=True)
+    """(T, K) sizes with scale_by_mass on a fit: every row times the mass fraction.
+
+    The frames equal those of the sizes multiplied by the fit's in-mask mass
+    fractions (`HTFAResults.display_nodes`) by hand, and differ from the
+    frames of the unscaled sizes.
+    """
+    sizes = np.array([[1.0, 1.0, 1.0, 1.0], [3.0, 1.0, 1.0, 3.0], [6.0, 1.0, 1.0, 6.0]])
+    mass = res_htfa.display_nodes()[2]["mass_fraction"]
+    print("mass fractions", mass)
+    assert np.ptp(mass) > 0.05  # scaling changes the relative sizes
+    kw = {"snap": True}
+    scaled = _movie(
+        tmp_path, "mass", res_htfa, None, sizes=sizes, scale_by_mass=True, **kw
+    )
+    by_hand = _movie(tmp_path, "hand", res_htfa, None, sizes=sizes * mass, **kw)
+    plain = _movie(tmp_path, "plain", res_htfa, None, sizes=sizes, **kw)
+    for k in range(3):
+        same = np.count_nonzero(scaled[k] != by_hand[k])
+        other = np.count_nonzero(scaled[k] != plain[k])
+        print("frame", k + 1, "values differing from by-hand scaling", same,
+              "from unscaled sizes", other)  # fmt: skip
+        assert same == 0
+    assert any(np.count_nonzero(s != p) > 0 for s, p in zip(scaled, plain, strict=True))
     d = [
         bn.image_diff(tmp_path / "mass" / "1.png", tmp_path / "mass" / f"{k}.png")
         for k in (2, 3)
@@ -2668,3 +2688,71 @@ def test_annotate_pair_three_way_equivalence():
             _rgb(pair)[head:, pane_w + 2 : 2 * pane_w], _rgb(expect)[:, 2:]
         )
         assert _dark(_rgb(pair)[:head]).sum() > 100
+
+
+def test_animate_colors_resampled_nearest(tmp_path):
+    """With n_frames > T, a fractional t takes the nearest timepoint's colors.
+
+    Times 0, 0.5, 1, 1.5, 2: halves round up, so frames 2-3 and 4-5 are the
+    same images, and node 0 is pure blue at t = 0.5 (no red-blue blend).
+    """
+    names = [["red", "blue"], ["blue", "red"], ["green", "blue"]]
+    frames = _movie(
+        tmp_path, "near", TWO, np.zeros((3, 2, 2)), 5, n_frames=5, node_color=names
+    )
+    right = (np.arange(320) > _MID)[None]
+    for a, b in ((1, 2), (3, 4)):
+        print("frames", a + 1, b + 1, "differing values",
+              np.count_nonzero(frames[a] != frames[b]))  # fmt: skip
+        np.testing.assert_array_equal(frames[a], frames[b])
+    half = frames[1]
+    blend = (half[..., 0] > 60) & (half[..., 2] > 60) & (half[..., 1] < 60)
+    print("t=0.5 node 0: blue px", (_hue(half, 2) & right).sum(),
+          "red px", (_hue(half, 0) & right).sum(),
+          "purple (blended) px", (blend & right).sum())  # fmt: skip
+    assert (_hue(half, 2) & right).sum() > 20
+    assert (_hue(half, 0) & right).sum() == 0 and (blend & right).sum() == 0
+    green = frames[3][..., 1] - np.maximum(frames[3][..., 0], frames[3][..., 2]) > 50
+    print("t=1.5 node 0 green px", (green & right).sum())
+    assert (green & right).sum() > 20
+    # frames at integer times match the T-frame movie
+    exact = _movie(tmp_path, "exact", TWO, np.zeros((3, 2, 2)), node_color=names)
+    for k, j in ((0, 0), (2, 1), (4, 2)):
+        np.testing.assert_array_equal(frames[k], exact[j])
+
+
+def test_animate_spin_with_growing_sizes_stays_in_frame(tmp_path):
+    """With spin, the zoom fits the largest radius of every node.
+
+    Node 0 grows from 2 to 7 mm; every frame keeps a blank border, so no
+    sphere is cut off at the image edge.
+    """
+    sizes = [[1.0, 1.0], [2.0, 1.0], [4.0, 1.0], [4.0, 1.0]]
+    frames = _movie(
+        tmp_path, "spin", TWO, None, 8, sizes=sizes, n_frames=8,
+        spin=(0, 0, 1), interpolation="nearest",
+    )  # fmt: skip
+    for k, a in enumerate(frames):
+        d = _drawn(a)
+        rows, cols = np.nonzero(d)
+        border = d[0].sum() + d[-1].sum() + d[:, 0].sum() + d[:, -1].sum()
+        print("frame", k + 1, "drawn px", d.sum(), "rows", rows.min(), rows.max(),
+              "cols", cols.min(), cols.max(), "border px", border)  # fmt: skip
+        assert d.sum() > 0 and border == 0
+
+
+def test_animate_empty_time_axes_rejected(tmp_path):
+    """T = 0 sizes, colors or connectivity raise ValueError naming the input."""
+    out = tmp_path / "x.mp4"
+    cases = [
+        ({"sizes": np.empty((0, 2))}, None, r"sizes .*shape \(0, 2\)"),
+        ({"node_color": np.empty((0, 2, 3))}, None, r"node_color.*\(0, 2, 3\)"),
+        ({"node_color": []}, None, r"node_color.*\(0,\)"),
+        ({}, np.empty((0, 2, 2)), r"connectivity .*\(0, 2, 2\)"),
+        ({"sizes": GROW}, np.empty((0, 2, 2)), r"connectivity .*\(0, 2, 2\)"),
+    ]
+    for kw, E, match in cases:
+        with pytest.raises(ValueError, match=match) as err:
+            bn.animate_network(TWO, E, out, **{**_ANIM, **kw})
+        print(sorted(kw), None if E is None else E.shape, "error:", err.value)
+    assert not out.exists()
