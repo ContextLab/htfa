@@ -2918,6 +2918,10 @@ def _none_compose(images, t):
     return None
 
 
+def _int_compose(images, t):
+    return 42
+
+
 def _compose_log(tmp_path):
     import json
 
@@ -2967,6 +2971,33 @@ def test_compose_frame_is_returned_as_is(tmp_path):
         assert np.array_equal(a, b), k
 
 
+def test_compose_stacked_views_match_single_view_renders(tmp_path):
+    """Top half is the left view's render, bottom half the dorsal view's."""
+    _compose_log(tmp_path)
+    bn.animate_network(
+        CENTERS, _frames(), tmp_path / "s.gif", views=("left", "dorsal"),
+        compose=_stack_compose, frames_dir=tmp_path / "s", **_ANIM,
+    )  # fmt: skip
+    for view, rows in (("left", slice(0, 200)), ("dorsal", slice(200, 400))):
+        bn.animate_network(
+            CENTERS, _frames(), tmp_path / f"{view}.gif", view=view,
+            frames_dir=tmp_path / view, **_ANIM,
+        )  # fmt: skip
+        for k in (1, 2, 3):
+            stacked = _rgb(Image.open(tmp_path / "s" / f"{k}.png"))[rows]
+            single = _rgb(Image.open(tmp_path / view / f"{k}.png"))
+            print(view, k, stacked.shape, single.shape)
+            assert np.array_equal(stacked, single), (view, k)
+
+
+def test_compose_must_be_callable(tmp_path):
+    with pytest.raises(ValueError, match="compose must be a callable") as err:
+        bn.animate_network(CENTERS, _frames(), tmp_path / "c.gif", compose=42, **_ANIM)
+    print(err.value)
+    assert "42" in str(err.value)
+    assert not (tmp_path / "c.gif").exists()
+
+
 @pytest.mark.parametrize(
     "extra",
     [
@@ -2995,11 +3026,14 @@ def test_compose_bad_return(tmp_path):
                 compose=_growing_compose, **_ANIM,
             )  # fmt: skip
         print(suffix, err.value)
-    with pytest.raises((TypeError, ValueError), match="compose") as err:
-        bn.animate_network(
-            CENTERS, _frames(), tmp_path / "n.gif", compose=_none_compose, **_ANIM
-        )
-    print(err.value)
+        assert "(322, 200)" in str(err.value) and "(320, 200)" in str(err.value)
+    for bad, text in ((_none_compose, "None"), (_int_compose, "42")):
+        with pytest.raises(ValueError, match="compose must return a PIL image") as err:
+            bn.animate_network(
+                CENTERS, _frames(), tmp_path / "n.gif", compose=bad, **_ANIM
+            )
+        print(err.value)
+        assert f"got {text}" in str(err.value)
 
 
 def test_compose_odd_size_mp4(tmp_path):

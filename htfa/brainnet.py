@@ -2252,6 +2252,8 @@ def animate_network(
             "n_jobs must be a nonzero integer (1: draw in this process, -1: "
             f"every CPU), got {n_jobs!r}"
         )
+    if compose is not None and not callable(compose):
+        raise ValueError(f"compose must be a callable or None, got {compose!r}")
     if compose is not None and (
         legend is not None or captions is not None or frame_size is not None
     ):
@@ -2625,8 +2627,8 @@ def write_animation(
         frames = [im.convert("RGB") for im in images]
         if not frames:
             raise ValueError("no frames to write")
-        if len({f.size for f in frames}) != 1:
-            raise ValueError("all frames must have the same size")
+        for k, f in enumerate(frames):
+            _check_frame_size(f.size, frames[0].size, k + 1)
         _write_gif(frames, out, fps)
         return out
     iio = lazy_import("imageio.v2", "brain3d", "mp4 export")
@@ -2649,18 +2651,26 @@ def write_animation(
         pixelformat="yuv420p",
         **options,
     ) as writer:
-        for im in images:
+        for k, im in enumerate(images):
             frame = im.convert("RGB")
             if size is None:
                 size = frame.size
-            elif frame.size != size:
-                raise ValueError("all frames must have the same size")
+            else:
+                _check_frame_size(frame.size, size, k + 1)
             w, h = size
             writer.append_data(np.asarray(frame.crop((0, 0, w - w % 2, h - h % 2))))
     if size is None:
         out.unlink(missing_ok=True)
         raise ValueError("no frames to write")
     return out
+
+
+def _check_frame_size(got: tuple[int, int], expected: tuple[int, int], k: int) -> None:
+    if got != expected:
+        raise ValueError(
+            f"all frames must have the same size: frame {k} is {got}, "
+            f"frame 1 is {expected}"
+        )
 
 
 def _write_gif(frames: list[Any], out: Path, fps: float) -> None:
@@ -2939,9 +2949,7 @@ def _finish_frame(
     if compose is not None:
         img = compose(list(images), t)
         if not hasattr(img, "convert"):
-            raise ValueError(
-                f"compose must return a PIL image, got {type(img).__name__} at t={t}"
-            )
+            raise ValueError(f"compose must return a PIL image, got {img!r} at t={t}")
         return _open(img)
     if layout is None:
         return images[0] if text is None else _with_header(images[0], [text])
