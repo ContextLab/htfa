@@ -144,9 +144,9 @@ existing style key), then the frame is built:
 New keyword `frame_size=(W, H)`: the composed frame is exactly this size.
 Any positive W and H are accepted; `animate_network` raises `ValueError` for
 an odd W or H only when the output is an mp4 (H.264 in yuv420p needs even
-sizes). Title, caption and legend bands are drawn at width W; the views are scaled
-(Lanczos, up or down) to fit the space left and centered on the background
-color.
+sizes). Title, caption and legend bands are drawn at width W; the views are
+scaled (Lanczos, up or down) to fit the space left and centered on the
+background color.
 Without `frame_size`, W is the summed width of the cropped views, or the
 widest legend row plus one entry gap on each side if that is wider (the
 views are then centered); the height follows, trimmed to even width and
@@ -162,8 +162,9 @@ with `kind` "dot" or "line" for one row, or a list of such lists for several
 rows. Geometry follows the tutorial's `legend_band`: font size
 `max(12, round(30 * W / 1920))` (the floor keeps text readable in small
 frames), where W is the `frame_size` width or, without it, the summed width
-of the cropped views, also when a legend row then widens the frame; one band 64 px high per 30 px of font for each
-row, entries centered as a group, black text, mark then
+of the cropped views, also when a legend row then widens the frame; one
+band 64 px high per 30 px of font for each row, entries centered as a group,
+black text, mark then
 label, sizes proportional to the font size (gap 40, mark width 34, dot
 radius 12, line width 6, mark-to-text 10, all per 30 px of font).
 
