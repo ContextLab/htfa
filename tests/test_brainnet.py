@@ -2107,3 +2107,283 @@ def test_default_scene_actors_unchanged():
             assert all(a in actors for a in scene._nodes)
         finally:
             scene.close()
+
+
+# ---------------------------------------------- per-frame sizes and colors
+
+_ANIM = {"size": (320, 200), "mesh": None, "snap": False}
+# Node 0 grows over three timepoints; node 1 stays the smallest size.
+GROW = [[1.0, 1.0], [2.0, 1.0], [4.0, 1.0]]
+# 2 mm and 7 mm radii (the radius_range end points) in a 320-pixel-wide frame.
+_PX_PER_MM = SCALE * 320 / 1600
+
+
+def _movie(tmp_path, name, centers, connectivity, n=3, **kw):
+    """Render ``name``.mp4 with frames_dir; return its ``n`` frames as arrays."""
+    folder = tmp_path / name
+    out = bn.animate_network(
+        centers, connectivity, tmp_path / f"{name}.mp4", frames_dir=folder,
+        **{**_ANIM, **kw},
+    )  # fmt: skip
+    assert out.stat().st_size > 0
+    names = sorted(p.name for p in folder.iterdir())
+    print(name, "frames", names)
+    assert names == sorted(f"{k + 1}.png" for k in range(n))
+    return _pngs(folder, n)
+
+
+def _areas(frames):
+    """Drawn pixels of node 0 (right of _MID) and of node 1 (left), per frame."""
+    right = (np.arange(frames[0].shape[1]) > _MID)[None]
+    return [
+        (int((_drawn(a) & right).sum()), int((_drawn(a) & ~right).sum()))
+        for a in frames
+    ]
+
+
+def test_animate_sizes_over_time(tmp_path):
+    """(T, K) sizes: node 0 grows, node 1 keeps 2 mm; radii are scaled jointly."""
+    frames = _movie(tmp_path, "s", TWO, np.zeros((3, 2, 2)), sizes=GROW)
+    areas = _areas(frames)
+    a0, a1 = [a for a, _ in areas], [b for _, b in areas]
+    print("node 0 areas", a0, "node 1 areas", a1)
+    assert a0[0] < a0[1] < a0[2]
+    assert max(a1) - min(a1) <= 0.02 * min(a1)
+    # joint scaling: node 1 is the smallest (2 mm) node in every frame, and in
+    # frame 2 node 0 is (2 + 5/3) mm, not 7 mm as per-frame scaling would give
+    # frame 1: both nodes are 2 mm (equal up to rasterization at another place)
+    assert abs(a1[0] - a0[0]) <= 0.1 * a0[0]
+    assert a1[1] < a0[1] and a1[2] < a0[2]
+    ratio = a0[1] / a0[2]
+    expect = ((2 + 5 / 3) / 7) ** 2
+    print("frame 2 / frame 3 node-0 area", ratio, "expected about", expect)
+    assert abs(ratio - expect) < 0.12
+    print("node 1 / largest node 0 area", a1[2] / a0[2], "expected about", (2 / 7) ** 2)
+    assert a1[2] / a0[2] < 0.2
+
+
+def test_animate_sizes_interpolated(tmp_path):
+    """Sizes follow interpolation between timepoints, like the edges."""
+    E = np.zeros((3, 2, 2))
+    lin = [
+        a for a, _ in _areas(_movie(tmp_path, "lin", TWO, E, 5, n_frames=5, sizes=GROW))
+    ]
+    print("linear node-0 areas", lin)
+    assert lin[0] < lin[1] < lin[2]
+    near = [
+        a
+        for a, _ in _areas(
+            _movie(
+                tmp_path,
+                "near",
+                TWO,
+                E,
+                5,
+                n_frames=5,
+                sizes=GROW,
+                interpolation="nearest",
+            )  # fmt: skip
+        )
+    ]
+    print("nearest node-0 areas", near)
+    assert len(set(near)) == 3
+    assert near[1] == near[2] and near[3] == near[4]
+
+
+def test_animate_colors_over_time(tmp_path):
+    """(T, K) color names change node colors per frame; a (T, K, 3) array agrees."""
+    names = [["red", "blue"], ["blue", "red"], ["green", "blue"]]
+    frames = _movie(tmp_path, "names", TWO, np.zeros((3, 2, 2)), node_color=names)
+    right = (np.arange(320) > _MID)[None]
+
+    def green(a):
+        return (a[..., 1] - np.maximum(a[..., 0], a[..., 2])) > 50
+
+    counts = [
+        (int((_hue(a, 0) & right).sum()), int((green(a) & right).sum())) for a in frames
+    ]
+    print("node 0 red/green px per frame", counts)
+    assert counts[0][0] > 20 and counts[0][1] == 0
+    assert counts[1][0] == 0  # node 0 is blue in frame 2
+    assert counts[2][1] > 20 and counts[2][0] == 0
+    rgb = np.array(
+        [
+            [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]],
+            [[0.0, 128 / 255, 0.0], [0.0, 0.0, 1.0]],
+        ]
+    )
+    _movie(tmp_path, "rgb", TWO, np.zeros((3, 2, 2)), node_color=rgb)
+    for k in range(3):
+        d = bn.image_diff(
+            tmp_path / "names" / f"{k + 1}.png", tmp_path / "rgb" / f"{k + 1}.png"
+        )
+        print("frame", k + 1, "image_diff names vs (T, K, 3)", d)
+        assert d < 1e-6
+
+
+def test_animate_without_connectivity(tmp_path):
+    """connectivity=None draws nodes only; it needs something that varies."""
+    frames = _movie(tmp_path, "none", TWO, None, sizes=GROW)
+    for k, a in enumerate(frames):
+        print("frame", k + 1, "red/blue px", _red(a).sum(), _blue(a).sum(),
+              "drawn px", _drawn(a).sum())  # fmt: skip
+        assert _red(a).sum() == 0 and _blue(a).sum() == 0 and _drawn(a).sum() > 0
+    # the same sizes with edges do draw edge pixels
+    E = np.zeros((3, 2, 2))
+    E[:, 0, 1] = E[:, 1, 0] = 0.8
+    with_edges = _movie(tmp_path, "edges", TWO, E, sizes=GROW)
+    assert all(_red(a).sum() > 10 for a in with_edges)
+    for kw in ({}, {"sizes": [1.0, 2.0]}, {"node_color": ["red", "blue"]},
+               {"n_frames": 4}):  # fmt: skip
+        with pytest.raises(ValueError, match="time axis") as err:
+            bn.animate_network(TWO, None, tmp_path / "x.mp4", **{**_ANIM, **kw})
+        print(kw, "error:", err.value)
+
+
+def test_animate_time_axes_must_agree(tmp_path):
+    """Every time axis (connectivity, sizes, colors, captions) must have one T."""
+    E = np.zeros((3, 3, 3))
+    out = tmp_path / "x.mp4"
+    cases = [
+        ({"sizes": np.ones((4, 3))}, r"connectivity has T=3.*sizes has T=4"),
+        (
+            {"node_color": [["red"] * 3] * 2},
+            r"connectivity has T=3.*node_color has T=2",
+        ),
+        ({"captions": list("abcd")}, "4 captions for 3 frames"),
+    ]
+    for kw, match in cases:
+        with pytest.raises(ValueError, match=match) as err:
+            bn.animate_network(THREE, E, out, **{**_ANIM, **kw})
+        print(sorted(kw), "error:", err.value)
+    with pytest.raises(ValueError, match=r"sizes has T=4.*node_color has T=2") as err:
+        bn.animate_network(
+            THREE, None, out, sizes=np.ones((4, 3)), node_color=[["red"] * 3] * 2,
+            **_ANIM,
+        )  # fmt: skip
+    print("error:", err.value)
+    assert not out.exists()
+
+
+def test_animate_edges_start_at_frame_radii(tmp_path):
+    """A tube wider than the nodes shows its ends: it starts at each frame's radii.
+
+    Edges built from another frame's radii would not shrink frame by frame.
+    """
+    E = np.zeros((3, 2, 2))
+    E[:, 0, 1] = E[:, 1, 0] = 20.0  # intensity style: a 10 mm tube radius
+    sizes = [[1.0, 1.0], [2.0, 2.0], [4.0, 4.0]]  # radii 2, 2 + 5/3 and 7 mm
+    frames = _movie(tmp_path, "tube", TWO, E, sizes=sizes)
+    spans = []
+    for a in frames:
+        cols = np.nonzero(_red(a).any(axis=0))[0]
+        spans.append(int(cols.max() - cols.min() + 1))
+    expect = [(100 - 2 * r) * _PX_PER_MM for r in (2, 2 + 5 / 3, 7)]
+    print("red span px per frame", spans, "expected about", np.round(expect, 1))
+    assert spans[0] > spans[1] > spans[2]
+    np.testing.assert_allclose(spans, expect, atol=2.5)
+
+
+def test_animate_one_k_sizes_still_work(tmp_path):
+    """(1, K) and (K, 1) sizes draw the same frames as the flat (K,) array."""
+    E = np.zeros((3, 2, 2))
+    flat = _movie(tmp_path, "flat", TWO, E, sizes=[1.0, 3.0])
+    for name, sizes in (("row", [[1.0, 3.0]]), ("column", [[1.0], [3.0]])):
+        frames = _movie(tmp_path, name, TWO, E, sizes=sizes)
+        for k, (a, b) in enumerate(zip(frames, flat, strict=True)):
+            print(name, "frame", k + 1, "differing values", np.count_nonzero(a != b))
+            np.testing.assert_array_equal(a, b)
+
+
+def test_animate_gif_colored_nodes(tmp_path):
+    """A GIF keeps a red node reddish and a blue node bluish, frame by frame.
+
+    The colors swap every frame: Pillow merges identical consecutive GIF frames.
+    """
+    colors = [["red", "blue"], ["blue", "red"], ["red", "blue"]]
+    out = bn.animate_network(
+        TWO, np.zeros((3, 2, 2)), tmp_path / "c.gif", node_color=colors,
+        **{**_ANIM, "radius_kb": (0.0, 10.0)},
+    )  # fmt: skip
+    with Image.open(out) as g:
+        assert g.n_frames == 3
+        decoded = []
+        for k in range(3):
+            g.seek(k)
+            decoded.append(_rgb(g))
+    for k, a in enumerate(decoded):
+        reddish = (a[..., 0] > 120) & (a[..., 1] < 110) & (a[..., 2] < 110)
+        bluish = (a[..., 2] > 120) & (a[..., 0] < 110) & (a[..., 1] < 110)
+        print(
+            "gif frame", k + 1, "reddish px", reddish.sum(), "bluish px", bluish.sum()
+        )
+        assert reddish.sum() > 50 and bluish.sum() > 50
+        # node 0 (drawn right of _MID) has the frame's first color
+        left, right = (bluish, reddish) if colors[k][0] == "red" else (reddish, bluish)
+        assert _centroid(left)[0] < _MID < _centroid(right)[0]
+
+
+def test_animate_scale_by_mass_with_time_sizes(res_htfa, tmp_path):
+    """(T, K) sizes with scale_by_mass on a fit: frames change over time."""
+    sizes = [[1.0, 1.0, 1.0, 1.0], [3.0, 1.0, 1.0, 3.0], [6.0, 1.0, 1.0, 6.0]]
+    _movie(tmp_path, "mass", res_htfa, None, sizes=sizes, scale_by_mass=True, snap=True)
+    d = [
+        bn.image_diff(tmp_path / "mass" / "1.png", tmp_path / "mass" / f"{k}.png")
+        for k in (2, 3)
+    ]
+    print("image_diff frame 1 vs 2, vs 3", d)
+    assert 0 < d[0] < d[1]
+
+
+def test_animate_time_sizes_rejected_in_lobe_mode(tmp_path):
+    """Component lobes take neither (T, K) sizes nor (T, K) colors."""
+    centers = np.array([[0.0, -20.0, 0.0], [0.0, 20.0, 0.0]])
+    kw = {"widths": np.array([60.0, 60.0]), "mask": _sphere(40.0, 4.0),
+          "node_mode": "components", **_ANIM}  # fmt: skip
+    E = np.zeros((3, 2, 2))
+    with pytest.raises(ValueError, match="node_mode='summary'") as err:
+        bn.animate_network(centers, E, tmp_path / "x.mp4", sizes=GROW, **kw)
+    print("error:", err.value)
+    with pytest.raises(ValueError, match="component lobes") as err:
+        bn.animate_network(
+            centers, E, tmp_path / "x.mp4", node_color=[["red", "blue"]] * 3, **kw
+        )
+    print("error:", err.value)
+
+
+def test_radii_joint_and_positive():
+    """_radii maps (K,) like the scene did and (T, K) in one call; radii > 0."""
+    opts, _ = bn._style({})
+    np.testing.assert_array_equal(
+        bn._radii(np.array([1.0, 2.0, 3.0]), opts), bn.node_radius([1.0, 2.0, 3.0])
+    )
+    joint = bn._radii(np.array(GROW), opts)
+    print("joint radii", joint)
+    np.testing.assert_allclose(joint, [[2, 2], [2 + 5 / 3, 2], [7, 2]])
+    fixed = bn._radii(np.array(GROW), {**opts, "radius_kb": (2.0, 1.0)})
+    np.testing.assert_array_equal(fixed, 2 * np.array(GROW) + 1)
+    clipped = bn._radii(np.array(GROW), {**opts, "radius_clip": (3.0, 5.0)})
+    assert clipped.min() == 3.0 and clipped.max() == 5.0
+    with pytest.raises(ValueError, match="positive") as err:
+        bn._radii(np.array(GROW), {**opts, "radius_kb": (1.0, -2.0)})
+    print("error:", err.value)
+
+
+def test_plot_network_rejects_time_sizes():
+    """(T, K) sizes are for animate_network; plot_network says so."""
+    with pytest.raises(ValueError, match=r"\(3, 2\).*animate_network") as err:
+        bn.plot_network(TWO, sizes=GROW, **_ANIM)
+    print("error:", err.value)
+    with pytest.raises(ValueError, match="sizes has 3 entries for 2 nodes") as err:
+        bn.plot_network(TWO, sizes=[1.0, 2.0, 3.0], **_ANIM)
+    print("error:", err.value)
+
+
+def test_animate_fixed_edges_with_time_sizes(tmp_path):
+    """A (K, K) matrix with (T, K) sizes draws the same edge in all T frames."""
+    E = np.array([[0.0, 0.8], [0.8, 0.0]])
+    frames = _movie(tmp_path, "fixed", TWO, E, sizes=GROW)
+    red = [int(_red(a).sum()) for a in frames]
+    print("red px per frame", red, "node-0 areas", [a for a, _ in _areas(frames)])
+    assert min(red) > 10

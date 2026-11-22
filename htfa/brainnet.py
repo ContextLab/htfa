@@ -501,11 +501,20 @@ def _centers(centers: Any) -> Array:
     return c
 
 
-def _per_node(values: Any, K: int, what: str) -> Array:
-    v = np.asarray(values, dtype=np.float64).ravel()
-    if v.shape != (K,):
-        raise ValueError(f"{what} has {v.size} entries for {K} nodes")
-    return v
+def _per_node(values: Any, K: int, what: str, frames: bool = False) -> Array:
+    """``values`` as shape (K,); with ``frames``, (T, K) is kept as it is.
+
+    K values in any shape, such as (1, K) or (K, 1), are flattened to (K,).
+    """
+    v = np.asarray(values, dtype=np.float64)
+    if frames and v.ndim == 2 and v.shape[1] == K and v.size != K:
+        return v
+    if v.size != K:
+        want = " ((K,) or (T, K))" if frames else ""
+        raise ValueError(
+            f"{what} has {v.size} entries for {K} nodes{want}, shape {v.shape}"
+        )
+    return v.ravel()
 
 
 def _nodes(nodes: Any, sizes: Any, subject: Any) -> tuple[Array, Array]:
@@ -513,7 +522,7 @@ def _nodes(nodes: Any, sizes: Any, subject: Any) -> tuple[Array, Array]:
     centers, widths = _fit_nodes(nodes, subject)
     K = len(centers)
     if sizes is not None:
-        return centers, _per_node(sizes, K, "sizes")
+        return centers, _per_node(sizes, K, "sizes", frames=True)
     return centers, np.ones(K) if widths is None else widths
 
 
@@ -978,7 +987,7 @@ def _display_nodes(
     scale_by_mass: bool = False,
     fade_by_mass: bool | float = False,
 ) -> tuple[Array, Array, Array | None]:
-    """Centers, sizes and per-node opacities (or None) the plots draw."""
+    """Centers, sizes ((K,) or (T, K)) and per-node opacities (or None) to draw."""
     centers, fit_widths = _fit_nodes(nodes, subject)
     K = len(centers)
     w = fit_widths if widths is None else _per_node(widths, K, "widths")
@@ -1005,7 +1014,7 @@ def _display_nodes(
         name, comp_c, comp_w, pi = shape
         centers, w_eff, info = effective_nodes(comp_c, comp_w, mask, name, pi)
     if sizes is not None:
-        node_sizes = _per_node(sizes, K, "sizes")
+        node_sizes = _per_node(sizes, K, "sizes", frames=True)
     else:
         node_sizes = np.ones(K) if w is None else w_eff
     if scale_by_mass:
@@ -1213,6 +1222,24 @@ def _network_geometry(
     return centers, components.widths, None, components, surfaces
 
 
+def _radii(sizes: Array, scene_opts: dict[str, Any]) -> Array:
+    """Positive node radii in mm from sizes of any shape, such as (K,) or (T, K).
+
+    One `node_radius` call with the ``radius_range``, ``radius_kb`` and
+    ``radius_clip`` of ``scene_opts`` (see `_style`), so (T, K) sizes are
+    scaled jointly over all timepoints.
+    """
+    rng = scene_opts["radius_range"]
+    k, b = (None, None) if scene_opts["radius_kb"] is None else scene_opts["radius_kb"]
+    radii = node_radius(sizes, rng[0], rng[1], k=k, b=b, clip=scene_opts["radius_clip"])
+    if not np.all(radii > 0):
+        raise ValueError(
+            f"node radii must be positive, got min {radii.min():.3g} mm; "
+            "set radius_clip"
+        )
+    return radii
+
+
 class _Scene:
     """Off-screen plotter holding mesh and nodes; edges change per frame."""
 
@@ -1255,15 +1282,14 @@ class _Scene:
         self.node_colors = _node_colors(node_color, len(centers))
         self.node_color = node_color  # as given: one color is drawn as in 0.1.0
         self.centers = centers
-        k, b = (None, None) if radius_kb is None else radius_kb
-        self.radii = node_radius(
-            sizes, radius_range[0], radius_range[1], k=k, b=b, clip=radius_clip
+        self.radii = _radii(
+            sizes,
+            {
+                "radius_range": radius_range,
+                "radius_kb": radius_kb,
+                "radius_clip": radius_clip,
+            },
         )
-        if not np.all(self.radii > 0):
-            raise ValueError(
-                f"node radii must be positive, got min {self.radii.min():.3g} mm; "
-                "set radius_clip"
-            )
         self.component_surfaces = component_surfaces
         self.component_weights = component_weights
         self.lobe_negative_color = lobe_negative_color
@@ -1786,6 +1812,11 @@ def plot_network(
         node_mode,
         lobe_level,
     )
+    if node_sizes.ndim != 1:
+        raise ValueError(
+            f"plot_network takes sizes of shape (K,), got {node_sizes.shape}; "
+            "(T, K) sizes are for animate_network"
+        )
     if components is not None and connectivity is not None:
         connectivity = components.connectivity(connectivity)
     E = None
@@ -1871,7 +1902,7 @@ def _nearest(t: float, T: int) -> int:
 
 
 def _at_time(E: Array, t: float, interpolation: str) -> Array:
-    """Connectivity at fractional window index ``t``."""
+    """A (T, ...) series (connectivity or radii) at fractional window index ``t``."""
     if interpolation == "nearest":
         return E[_nearest(t, len(E))]
     lo = min(int(np.floor(t)), len(E) - 1)
@@ -1916,16 +1947,28 @@ def animate_network(
 
     Parameters
     ----------
-    nodes, sizes, widths, subject, mesh, snap, mask, scale_by_mass, fade_by_mass
+    nodes, widths, subject, mesh, snap, mask, scale_by_mass, fade_by_mass
         As in `plot_network` (``snap`` is on by default).
+    sizes : array of shape (K,) or (T, K), optional
+        Node sizes as in `plot_network`, or one row per window. (T, K)
+        sizes are mapped to radii in one `node_radius` call over the whole
+        array, so radii are comparable across frames; between windows they
+        follow ``interpolation``, like the edges, and edges start at each
+        frame's sphere surfaces. ``scale_by_mass`` multiplies every row.
     node_mode, lobe_level, lobe_negative_color
         As in `plot_network`; the same component geometry and repeated edges
-        are used in every frame.
+        are used in every frame. Component lobes take neither (T, K) sizes
+        nor per-frame colors.
     **style
-        As in `plot_network`.
-    connectivity : array of shape (T, K, K), or (K, K) with duration
-        One edge matrix per window. A single ``(K, K)`` matrix needs
-        ``duration`` or ``n_frames`` and gives fixed edges (for a spin).
+        As in `plot_network`. ``node_color`` may also hold per-frame colors:
+        (T, K) color specs or an array of shape (T, K, 3) or (T, K, 4). A
+        frame uses the colors of the nearest window; colors are not blended.
+    connectivity : array of shape (T, K, K) or (K, K), or None
+        One edge matrix per window. A single ``(K, K)`` matrix gives fixed
+        edges (for a spin) and needs ``duration``, ``n_frames``, or (T, K)
+        ``sizes`` or colors. ``None`` draws no edges and needs (T, K)
+        ``sizes`` or colors. All time axes (connectivity, ``sizes``,
+        ``node_color`` and a ``captions`` sequence) must have the same T.
     out : path
         ``.mp4`` (H.264 via imageio-ffmpeg) or ``.gif``. An mp4 is encoded
         while frames render, holding one frame in memory at a time. A GIF
@@ -2021,11 +2064,43 @@ def animate_network(
     if components is not None and connectivity is not None:
         connectivity = components.connectivity(connectivity)
     K = len(centers)
-    if n is not None and np.ndim(connectivity) == 2:
+    node_color = scene_opts["node_color"]
+    colors = None  # per-frame colors, (T, K, 3)
+    if components is None and not _is_color(node_color):
+        colors = _node_colors(node_color, K, len(node_color))
+        colors = colors if colors.ndim == 3 else None
+    axes = {}  # the length of each time axis
+    if connectivity is not None and np.ndim(connectivity) == 3:
+        axes["connectivity"] = len(connectivity)
+    if node_sizes.ndim == 2:
+        axes["sizes"] = len(node_sizes)
+    if colors is not None:
+        axes["node_color"] = len(colors)
+    if len(set(axes.values())) > 1:
+        raise ValueError(
+            "time axes disagree: "
+            + ", ".join(f"{name} has T={t}" for name, t in axes.items())
+        )
+    E = None
+    if connectivity is None:
+        if not axes:
+            raise ValueError(
+                "connectivity=None needs a time axis in sizes ((T, K)) or in "
+                "node_color ((T, K) colors)"
+            )
+    elif np.ndim(connectivity) == 2 and (n is not None or axes):
         E = _connectivity(connectivity, K, 2)[None]
     else:
         E = _connectivity(connectivity, K, 3)
-    T = len(E)
+    T = next(iter(axes.values()), 1)
+    # (T, K) radii, scaled jointly over all timepoints
+    radii = None if node_sizes.ndim == 1 else _radii(node_sizes, scene_opts)
+    if radii is not None:
+        # The scene starts with each node's largest sphere (the spin zoom fits it).
+        node_sizes = radii.max(axis=0)
+        scene_opts.update(radius_kb=(1.0, 0.0), radius_clip=None)
+    if colors is not None:
+        scene_opts["node_color"] = colors[0]
     if callable(captions):
         caption: Callable[[float], str] | None = captions
     elif captions is not None:
@@ -2058,9 +2133,21 @@ def animate_network(
         if rotations is not None:
             center, scale = scene.fit_spin(rotations)
         for k, t in enumerate(times):
+            if radii is not None or colors is not None:
+                scene.set_nodes(
+                    (
+                        scene.radii
+                        if radii is None
+                        else _at_time(radii, float(t), interpolation)
+                    ),
+                    None if colors is None else colors[_nearest(float(t), T)],
+                )
             if rotations is not None:
                 scene.orbit(rotations[k], center, scale)
-            scene.set_edges(_at_time(E, float(t), interpolation), **edge_opts)
+            if E is not None:
+                # fixed (K, K) edges: the same matrix at every t
+                at = E[0] if len(E) == 1 else _at_time(E, float(t), interpolation)
+                scene.set_edges(at, **edge_opts)
             img = scene.image()
             if caption is not None:
                 img = _with_header(img, [caption(float(t))])
