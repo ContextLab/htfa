@@ -2885,3 +2885,133 @@ def test_annotate_pair_empty_titles_keep_header():
         expect = (1200, _head(1200, caption=bool(caption)) + pane_h)
         print(caption, pair.size, expect)
         assert pair.size == expect
+
+
+# ------------------------------------------------------------------ compose
+
+_COMPOSE_LOG = {"path": None}
+
+
+def _stack_compose(images, t):
+    """Record what compose receives, paste the images top to bottom."""
+    import json
+
+    with open(_COMPOSE_LOG["path"], "a") as f:
+        f.write(json.dumps([len(images), list(images[0].size), t]) + "\n")
+    out = Image.new("RGB", (images[0].width, sum(im.height for im in images)), "white")
+    y = 0
+    for im in images:
+        out.paste(im, (0, y))
+        y += im.height
+    return out
+
+
+def _odd_compose(images, t):
+    return Image.new("RGB", (321, 201), "white")
+
+
+def _growing_compose(images, t):
+    return Image.new("RGB", (320 + 2 * int(t), 200), "white")
+
+
+def _none_compose(images, t):
+    return None
+
+
+def _compose_log(tmp_path):
+    import json
+
+    _COMPOSE_LOG["path"] = tmp_path / "compose.jsonl"
+    path = _COMPOSE_LOG["path"]
+    return lambda: [json.loads(s) for s in path.read_text().splitlines()]
+
+
+def test_compose_receives_views_and_time(tmp_path):
+    read = _compose_log(tmp_path)
+    bn.animate_network(
+        CENTERS, _frames(), tmp_path / "c.gif", views=("left", "dorsal"),
+        compose=_stack_compose, frames_dir=tmp_path / "f", **_ANIM,
+    )  # fmt: skip
+    log = read()
+    print(log)
+    assert log == [[2, [320, 200], float(t)] for t in range(3)]
+    assert isinstance(log[0][2], float)
+    for k in (1, 2, 3):
+        with Image.open(tmp_path / "f" / f"{k}.png") as png:
+            assert png.size == (320, 400)
+
+
+def test_compose_without_views(tmp_path):
+    read = _compose_log(tmp_path)
+    bn.animate_network(
+        CENTERS, _frames(), tmp_path / "c.gif", compose=_stack_compose, **_ANIM
+    )
+    log = read()
+    print(log)
+    assert [entry[0] for entry in log] == [1, 1, 1]
+
+
+def test_compose_frame_is_returned_as_is(tmp_path):
+    """No caption, title, legend or crop is added to what compose returns."""
+    _compose_log(tmp_path)
+    bn.animate_network(
+        CENTERS, _frames(), tmp_path / "c.gif", compose=_stack_compose,
+        frames_dir=tmp_path / "f", **_ANIM,
+    )  # fmt: skip
+    bn.animate_network(
+        CENTERS, _frames(), tmp_path / "p.gif", frames_dir=tmp_path / "g", **_ANIM
+    )
+    for k in (1, 2, 3):
+        a = _rgb(Image.open(tmp_path / "f" / f"{k}.png"))
+        b = _rgb(Image.open(tmp_path / "g" / f"{k}.png"))
+        assert np.array_equal(a, b), k
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"legend": [("red", "a", "dot")]},
+        {"captions": ["a", "b", "c"]},
+        {"captions": str},
+        {"frame_size": (320, 200)},
+    ],
+)
+def test_compose_excludes_layout_arguments(tmp_path, extra):
+    _compose_log(tmp_path)
+    with pytest.raises(ValueError, match="compose") as err:
+        bn.animate_network(
+            CENTERS, _frames(), tmp_path / "c.gif", compose=_stack_compose,
+            **extra, **_ANIM,
+        )  # fmt: skip
+    print(err.value)
+    assert not (tmp_path / "c.gif").exists()
+
+
+def test_compose_bad_return(tmp_path):
+    for suffix in (".gif", ".mp4"):
+        with pytest.raises(ValueError, match="same size") as err:
+            bn.animate_network(
+                CENTERS, _frames(), tmp_path / f"a{suffix}",
+                compose=_growing_compose, **_ANIM,
+            )  # fmt: skip
+        print(suffix, err.value)
+    with pytest.raises((TypeError, ValueError), match="compose") as err:
+        bn.animate_network(
+            CENTERS, _frames(), tmp_path / "n.gif", compose=_none_compose, **_ANIM
+        )
+    print(err.value)
+
+
+def test_compose_odd_size_mp4(tmp_path):
+    import imageio.v2 as iio
+
+    out = bn.animate_network(
+        CENTERS, _frames(), tmp_path / "o.mp4", compose=_odd_compose, **_ANIM
+    )
+    reader = iio.get_reader(out, "ffmpeg")
+    try:
+        shape = reader.get_data(0).shape
+    finally:
+        reader.close()
+    print(shape)
+    assert shape[:2] == (200, 320)

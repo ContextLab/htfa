@@ -2102,6 +2102,7 @@ def animate_network(
     views: Sequence[Any] | None = None,
     legend: Any = None,
     frame_size: tuple[int, int] | None = None,
+    compose: Callable[[list[Any], float], Any] | None = None,
     **style: Any,
 ) -> Path:
     """Render a ``(T, K, K)`` connectivity series as an mp4 or GIF.
@@ -2182,6 +2183,15 @@ def animate_network(
         first frame, around one render of each view without edges and with
         each node at its largest radius. With ``spin`` every view turns and
         the views are not cropped.
+    compose : callable, optional
+        ``compose(images, t) -> image`` replaces the layout step. ``images``
+        is the list of PIL RGB images of one frame, one per view (just one
+        without ``views``), uncropped and at ``size``; ``t`` is the frame's
+        window time (a float). The returned PIL image is the frame as is:
+        no caption, titles, legend or crop is added, so ``compose`` cannot
+        be combined with ``legend``, ``captions`` or ``frame_size``
+        (``ValueError``). Every frame must have the same size (an mp4 is
+        trimmed to even sizes).
     frames_dir : path, optional
         Also save each frame there as ``1.png``, ``2.png``, ... (``.jpg``
         with ``jpeg_quality``).
@@ -2214,6 +2224,14 @@ def animate_network(
     >>> animate_network(centers, C, "spin.gif", fps=12, duration=4,
     ...                 spin=(0, 0, 1), size=(480, 300))  # doctest: +SKIP
     """
+    if compose is not None and (
+        legend is not None or captions is not None or frame_size is not None
+    ):
+        raise ValueError(
+            "compose makes the whole frame: give it without legend, captions "
+            f"or frame_size; got legend={legend!r}, captions={captions!r}, "
+            f"frame_size={frame_size!r}"
+        )
     layout = _layout_args(views, legend, frame_size, style)
     scene_opts, edge_opts = _style(dict(style))
     if interpolation not in ("linear", "nearest"):
@@ -2323,22 +2341,9 @@ def animate_network(
                 None if rotations is None else rotations[k],
             )
             text = None if caption is None else caption(float(t))
-            if layout is not None:
-                _, titles, rows, size = layout
-                img = _layout(
-                    images,
-                    titles,
-                    text,
-                    rows,
-                    crop,
-                    None,
-                    size,
-                    scene_opts["background"],
-                )
-            else:
-                img = images[0]
-                if text is not None:
-                    img = _with_header(img, [text])
+            img = _finish_frame(
+                images, float(t), text, layout, crop, scene_opts["background"], compose
+            )
             if jpeg_quality is not None:
                 img = _jpeg(img, jpeg_quality)
             if folder is not None:
@@ -2347,13 +2352,14 @@ def animate_network(
             yield img
 
     try:
-        if layout is not None and rotations is None:
+        # compose gets the uncropped views
+        if layout is not None and compose is None and rotations is None:
             # one crop for all views and frames: no edges, the largest spheres
             # (the scene starts with them, see above)
             crop = content_box(
                 scenes.draw(None, edge_opts), background=scene_opts["background"]
             )
-        elif layout is not None:
+        elif layout is not None and compose is None:
             crop = (0, 0, *scenes.scenes[0].size)
         return write_animation(frames(), out, fps=fps)
     finally:
@@ -2714,6 +2720,34 @@ def _legend_rows(legend: Any) -> list[list[tuple[tuple[int, int, int], str, str]
             entries.append(((r8, g8, b8), entry[1], entry[2]))
         rows.append(entries)
     return rows
+
+
+def _finish_frame(
+    images: Sequence[Any],
+    t: float,
+    text: str | None,
+    layout: tuple[list[str], list[str] | None, list | None, tuple[int, int] | None]
+    | None,
+    crop: tuple[int, int, int, int] | None,
+    background: Any,
+    compose: Callable[[list[Any], float], Any] | None,
+) -> Any:
+    """One movie frame from the per-view images of time ``t``.
+
+    ``compose`` (when given) makes the frame from ``images`` and ``t``; else
+    the layout (or, without one, the caption header) does.
+    """
+    if compose is not None:
+        img = compose(list(images), t)
+        if not hasattr(img, "convert"):
+            raise ValueError(
+                f"compose must return a PIL image, got {type(img).__name__} at t={t}"
+            )
+        return _open(img)
+    if layout is None:
+        return images[0] if text is None else _with_header(images[0], [text])
+    _, titles, rows, size = layout
+    return _layout(images, titles, text, rows, crop, None, size, background)
 
 
 def _layout_args(
