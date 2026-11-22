@@ -1079,6 +1079,47 @@ def test_content_box_exported():
     assert not hasattr(bn, "_content_box")
 
 
+_IMAGE_HELPERS = """
+import json, sys
+from PIL import Image, ImageDraw
+import htfa.brainnet as bn
+
+a = Image.new("RGB", (400, 250), "white")
+ImageDraw.Draw(a).ellipse((80, 60, 300, 200), fill=(200, 30, 30))
+b = Image.new("RGB", (400, 250), "white")
+ImageDraw.Draw(b).rectangle((120, 40, 340, 220), fill=(30, 30, 200))
+pair = bn.annotate_pair(a, b, ("Left\\nsub", "Right"), "TR 3", width=800)
+grid = bn.montage([[a, b], [b, a]], ["r1", "r2"], ["c1", "c2"], title="T")
+print(json.dumps({
+    "pair": pair.size, "montage": grid.size,
+    "box": bn.content_box([a, b]), "box_white": bn.content_box(a, background="white"),
+    "loaded": [m for m in ("pyvista", "vtkmodules", "matplotlib") if m in sys.modules],
+}))
+"""
+
+
+def test_image_helpers_need_no_3d_extras():
+    """annotate_pair, montage and content_box on white PIL images import neither
+    pyvista nor matplotlib (both are 3D-extra dependencies), as in 0.1.0.
+
+    Run in a fresh process, so that nothing imported by other tests counts.
+    """
+    import json
+    import subprocess
+
+    run = subprocess.run(
+        [sys.executable, "-c", _IMAGE_HELPERS], capture_output=True, text=True,
+        timeout=120,
+    )  # fmt: skip
+    print("exit code", run.returncode, "stdout:", run.stdout, "stderr:", run.stderr,
+          sep="\n")  # fmt: skip
+    assert run.returncode == 0
+    got = json.loads(run.stdout.splitlines()[-1])
+    assert got["loaded"] == []
+    assert got["box"] == [70, 30, 351, 231] and got["box_white"] == [70, 50, 311, 211]
+    assert got["pair"][0] == 800 and got["montage"][1] > 0
+
+
 def test_annotate_pair_and_montage(tmp_path):
     left = bn.plot_network(CENTERS, _conn(), mesh=None)
     right = bn.plot_network(CENTERS, -_conn(), mesh=None)

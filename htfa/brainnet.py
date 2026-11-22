@@ -1762,6 +1762,19 @@ def _uint8(rgb: Array) -> Array:
     return np.round(np.asarray(rgb) * 255).astype(np.uint8)
 
 
+def _rgb255(color: Any) -> tuple[int, int, int]:
+    """``color`` as 0-255 ints.
+
+    ``"white"``, the default background of the image helpers, needs no
+    pyvista, so `content_box`, `annotate_pair` and `montage` on white images
+    work without the 3D extras.
+    """
+    if isinstance(color, str) and color.lower() == "white":
+        return 255, 255, 255
+    r, g, b = (int(v) for v in _uint8(np.asarray(_rgb(color))))
+    return r, g, b
+
+
 def _is_color(color: Any) -> bool:
     """Whether ``color`` is one color: a name or hex string, or 3 or 4 numbers."""
     try:
@@ -2937,8 +2950,9 @@ def content_box(
     margin : int, default 10
         Pixels added on every side of the content, clipped to the image.
     background : color, default "white"
-        The background color (anything pyvista accepts). A pixel is content
-        when any channel differs from it by more than 5 (of 255).
+        The background color (anything pyvista accepts; white needs no
+        pyvista). A pixel is content when any channel differs from it by
+        more than 5 (of 255).
 
     Returns
     -------
@@ -2963,7 +2977,7 @@ def content_box(
     if len(images) == 0:
         raise ValueError(f"images must not be empty, got {images!r}")
     ims = [_open(im) for im in images]
-    bg = np.round(np.asarray(_rgb(background)) * 255)
+    bg = np.asarray(_rgb255(background))
     w, h = ims[0].size
     mask = np.zeros((h, w), dtype=bool)
     for im in ims:
@@ -3099,8 +3113,7 @@ def _legend_rows(legend: Any) -> list[list[tuple[tuple[int, int, int], str, str]
                     "legend entries are (color, label, kind) with kind 'dot' or "
                     f"'line'; row {r} has {entry!r}"
                 )
-            r8, g8, b8 = (int(v) for v in _uint8(np.asarray(_rgb(entry[0]))))
-            entries.append(((r8, g8, b8), entry[1], entry[2]))
+            entries.append((_rgb255(entry[0]), entry[1], entry[2]))
         rows.append(entries)
     return rows
 
@@ -3212,7 +3225,7 @@ def _layout(
     box = crop or content_box(ims, background=background)
     n, bw, bh = len(ims), box[2] - box[0], box[3] - box[1]
     W = frame_size[0] if frame_size else width or n * bw
-    bg = tuple(int(v) for v in _uint8(np.asarray(_rgb(background))))
+    bg = _rgb255(background)
     light = sum(bg) / 3 >= 128
 
     def ink(v: int) -> tuple[int, int, int]:
