@@ -1775,6 +1775,11 @@ def _rgb255(color: Any) -> tuple[int, int, int]:
     return r, g, b
 
 
+def _is_light(background: Any) -> bool:
+    """Whether ``background`` is light: mean 0-255 channel 128 or more."""
+    return sum(_rgb255(background)) / 3 >= 128
+
+
 def _is_color(color: Any) -> bool:
     """Whether ``color`` is one color: a name or hex string, or 3 or 4 numbers."""
     try:
@@ -2302,8 +2307,10 @@ def animate_network(
         As in `plot_network`. In a movie, one crop box serves all views and
         frames, so the brain does not move: it is taken once, before the
         first frame, around one render of each view without edges and with
-        each node at its largest radius. With ``spin`` every view turns and
-        the views are not cropped.
+        each node at its largest radius, opaque and in one color that
+        contrasts with the ``background`` (so a node hidden in the first
+        frame is not cropped away). With ``spin`` every view turns and the
+        views are not cropped.
     compose : callable, optional
         ``compose(images, t) -> image`` replaces the layout step. ``images``
         is the list of PIL RGB images of one frame, one per view (just one
@@ -2522,9 +2529,9 @@ def animate_network(
         scene_opts["background"],
         compose,
     )
+    movie = movie._replace(crop=_movie_crop(build, movie))
     if n_jobs == 1:
         with _movie_views(build, rotations) as scenes:
-            movie = movie._replace(crop=_movie_crop(scenes, movie))
 
             def frames() -> Iterator[Any]:
                 for k in range(len(times)):
@@ -2537,9 +2544,6 @@ def animate_network(
     _headless_window()
     work = Path(tempfile.mkdtemp(prefix="htfa-frames-"))
     try:
-        if layout is not None and compose is None:
-            with _movie_views(build, None) as scenes:
-                movie = movie._replace(crop=_movie_crop(scenes, movie))
 
         def drawn() -> Iterator[Any]:
             _draw_parallel(build, movie, n_jobs, work)
@@ -2654,15 +2658,29 @@ def _movie_views(build: _ViewsArgs, rotations: Array | None) -> Iterator[_Views]
             scenes.close()
 
 
-def _movie_crop(scenes: _Views, movie: _Movie) -> tuple[int, int, int, int] | None:
-    """The one crop box of a movie's layout (None without layout or with compose)."""
+def _movie_crop(build: _ViewsArgs, movie: _Movie) -> tuple[int, int, int, int] | None:
+    """The one crop box of a movie's layout (None without layout or with compose).
+
+    With a spin, the whole view. Otherwise the `content_box` of a reference
+    render of every view in scenes of its own: no edges, every node at its
+    largest radius over time (the scenes start with them) and opaque, in one
+    color that contrasts with the background (black on a light one, else
+    white), so that neither node colors nor which nodes are visible in the
+    first frame change the box.
+    """
     if movie.layout is None or movie.compose is not None:
         return None  # compose gets the uncropped views
     if movie.rotations is not None:
-        return (0, 0, *scenes.scenes[0].size)
-    # one crop for all views and frames: no edges, the largest spheres (the
-    # scenes start with them)
-    return content_box(scenes.draw(None, movie.edge_opts), background=movie.background)
+        w, h = build.scene_opts["size"]
+        return 0, 0, int(w), int(h)
+    ink = "black" if _is_light(movie.background) else "white"
+    reference = build._replace(
+        scene_opts={**build.scene_opts, "node_color": ink},
+        kwargs={**build.kwargs, "node_opacity": None},
+    )
+    with _movie_views(reference, None) as scenes:
+        images = scenes.draw(None, movie.edge_opts)
+    return content_box(images, background=movie.background)
 
 
 def _draw_frame(
@@ -3225,8 +3243,7 @@ def _layout(
     box = crop or content_box(ims, background=background)
     n, bw, bh = len(ims), box[2] - box[0], box[3] - box[1]
     W = frame_size[0] if frame_size else width or n * bw
-    bg = _rgb255(background)
-    light = sum(bg) / 3 >= 128
+    bg, light = _rgb255(background), _is_light(background)
 
     def ink(v: int) -> tuple[int, int, int]:
         return (v, v, v) if light else (255 - v, 255 - v, 255 - v)

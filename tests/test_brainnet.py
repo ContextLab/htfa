@@ -3019,6 +3019,28 @@ def test_animate_empty_time_axes_rejected(tmp_path):
     assert not out.exists()
 
 
+def test_movie_crop_keeps_nodes_hidden_in_the_first_frame(tmp_path):
+    """The crop does not depend on node colors: a node drawn in the background
+    color in frame 1 (invisible) and blue in frame 2 is not cropped away."""
+    kw = {"views": ["dorsal"], "background": "black"}
+    colors = [["red", "black"], ["red", "blue"]]
+    still = _rgb(
+        bn.plot_network(TWO, node_color=["red", "blue"], view="dorsal",
+                        background="black", **_ANIM)
+    )  # fmt: skip
+    want = int(_hue(still, 2).sum())
+    for jobs in (1, 2):
+        frames = _movie(
+            tmp_path, f"hidden{jobs}", TWO, None, 2, node_color=colors, n_jobs=jobs,
+            **kw,
+        )  # fmt: skip
+        got = [(int(_hue(a, 0).sum()), int(_hue(a, 2).sum())) for a in frames]
+        print(f"n_jobs={jobs}: frame shape {frames[0].shape}, red/blue px per frame "
+              f"{got}; blue px in an uncropped still {want}")  # fmt: skip
+        assert got[0][1] == 0 and got[0][0] > 20  # node 1 is black on black
+        assert got[1][0] > 20 and got[1][1] == want > 20  # all of it is in the crop
+
+
 def test_plot_network_crop_ignores_edges():
     """The still-image crop comes from a render without edges, as in movies."""
     E = np.zeros((6, 6))
