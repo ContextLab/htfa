@@ -2029,8 +2029,13 @@ def plot_network(
         white band added above the image; with any of them, centered on a
         line under the view titles, in the title band (with ``frame_size``
         the views get that much less height). Text wider than the image is
-        cut off at its edges. ``None`` (default) adds nothing. The image
-        equals the frame of a one-window `animate_network` movie with
+        cut off at its edges. ``None`` (default) adds nothing. The caption
+        is drawn by the same code as in `animate_network`. The crop of the
+        views can differ from a movie's: a still is cropped around its nodes
+        as drawn, a movie around opaque nodes in one contrasting color at
+        their largest radius. Where the two crop boxes are equal (always
+        without ``views``, ``legend`` and ``frame_size``, which do not
+        crop), the image equals the frame of a one-window movie with
         ``captions=[caption]`` and the same other arguments.
     **style
         ``threshold`` (0.25; edges with ``|E| > threshold`` are drawn),
@@ -2130,7 +2135,7 @@ def plot_network(
             images = scenes.draw(E, edge_opts)
         finally:
             scenes.close()
-    # the frame of a one-frame animate_network movie with captions=[caption]
+    # titles, caption and legend as animate_network finishes a frame
     img = _finish_frame(
         images, 0.0, caption, layout, crop, scene_opts["background"], None
     )
@@ -2899,10 +2904,15 @@ def write_animation(
             f"preset must be None or one of x264's presets "
             f"{', '.join(_X264_PRESETS)}; got {preset!r}"
         )
-    if suffix == ".gif" and (crf is not None or faststart or preset is not None):
+    if suffix == ".gif" and preset is not None:
         raise ValueError(
             f"crf, faststart and preset apply to .mp4 only, got {out.name!r} "
             f"with crf={crf!r}, faststart={faststart!r}, preset={preset!r}"
+        )
+    if suffix == ".gif" and (crf is not None or faststart):
+        raise ValueError(
+            f"crf and faststart apply to .mp4 only, got {out.name!r} "
+            f"with crf={crf!r}, faststart={faststart!r}"
         )
     if suffix == ".gif":
         frames = [im.convert("RGB") for im in images]
@@ -3378,6 +3388,10 @@ def _layout(
         x = x0 + k * pw
         d.line([(x, y0), (x, y0 + ph)], fill=ink(200), width=2)
     if rows:
+        for r, row in enumerate(rows):
+            if not row:  # a reserved band is blank, also where a divider ends
+                y = H - legend_h + r * band
+                d.rectangle([0, y, W - 1, y + band - 1], fill=bg)
         _draw_legend(d, rows, W, H - legend_h, band, lsize, ink(0))
     if not frame_size and not width:
         canvas = canvas.crop((0, 0, W - W % 2, H - H % 2))
