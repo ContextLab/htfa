@@ -19,7 +19,7 @@ movies through htfa's public functions alone.
 3. Several views composed in one frame.
 4. A legend of colored dots and lines with labels.
 5. Frames rendered in parallel workers.
-6. Encoding options (`crf`, `faststart`) for MP4 output.
+6. Encoding options (`crf`, `faststart`, `preset`) for MP4 output.
 7. A public `content_box` crop helper.
 8. A `compose=` callable on `animate_network` for callers who want their own
    frame layout.
@@ -32,8 +32,6 @@ movies through htfa's public functions alone.
 - Editing the timecorr repository. Its session does that once 0.2.0 exists.
 - Node positions that change over time.
 - A public scene class. `_Scene` stays private.
-- An x264 `preset` option (the tutorial uses `slow`; the issue does not ask
-  for it).
 
 ## Anti-goals
 
@@ -168,6 +166,13 @@ black text, mark then
 label, sizes proportional to the font size (gap 40, mark width 34, dot
 radius 12, line width 6, mark-to-text 10, all per 30 px of font).
 
+Empty rows (added 2026-11-22): in a list of rows, an empty row reserves one
+band in the background color at its position, so `[[], row]` draws the row
+one band lower and `[row, []]` leaves a blank band under it; a legend of
+empty rows only is allowed. Without `frame_size` the frame is one band
+taller per empty row; with it, the views get one band less height.
+`legend=[]` still raises `ValueError`.
+
 ### `compose`
 
 New keyword `compose` on `animate_network`: a callable
@@ -180,6 +185,17 @@ With `n_jobs` other than 1 the callable runs in worker processes.
 
 `plot_network` has no `compose`: a caller can render each view and combine
 the images directly.
+
+### `caption` on `plot_network`
+
+Added 2026-11-22, after a downstream port of the animation tutorial.
+`plot_network(..., caption=None)` takes one line of text and finishes its
+image with the same helper that finishes each `animate_network` frame, so
+the image equals the frame of a one-window movie with `captions=[caption]`:
+in the 0.1.0 path, a `_with_header` band above the image; in the layout
+path, a line under the view titles (with `frame_size`, the views get that
+much less height). `None` changes nothing. A caption that is not a str
+raises `ValueError`.
 
 ### Parallel rendering
 
@@ -219,14 +235,22 @@ callers can trade quality for speed without touching a private global.
 
 ### Encoding
 
-`write_animation(images, out, fps=10, *, crf=None, faststart=False)`.
+`write_animation(images, out, fps=10, *, crf=None, faststart=False,
+preset=None)`.
 
 - `crf`: integer 0 to 51. When given, imageio's `quality` is set to `None`
   and `-crf` is passed to ffmpeg. When `None`, encoding is as in 0.1.0.
 - `faststart`: adds `-movflags +faststart`.
 - Either option with a GIF output raises `ValueError`.
 
-`animate_network` gains the same two keywords and forwards them.
+- `preset` (added 2026-11-22): one of x264's presets (`ultrafast`,
+  `superfast`, `veryfast`, `faster`, `fast`, `medium`, `slow`, `slower`,
+  `veryslow`, `placebo`), passed as `-preset`; any other value raises
+  `ValueError` naming it and the allowed names. It works with or without
+  `crf` and `faststart`; with a GIF output it raises `ValueError`, as `crf`
+  does. `None` passes no `-preset`, so the encoding is as in 0.1.0.
+
+`animate_network` gains the same three keywords and forwards them.
 
 ### `content_box`
 

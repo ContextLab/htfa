@@ -2250,9 +2250,8 @@ def animate_network(
     windows, and ``spin`` turns the brain. A call that gives none of
     ``views``, ``legend``, ``frame_size``, ``compose``, ``n_jobs``, ``crf``,
     ``faststart``, ``preset``, (T, K) ``sizes`` or colors, or ``None``
-    connectivity is
-    drawn and encoded as in 0.1.0. ``views``, ``legend`` or ``frame_size``
-    take the layout path described under `plot_network`.
+    connectivity is drawn and encoded as in 0.1.0. ``views``, ``legend`` or
+    ``frame_size`` take the layout path described under `plot_network`.
 
     Parameters
     ----------
@@ -2390,7 +2389,7 @@ def animate_network(
         play it while it downloads; passed to `write_animation`.
     preset : str, optional
         x264 preset of an mp4 (``"ultrafast"`` to ``"placebo"``; slower
-        presets compress better at the same ``crf``); passed to
+        presets usually compress better at the same ``crf``); passed to
         `write_animation`. Default ``None``: x264's default (medium), as in
         0.1.0.
 
@@ -2877,10 +2876,10 @@ def write_animation(
         x264 ``-preset``, one of ``"ultrafast"``, ``"superfast"``,
         ``"veryfast"``, ``"faster"``, ``"fast"``, ``"medium"``, ``"slow"``,
         ``"slower"``, ``"veryslow"`` and ``"placebo"``: slower presets take
-        longer and give a smaller file at the same ``crf``. Works with or
-        without ``crf`` and ``faststart``. Default ``None``: no ``-preset``
-        is passed (x264's default, medium), as in 0.1.0. Another value
-        raises ``ValueError``; not for GIF (``ValueError``).
+        longer and usually give a smaller file at the same ``crf``. Works
+        with or without ``crf`` and ``faststart``. Default ``None``: no
+        ``-preset`` is passed (x264's default, medium), as in 0.1.0. Another
+        value raises ``ValueError``; not for GIF (``ValueError``).
     """
     _check_fps(fps)
     out = Path(out)
