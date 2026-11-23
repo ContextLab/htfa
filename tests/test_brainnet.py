@@ -674,6 +674,82 @@ def test_write_animation_options_validated(tmp_path):
         bn.write_animation(frames, tmp_path / "x.gif", faststart=True)
 
 
+def _x264_options(data):
+    """x264's settings string, which it writes into the stream as SEI data."""
+    import re
+
+    found = re.search(rb"x264 - core .*? options: ([^\x00]*)", data)
+    assert found is not None, "no x264 settings in the file"
+    return found.group(1).decode().split()
+
+
+def test_write_animation_preset(tmp_path):
+    """preset reaches x264: its settings in the stream follow the preset.
+
+    x264's presets set ``subme`` (2 for veryfast, 7 for medium, x264's
+    default, 8 for slow) and ``ref`` (1, 3, 5). With a fixed crf, "slow" and
+    "veryfast" decode to the same 12 frames of 320 x 200 and the files differ.
+    """
+    import imageio.v2 as iio
+
+    expect = {"veryfast": ("subme=2", "ref=1"), "slow": ("subme=8", "ref=5")}
+    data = {}
+    for preset, keys in expect.items():
+        out = bn.write_animation(
+            _square_frames(), tmp_path / f"{preset}.mp4", crf=23, preset=preset
+        )
+        data[preset] = out.read_bytes()
+        options = _x264_options(data[preset])
+        decoded = iio.mimread(out)
+        print(preset, len(data[preset]), "bytes,", len(decoded), "frames",
+              decoded[0].shape, [o for o in options if o.startswith(("subme",
+              "ref=", "crf"))])  # fmt: skip
+        assert len(decoded) == 12 and decoded[0].shape[:2] == (200, 320)
+        assert all(k in options for k in keys) and "crf=23.0" in options
+    assert data["slow"] != data["veryfast"]
+    # without crf (imageio quality 8, CRF 10) and with faststart
+    out = bn.write_animation(
+        _square_frames(), tmp_path / "q.mp4", preset="veryfast", faststart=True
+    )
+    raw = out.read_bytes()
+    options = _x264_options(raw)
+    moov, mdat = raw.find(b"moov"), raw.find(b"mdat")
+    print("veryfast, default quality, faststart:", [o for o in options if
+          o.startswith(("subme", "crf"))], "moov", moov, "mdat", mdat)  # fmt: skip
+    assert "subme=2" in options and "crf=10.0" in options
+    assert 0 < moov < mdat
+    # the default leaves x264's own preset (medium) in place
+    assert "subme=7" in _x264_options(
+        bn.write_animation(_square_frames(), tmp_path / "d.mp4").read_bytes()
+    )
+
+
+def test_write_animation_preset_none_unchanged(tmp_path):
+    """preset=None gives the same bytes as a call without it (and with crf)."""
+    for kw in ({}, {"crf": 23}, {"faststart": True}):
+        a = bn.write_animation(_square_frames(), tmp_path / "a.mp4", **kw)
+        a = a.read_bytes()
+        b = bn.write_animation(
+            _square_frames(), tmp_path / "b.mp4", preset=None, **kw
+        ).read_bytes()
+        print(kw, len(a), len(b))
+        assert a == b
+
+
+def test_write_animation_preset_validated(tmp_path):
+    frames = _square_frames(2)
+    for bad in ("fastest", "", "Slow", 3, ["slow"]):
+        with pytest.raises(ValueError) as err:
+            bn.write_animation(frames, tmp_path / "x.mp4", preset=bad)
+        print("error:", err.value)
+        assert repr(bad) in str(err.value) and "veryslow" in str(err.value)
+        assert not (tmp_path / "x.mp4").exists()
+    with pytest.raises(ValueError, match="preset") as err:
+        bn.write_animation(frames, tmp_path / "x.gif", preset="slow")
+    print("error:", err.value)
+    assert not (tmp_path / "x.gif").exists()
+
+
 def test_animate_network_long_mp4(tmp_path):
     """A 40-frame animate_network mp4 decodes to 40 frames with changing edges."""
     import imageio.v2 as iio
@@ -4289,6 +4365,33 @@ def test_animate_network_forwards_encoding(tmp_path):
     for kw in ({"crf": 23}, {"faststart": True}):
         with pytest.raises(ValueError, match="mp4 only"):
             bn.animate_network(CENTERS, _frames(), tmp_path / "x.gif", **kw, **_ANIM)
+
+
+def test_animate_network_forwards_preset(tmp_path):
+    """preset reaches the encoder in the sequential and the n_jobs path, with
+    crf and faststart; a GIF raises as it does for crf."""
+    for jobs in (1, 2):
+        out = bn.animate_network(
+            CENTERS, _frames(), tmp_path / f"p{jobs}.mp4", preset="veryfast",
+            crf=30, faststart=True, n_jobs=jobs, **_ANIM,
+        )  # fmt: skip
+        data = out.read_bytes()
+        options = _x264_options(data)
+        moov, mdat = data.find(b"moov"), data.find(b"mdat")
+        shown = [o for o in options if o.startswith(("subme", "crf"))]
+        print(f"n_jobs={jobs}:", _mp4_count(out), "frames", shown, "moov", moov,
+              "mdat", mdat)  # fmt: skip
+        assert _mp4_count(out) == 3
+        assert "subme=2" in options and "crf=30.0" in options
+        assert 0 < moov < mdat
+    with pytest.raises(ValueError, match="mp4 only"):
+        bn.animate_network(
+            CENTERS, _frames(), tmp_path / "x.gif", preset="slow", **_ANIM
+        )
+    with pytest.raises(ValueError, match="'quick'"):
+        bn.animate_network(
+            CENTERS, _frames(), tmp_path / "y.mp4", preset="quick", **_ANIM
+        )
 
 
 @pytest.mark.parametrize("n_jobs", [0, 1.5, True, "2"])

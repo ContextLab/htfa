@@ -1158,7 +1158,7 @@ class HTFAResults:
         ``duration`` (seconds; frames interpolated between windows, see
         ``interpolation``), ``spin`` (turns about x, y, z), ``node_color``,
         ``views``, ``legend``, ``frame_size``, ``compose``, ``n_jobs``,
-        ``crf`` and ``faststart``. Needs the ``brain3d`` extra.
+        ``crf``, ``faststart`` and ``preset``. Needs the ``brain3d`` extra.
 
         Examples
         --------

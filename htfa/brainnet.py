@@ -2239,6 +2239,7 @@ def animate_network(
     n_jobs: int = 1,
     crf: int | None = None,
     faststart: bool = False,
+    preset: str | None = None,
     **style: Any,
 ) -> Path:
     """Render a ``(T, K, K)`` connectivity series as an mp4 or GIF.
@@ -2248,7 +2249,8 @@ def animate_network(
     ``n_frames``) sets the number of frames instead, interpolating between
     windows, and ``spin`` turns the brain. A call that gives none of
     ``views``, ``legend``, ``frame_size``, ``compose``, ``n_jobs``, ``crf``,
-    ``faststart``, (T, K) ``sizes`` or colors, or ``None`` connectivity is
+    ``faststart``, ``preset``, (T, K) ``sizes`` or colors, or ``None``
+    connectivity is
     drawn and encoded as in 0.1.0. ``views``, ``legend`` or ``frame_size``
     take the layout path described under `plot_network`.
 
@@ -2386,6 +2388,11 @@ def animate_network(
     faststart : bool, default False
         Move the mp4 index to the start of the file, so that browsers can
         play it while it downloads; passed to `write_animation`.
+    preset : str, optional
+        x264 preset of an mp4 (``"ultrafast"`` to ``"placebo"``; slower
+        presets compress better at the same ``crf``); passed to
+        `write_animation`. Default ``None``: x264's default (medium), as in
+        0.1.0.
 
     Returns
     -------
@@ -2571,7 +2578,9 @@ def animate_network(
                     img = _draw_frame(scenes, movie, k)
                     yield _frame_out(img, k, jpeg_quality, folder)
 
-            return write_animation(frames(), out, fps=fps, crf=crf, faststart=faststart)
+            return write_animation(
+                frames(), out, fps=fps, crf=crf, faststart=faststart, preset=preset
+            )
     # select the offscreen window here (Linux without a display), so that the
     # workers inherit the choice instead of each probing for it
     _headless_window()
@@ -2583,7 +2592,9 @@ def animate_network(
             for k in range(len(times)):
                 yield _frame_out(_open(work / f"{k:05d}.png"), k, jpeg_quality, folder)
 
-        result = write_animation(drawn(), out, fps=fps, crf=crf, faststart=faststart)
+        result = write_animation(
+            drawn(), out, fps=fps, crf=crf, faststart=faststart, preset=preset
+        )
     except BaseException as err:
         _remove_work(work, err)
         raise
@@ -2810,6 +2821,20 @@ def _draw_parallel(build: _ViewsArgs, movie: _Movie, n_jobs: int, work: Path) ->
 # ------------------------------------------------------------------ animations
 
 
+_X264_PRESETS = (
+    "ultrafast",
+    "superfast",
+    "veryfast",
+    "faster",
+    "fast",
+    "medium",
+    "slow",
+    "slower",
+    "veryslow",
+    "placebo",
+)
+
+
 def write_animation(
     images: Iterable[Any],
     out: str | os.PathLike,
@@ -2817,6 +2842,7 @@ def write_animation(
     *,
     crf: int | None = None,
     faststart: bool = False,
+    preset: str | None = None,
 ) -> Path:
     """Write PIL images as an mp4 (H.264, yuv420p) or looping GIF, by suffix.
 
@@ -2847,6 +2873,14 @@ def write_animation(
     faststart : bool, default False
         Move the mp4 index to the start of the file so that browsers can
         play it while it downloads. Not for GIF (``ValueError``).
+    preset : str, optional
+        x264 ``-preset``, one of ``"ultrafast"``, ``"superfast"``,
+        ``"veryfast"``, ``"faster"``, ``"fast"``, ``"medium"``, ``"slow"``,
+        ``"slower"``, ``"veryslow"`` and ``"placebo"``: slower presets take
+        longer and give a smaller file at the same ``crf``. Works with or
+        without ``crf`` and ``faststart``. Default ``None``: no ``-preset``
+        is passed (x264's default, medium), as in 0.1.0. Another value
+        raises ``ValueError``; not for GIF (``ValueError``).
     """
     _check_fps(fps)
     out = Path(out)
@@ -2859,10 +2893,17 @@ def write_animation(
         or not 0 <= crf <= 51
     ):
         raise ValueError(f"crf must be an integer from 0 to 51, got {crf!r}")
-    if suffix == ".gif" and (crf is not None or faststart):
+    if preset is not None and (
+        not isinstance(preset, str) or preset not in _X264_PRESETS
+    ):
         raise ValueError(
-            f"crf and faststart apply to .mp4 only, got {out.name!r} "
-            f"with crf={crf!r}, faststart={faststart!r}"
+            f"preset must be None or one of x264's presets "
+            f"{', '.join(_X264_PRESETS)}; got {preset!r}"
+        )
+    if suffix == ".gif" and (crf is not None or faststart or preset is not None):
+        raise ValueError(
+            f"crf, faststart and preset apply to .mp4 only, got {out.name!r} "
+            f"with crf={crf!r}, faststart={faststart!r}, preset={preset!r}"
         )
     if suffix == ".gif":
         frames = [im.convert("RGB") for im in images]
@@ -2878,6 +2919,12 @@ def write_animation(
     options: dict[str, Any] = {"quality": 8}
     if crf is not None:
         options = {"quality": None, "output_params": ["-crf", str(int(crf))]}
+    if preset is not None:
+        options["output_params"] = [
+            *options.get("output_params", []),
+            "-preset",
+            preset,
+        ]
     if faststart:
         options["output_params"] = [
             *options.get("output_params", []),
