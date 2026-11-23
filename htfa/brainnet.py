@@ -1915,6 +1915,7 @@ def plot_network(
     views: Sequence[Any] | None = None,
     legend: Any = None,
     frame_size: tuple[int, int] | None = None,
+    caption: str | None = None,
     **style: Any,
 ) -> Any:
     """Render nodes and thresholded edges BrainNet Viewer-style.
@@ -2020,6 +2021,15 @@ def plot_network(
         layout path; the title and legend bands take the ``background``
         color, with black text on a light background and white text on a
         dark one. Without them the single ``view`` is returned uncropped.
+    caption : str, optional
+        One line of text, drawn as `animate_network` draws a frame's
+        caption: without ``views``, ``legend`` and ``frame_size``, in a
+        white band added above the image; with any of them, centered on a
+        line under the view titles, in the title band (with ``frame_size``
+        the views get that much less height). Text wider than the image is
+        cut off at its edges. ``None`` (default) adds nothing. The image
+        equals the frame of a one-window `animate_network` movie with
+        ``captions=[caption]`` and the same other arguments.
     **style
         ``threshold`` (0.25; edges with ``|E| > threshold`` are drawn),
         ``view`` (``"lateral"`` = ``"left"``, ``"right"``, ``"dorsal"``,
@@ -2054,8 +2064,8 @@ def plot_network(
         or ``frame_size`` is malformed, a legend row is wider than
         ``frame_size``, ``sizes`` does not hold exactly K values (K values
         in any shape, such as (1, K) or (K, 1), are accepted; (T, K) sizes
-        are for `animate_network`), or ``node_color`` has a shape other than
-        one color or K colors.
+        are for `animate_network`), ``node_color`` has a shape other than
+        one color or K colors, or ``caption`` is not a str.
 
     Examples
     --------
@@ -2067,6 +2077,8 @@ def plot_network(
     ...     legend=[("red", "positive", "line"), ("blue", "negative", "line")],
     ...     frame_size=(1920, 1080))  # doctest: +SKIP
     """
+    if caption is not None and not isinstance(caption, str):
+        raise ValueError(f"caption must be a str or None, got {caption!r}")
     layout = _layout_args(views, legend, frame_size, style)
     scene_opts, edge_opts = _style(dict(style))
     centers, node_sizes, opacity, components, surfaces = _network_geometry(
@@ -2116,13 +2128,10 @@ def plot_network(
             images = scenes.draw(E, edge_opts)
         finally:
             scenes.close()
-    if layout is None:
-        img = images[0]
-    else:
-        _, titles, rows, size = layout
-        img = _layout(
-            images, titles, None, rows, crop, None, size, scene_opts["background"]
-        )
+    # the frame of a one-frame animate_network movie with captions=[caption]
+    img = _finish_frame(
+        images, 0.0, caption, layout, crop, scene_opts["background"], None
+    )
     if jpeg_quality is not None:
         img = _jpeg(img, jpeg_quality)
     if out is not None:

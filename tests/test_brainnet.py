@@ -3071,6 +3071,74 @@ def test_legacy_caption_path_unchanged(tmp_path):
         np.testing.assert_array_equal(b, _rgb(expect))
 
 
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {},
+        {"legend": PN_LEGEND},
+        {"views": ("left", "dorsal"), "legend": PN_LEGEND, "frame_size": (640, 360)},
+    ],
+    ids=["single-view", "legend", "views-frame_size"],
+)
+def test_plot_network_caption_is_a_one_frame_movie(tmp_path, layout):
+    """plot_network(caption=text) equals the frame of a one-window movie with
+    captions=[text], in the single-view path (`_with_header` band) and in the
+    layout path (a line under the titles).
+
+    The scene has no edges (zero connectivity), so the renders are exact, and
+    black nodes, so the movie's crop reference (nodes in black) and the
+    still's crop render are the same image.
+    """
+    text = "t = 12.5 s"
+    style = {**_ANIM, "node_color": "black", **layout}
+    still = bn.plot_network(CENTERS, caption=text, **style)
+    plain = bn.plot_network(CENTERS, **style)
+    frame = _movie(tmp_path, "one", CENTERS, np.zeros((1, 6, 6)), n=1,
+                   captions=[text], **style)[0]  # fmt: skip
+    print(layout, "still", still.size, "plain", plain.size, "movie", frame.shape)
+    np.testing.assert_array_equal(_rgb(still), frame)
+    if layout:
+        # same frame width; a caption row is added under the (possible) titles
+        W = still.size[0]
+        assert still.size[0] == plain.size[0]
+        has_titles = "views" in layout
+        if "frame_size" in layout:
+            assert still.size == plain.size == layout["frame_size"]
+        else:
+            grow = _head(W, caption=True) - _head(W) if has_titles else None
+            print("height", plain.size[1], "->", still.size[1], "expected +", grow)
+            assert still.size[1] > plain.size[1]
+            if grow is not None:
+                assert still.size[1] - plain.size[1] in (grow - 1, grow, grow + 1)
+    else:
+        expect = bn._with_header(plain, [text])
+        np.testing.assert_array_equal(_rgb(still), _rgb(expect))
+    assert _dark(_rgb(still)[:20]).sum() > 5  # the caption's text is at the top
+
+
+def test_plot_network_caption_none_is_default():
+    """caption=None draws exactly what a call without it draws."""
+    for layout in ({}, {"views": ("left", "dorsal"), "legend": PN_LEGEND}):
+        a = bn.plot_network(CENTERS, **_ANIM, **layout)
+        b = bn.plot_network(CENTERS, caption=None, **_ANIM, **layout)
+        print(layout, a.size, b.size)
+        np.testing.assert_array_equal(_rgb(a), _rgb(b))
+    with pytest.raises(ValueError, match="42") as err:
+        bn.plot_network(CENTERS, caption=42, **_ANIM)
+    print("error:", err.value)
+
+
+def test_results_plot_network_forwards_caption(res_tfa):
+    """HTFAResults.plot_network passes caption on: the image gains the band."""
+    kw = {"mesh": None, "size": (320, 200), "connectivity": np.zeros((3, 3))}
+    plain = res_tfa.plot_network(**kw)
+    capped = res_tfa.plot_network(caption="subject 0", **kw)
+    head = int(max(16, 320 // 32) * (0.5 + 1.3))
+    print("plain", plain.size, "captioned", capped.size, "header", head)
+    assert capped.size == (320, 200 + head)
+    np.testing.assert_array_equal(_rgb(capped)[head:], _rgb(plain))
+
+
 def test_annotate_pair_three_way_equivalence():
     """annotate_pair is _layout of two images; panes are crop-and-resize."""
     from PIL import ImageDraw
