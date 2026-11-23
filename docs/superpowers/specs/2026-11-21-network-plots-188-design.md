@@ -191,10 +191,13 @@ the images directly.
 Added 2026-11-22, after a downstream port of the animation tutorial.
 `plot_network(..., caption=None)` takes one line of text and finishes its
 image with the same helper that finishes each `animate_network` frame, so
-the image equals the frame of a one-window movie with `captions=[caption]`:
-in the 0.1.0 path, a `_with_header` band above the image; in the layout
-path, a line under the view titles (with `frame_size`, the views get that
-much less height). `None` changes nothing. A caption that is not a str
+the caption is drawn as in a movie: in the 0.1.0 path, a `_with_header`
+band above the image; in the layout path, a line under the view titles
+(with `frame_size`, the views get that much less height). The crops are not
+unified: a still is cropped around its nodes as drawn, a movie around
+opaque nodes in one contrasting color at their largest radius. Where the
+two boxes are equal (always in the 0.1.0 path), the image equals the frame
+of a one-window movie with `captions=[caption]`. `None` changes nothing. A caption that is not a str
 raises `ValueError`.
 
 ### Parallel rendering

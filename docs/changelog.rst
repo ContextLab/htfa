@@ -34,8 +34,10 @@ Network plots and animations
 - :func:`htfa.plot_network` accepts ``caption``, one line of text drawn as
   :func:`htfa.animate_network` draws a frame's caption: in a band above the
   image, or, with ``views``, ``legend`` or ``frame_size``, on a line under the
-  view titles. The image equals the frame of a one-window movie with
-  ``captions=[caption]``.
+  view titles. The caption is drawn by the same code as a movie's. The image
+  equals the frame of a one-window movie with ``captions=[caption]`` when
+  both crop the views to the same box (a still is cropped around its nodes as
+  drawn, a movie around opaque nodes in one contrasting color).
 - An empty legend row reserves a blank band of the normal row height:
   ``legend=[[], row]`` puts the row one band lower, and a legend of empty rows
   only is allowed. ``legend=[]`` still raises ``ValueError``.
