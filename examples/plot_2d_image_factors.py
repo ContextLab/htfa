@@ -3,7 +3,7 @@ TFA on a real 2D image
 ======================
 
 TFA represents image pixels as spatial locations and grayscale intensity as one
-sample. This example compares 6, 80 and 320 radial basis factors on ``china.jpg``,
+sample. This example compares 6 and 80 radial basis factors on ``china.jpg``,
 the photograph bundled with scikit-learn (no download). Block averaging by 8
 produces a 53 x 80 image. The same image, seed, width bounds and initialization
 are used for each fit. More factors can resolve the building's outline and
@@ -13,10 +13,11 @@ levels, while fine texture remains harder to reconstruct.
 ``lower_ratio=0.001`` permits Gaussian standard deviations down to about 0.73
 pixels; the default bound would rule out these narrow features. R² uses the
 image-wide mean as its baseline and describes fitted pixels, not generalization.
-All panels share grayscale limits. The largest fit takes the most time.
+All panels share grayscale limits.
 
 See the :doc:`2D image tutorial </tutorials/05_2d_images>` for image loading,
-color channels, multiple pages and a wider factor-count comparison.
+color channels, multiple pages and a wider factor-count comparison on the same
+image with the same settings, up to K = 320.
 """
 
 import time
@@ -38,7 +39,7 @@ original = (gray - gray.mean()) / gray.std()
 print(f"image: {photo.shape} -> {gray.shape} after {b} x {b} block averaging")
 
 reconstructions, scores = {}, {}
-for k in (6, 80, 320):
+for k in (6, 80):
     start = time.perf_counter()
     with threadpool_limits(limits=2):
         result = htfa.fit(
@@ -57,7 +58,7 @@ for k in (6, 80, 320):
         f"stop={result.model.converged_reason_}, image-wide R²={scores[k]:.3f}"
     )
 
-fig, axes = plt.subplots(1, 4, figsize=(14, 3.8))
+fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.2))
 lim = np.abs(original).max()
 panels = [("Grayscale image (z-scored)", original)] + [
     (f"K = {k}; R² = {scores[k]:.3f}", reconstructions[k]) for k in reconstructions
