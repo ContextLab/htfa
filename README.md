@@ -10,7 +10,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/htfa.svg)](https://pypi.org/project/htfa/)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23772196.svg)](https://doi.org/10.5281/zenodo.23772196)
 [![tests](https://github.com/ContextLab/htfa/actions/workflows/tests.yml/badge.svg)](https://github.com/ContextLab/htfa/actions/workflows/tests.yml)
-[![Documentation Status](https://app.readthedocs.org/projects/htfa/badge/?version=latest)](https://htfa.readthedocs.io/en/latest/?badge=latest)
+[![Documentation Status](https://img.shields.io/readthedocs/htfa/latest?label=docs)](https://htfa.readthedocs.io/en/latest/?badge=latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ContextLab/htfa/blob/main/LICENSE)
 
 ## Overview
