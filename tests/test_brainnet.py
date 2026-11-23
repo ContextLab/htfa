@@ -2915,8 +2915,16 @@ def test_legend_validation():
     assert one == [[((255, 0, 0), "a", "dot"), ((0, 0, 255), "b", "line")]]
     two = bn._legend_rows([[("red", "a", "dot")], [("#E69F00", "c", "line")]])
     assert two == [[((255, 0, 0), "a", "dot")], [((230, 159, 0), "c", "line")]]
+    # an empty row reserves a band; a legend of empty rows only is allowed
+    assert bn._legend_rows([[]]) == [[]]
+    assert bn._legend_rows([[], [("red", "a", "dot")], []]) == [
+        [],
+        [((255, 0, 0), "a", "dot")],
+        [],
+    ]
     for bad in (
-        [("red", "a", "square")], [("red", "a")], [], [[]], [("notacolor", "a", "dot")]
+        [("red", "a", "square")], [("red", "a")], [], [("notacolor", "a", "dot")],
+        [[], ("red", "a", "dot")],
     ):  # fmt: skip
         with pytest.raises(ValueError) as err:
             bn._legend_rows(bad)
@@ -2925,6 +2933,87 @@ def test_legend_validation():
     with pytest.raises(ValueError, match="legend row 2") as err:
         bn.plot_network(CENTERS, legend=wide, frame_size=(320, 200), **_ANIM)
     print("error:", err.value)
+
+
+def test_legend_empty_row_reserves_band(tmp_path):
+    """An empty legend row is a blank band of the normal row height.
+
+    Without frame_size: [[], row] is one band taller than [row], with the
+    views and the row's pixels unchanged and the row one band lower; [row, []]
+    adds the blank band below the row. With frame_size: the size stays, the
+    row stays at the bottom, and the views get one band less height. The
+    scene has no edges, so every render is exact.
+    """
+    style = {**_ANIM, "views": ("left", "dorsal")}
+    one = _rgb(bn.plot_network(CENTERS, legend=PN_LEGEND, **style))
+    top = _rgb(bn.plot_network(CENTERS, legend=[[], PN_LEGEND], **style))
+    low = _rgb(bn.plot_network(CENTERS, legend=[PN_LEGEND, []], **style))
+    H, W = one.shape[:2]
+    band = _band(W)
+    print("frame [row]", one.shape, "[[], row]", top.shape, "[row, []]", low.shape,
+          "band", band)  # fmt: skip
+    # An even band keeps the parity of the height, so trimming to even sizes
+    # removes the same last row (or none) from every frame here. The band
+    # under the views starts at L = H - band or H - band + 1 (before
+    # trimming), and its first row holds the end of the divider between the
+    # views; the rows compared below avoid both.
+    assert band % 2 == 0
+    assert top.shape == low.shape == (H + band, W, 3)
+
+    def white(a):
+        return bool((a == 255).all())
+
+    # [[], row]: the views unchanged, then a blank band, then the row's band
+    # one band lower (its pixels identical)
+    np.testing.assert_array_equal(top[: H - band - 1], one[: H - band - 1])
+    assert white(top[H - band + 2 : H])
+    np.testing.assert_array_equal(top[-(band - 2) :], one[-(band - 2) :])
+    legend_rows = np.flatnonzero((_red(one) | _blue(one)).any(axis=1))
+    moved = np.flatnonzero((_red(top) | _blue(top)).any(axis=1))
+    print("legend mark rows [row]", legend_rows[[0, -1]], "[[], row]", moved[[0, -1]])
+    assert len(legend_rows) >= 2  # the line marks, 2 px thick at this font
+    np.testing.assert_array_equal(moved, legend_rows + band)
+    # [row, []]: the frame as before, a blank band below it
+    np.testing.assert_array_equal(low[:H], one)
+    assert white(low[H + 1 :])
+    # empty rows only: blank bands where the rows would be
+    blank1 = _rgb(bn.plot_network(CENTERS, legend=[[]], **style))
+    blank2 = _rgb(bn.plot_network(CENTERS, legend=[[], []], **style))
+    print("[[]]", blank1.shape, "[[], []]", blank2.shape)
+    assert blank1.shape == one.shape and blank2.shape == top.shape
+    np.testing.assert_array_equal(blank1[: H - band - 1], one[: H - band - 1])
+    assert white(blank1[H - band + 2 :])
+    np.testing.assert_array_equal(blank2[:H], blank1)
+    assert white(blank2[H + 1 :])
+    # animate_network draws the same frame (black nodes: same crop reference)
+    still = bn.plot_network(CENTERS, legend=[[], PN_LEGEND], node_color="black",
+                            **style)  # fmt: skip
+    frame = _movie(tmp_path, "blank_row", CENTERS, np.zeros((1, 6, 6)), n=1,
+                   legend=[[], PN_LEGEND], node_color="black", **style)[0]  # fmt: skip
+    np.testing.assert_array_equal(_rgb(still), frame)
+
+
+def test_legend_empty_row_with_frame_size():
+    """frame_size with [[], row]: same size, row at the bottom, blank band above
+    it, and views one band shorter (the frame is height-limited)."""
+    fs = (640, 200)
+    one = _rgb(bn.plot_network(CENTERS, legend=PN_LEGEND, frame_size=fs, **_ANIM))
+    top = _rgb(bn.plot_network(CENTERS, legend=[[], PN_LEGEND], frame_size=fs, **_ANIM))
+    band = _band(640)
+    print("sizes", one.shape, top.shape, "band", band)
+    assert one.shape == top.shape == (200, 640, 3)
+    np.testing.assert_array_equal(top[-band:], one[-band:])
+    np.testing.assert_array_equal(top[-2 * band : -band], np.full((band, 640, 3), 255))
+
+    def extent(a):
+        rows = np.flatnonzero(_drawn(a).any(axis=1))
+        return rows[-1] - rows[0] + 1
+
+    # the views scale with the space between the bands (no title band here)
+    e1, e2 = extent(one[:-band]), extent(top[: -2 * band])
+    expect = e1 * (200 - 2 * band) / (200 - band)
+    print("node extent [row]", e1, "[[], row]", e2, "expected", round(expect, 1))
+    assert e2 < e1 and abs(e2 - expect) <= 2
 
 
 def test_single_view_layout_path():

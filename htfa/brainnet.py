@@ -2009,7 +2009,9 @@ def plot_network(
         views (the title fonts follow the same W). Without ``frame_size`` the
         image widens to hold the widest row (views centered), and the fonts
         keep the size set by the views' width; with it, a wider row raises
-        ``ValueError``.
+        ``ValueError``. An empty row in a list of rows (``[[], row]``,
+        ``[row, []]``, or empty rows only) reserves a blank band of the
+        same height in its place. ``[]`` raises ``ValueError``.
     frame_size : (W, H) positive ints, optional
         Exact size of the image: titles and legend are drawn at width W and
         the views are scaled (Lanczos, up or down) to fit the space left,
@@ -3133,7 +3135,8 @@ def _legend_rows(legend: Any) -> list[list[tuple[tuple[int, int, int], str, str]
     """Legend rows of ``(rgb, label, kind)``, ``rgb`` as 0-255 ints.
 
     ``legend`` is one row, a list of ``(color, label, kind)`` with ``kind``
-    ``"dot"`` or ``"line"``, or a list of such rows.
+    ``"dot"`` or ``"line"``, or a list of such rows. An empty row (in a list
+    of rows) is kept: it reserves a blank band.
     """
 
     def seq(x: Any) -> bool:
@@ -3147,8 +3150,6 @@ def _legend_rows(legend: Any) -> list[list[tuple[tuple[int, int, int], str, str]
     nested = all(seq(row) and all(seq(e) for e in row) for row in legend)
     rows = []
     for r, row in enumerate(legend if nested else [legend], 1):
-        if not row:
-            raise ValueError(f"legend row {r} is empty")
         entries = []
         for entry in row:
             if not (
@@ -3352,7 +3353,7 @@ def _legend_row_widths(rows: list, size: int) -> list[float]:
     font, gap, mark, _, _, pad = _legend_geometry(size)
     return [
         sum(mark + pad + font.getlength(label) for _, label, _ in row)
-        + gap * (len(row) - 1)
+        + gap * max(len(row) - 1, 0)
         for row in rows
     ]
 
