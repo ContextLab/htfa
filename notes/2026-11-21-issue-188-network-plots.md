@@ -98,3 +98,13 @@
 - timecorr ported its tutorial to the 0.2.0 API (main 56cb1a1) and reported three gaps; user chose to add all three to 0.2.0: plot_network(caption=), an empty legend row reserving a band, preset= for x264. Branch feature/network-plot-gaps; codex review: no major, four minor findings, all fixed; Ubuntu 26.04 container 183 passed.
 - Still to do: merge both PRs after CI, re-point the draft release at the new main, confirm the Read the Docs build, then wait for the user's review before PyPI. Tell timecorr when 0.2.0 is on PyPI (it holds timecorr 0.3.1 for that).
 - Untraced: "RuntimeWarning: invalid value encountered in <lambda> (vectorized)" after examples/plot_load_inputs.py in the Linux docs container only.
+
+## 2026-11-23: 0.2.0 released
+- User approved: merge on green, tag, GitHub release, PyPI, conda-forge.
+- PR #190 merged (195a052), PR #191 merged (3ff4821 = release commit). Main CI green on 3ff4821 (tests, docs, brainiak); Read the Docs build 36092534 succeeded.
+- Built sdist + wheel from a clean `git archive` of 3ff4821; `twine check --strict` passed; wheel in a fresh Python 3.12 env: 183 passed, 5 skipped (brainnet, package, headless tests).
+- PyPI upload with twine (token in ~/.pypirc; TestPyPI and trusted publishing were not used). PyPI serves the same sha256: sdist e010d97817a7588ca73378ce3bbc2f9b3481720d57c6d5c6c21d7e72cc5d27f0, wheel 61f4f98072d9213a528e34a5070cef6d1613906d104c240f740decfa8f4fba5e. `pip install "htfa[plot,brain3d]==0.2.0"` in a fresh Python 3.11 env renders a captioned plot.
+- GitHub release v0.2.0 published; tag v0.2.0 -> 3ff4821.
+- conda-forge: htfa has no feedstock yet. The open staged-recipes PR conda-forge/staged-recipes#35415 (from 2026-10-29, for 0.1.0, no human review so far) was updated to 0.2.0 (fork branch htfa-0.1.0, commit a715915). It still needs a conda-forge reviewer.
+- timecorr session told that 0.2.0 is on PyPI.
+- Open: Zenodo DOI (release-preparation/README.md, step 4); release-preparation/README.md still says no PyPI upload has been performed; unbounded first Levenberg-Marquardt solve at large K (htfa/_kernels.py); untraced Linux-only RuntimeWarning after examples/plot_load_inputs.py; merged branches and .superpowers/sdd workspace not yet deleted.
