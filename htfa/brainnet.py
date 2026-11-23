@@ -1915,6 +1915,7 @@ def plot_network(
     views: Sequence[Any] | None = None,
     legend: Any = None,
     frame_size: tuple[int, int] | None = None,
+    caption: str | None = None,
     **style: Any,
 ) -> Any:
     """Render nodes and thresholded edges BrainNet Viewer-style.
@@ -2008,7 +2009,9 @@ def plot_network(
         views (the title fonts follow the same W). Without ``frame_size`` the
         image widens to hold the widest row (views centered), and the fonts
         keep the size set by the views' width; with it, a wider row raises
-        ``ValueError``.
+        ``ValueError``. An empty row in a list of rows (``[[], row]``,
+        ``[row, []]``, or empty rows only) reserves a blank band of the
+        same height in its place. ``[]`` raises ``ValueError``.
     frame_size : (W, H) positive ints, optional
         Exact size of the image: titles and legend are drawn at width W and
         the views are scaled (Lanczos, up or down) to fit the space left,
@@ -2020,6 +2023,20 @@ def plot_network(
         layout path; the title and legend bands take the ``background``
         color, with black text on a light background and white text on a
         dark one. Without them the single ``view`` is returned uncropped.
+    caption : str, optional
+        One line of text, drawn as `animate_network` draws a frame's
+        caption: without ``views``, ``legend`` and ``frame_size``, in a
+        white band added above the image; with any of them, centered on a
+        line under the view titles, in the title band (with ``frame_size``
+        the views get that much less height). Text wider than the image is
+        cut off at its edges. ``None`` (default) adds nothing. The caption
+        is drawn by the same code as in `animate_network`. The crop of the
+        views can differ from a movie's: a still is cropped around its nodes
+        as drawn, a movie around opaque nodes in one contrasting color at
+        their largest radius. Where the two crop boxes are equal (always
+        without ``views``, ``legend`` and ``frame_size``, which do not
+        crop), the image equals the frame of a one-window movie with
+        ``captions=[caption]`` and the same other arguments.
     **style
         ``threshold`` (0.25; edges with ``|E| > threshold`` are drawn),
         ``view`` (``"lateral"`` = ``"left"``, ``"right"``, ``"dorsal"``,
@@ -2054,8 +2071,8 @@ def plot_network(
         or ``frame_size`` is malformed, a legend row is wider than
         ``frame_size``, ``sizes`` does not hold exactly K values (K values
         in any shape, such as (1, K) or (K, 1), are accepted; (T, K) sizes
-        are for `animate_network`), or ``node_color`` has a shape other than
-        one color or K colors.
+        are for `animate_network`), ``node_color`` has a shape other than
+        one color or K colors, or ``caption`` is not a str.
 
     Examples
     --------
@@ -2067,6 +2084,8 @@ def plot_network(
     ...     legend=[("red", "positive", "line"), ("blue", "negative", "line")],
     ...     frame_size=(1920, 1080))  # doctest: +SKIP
     """
+    if caption is not None and not isinstance(caption, str):
+        raise ValueError(f"caption must be a str or None, got {caption!r}")
     layout = _layout_args(views, legend, frame_size, style)
     scene_opts, edge_opts = _style(dict(style))
     centers, node_sizes, opacity, components, surfaces = _network_geometry(
@@ -2116,13 +2135,10 @@ def plot_network(
             images = scenes.draw(E, edge_opts)
         finally:
             scenes.close()
-    if layout is None:
-        img = images[0]
-    else:
-        _, titles, rows, size = layout
-        img = _layout(
-            images, titles, None, rows, crop, None, size, scene_opts["background"]
-        )
+    # titles, caption and legend as animate_network finishes a frame
+    img = _finish_frame(
+        images, 0.0, caption, layout, crop, scene_opts["background"], None
+    )
     if jpeg_quality is not None:
         img = _jpeg(img, jpeg_quality)
     if out is not None:
@@ -2228,6 +2244,7 @@ def animate_network(
     n_jobs: int = 1,
     crf: int | None = None,
     faststart: bool = False,
+    preset: str | None = None,
     **style: Any,
 ) -> Path:
     """Render a ``(T, K, K)`` connectivity series as an mp4 or GIF.
@@ -2237,9 +2254,9 @@ def animate_network(
     ``n_frames``) sets the number of frames instead, interpolating between
     windows, and ``spin`` turns the brain. A call that gives none of
     ``views``, ``legend``, ``frame_size``, ``compose``, ``n_jobs``, ``crf``,
-    ``faststart``, (T, K) ``sizes`` or colors, or ``None`` connectivity is
-    drawn and encoded as in 0.1.0. ``views``, ``legend`` or ``frame_size``
-    take the layout path described under `plot_network`.
+    ``faststart``, ``preset``, (T, K) ``sizes`` or colors, or ``None``
+    connectivity is drawn and encoded as in 0.1.0. ``views``, ``legend`` or
+    ``frame_size`` take the layout path described under `plot_network`.
 
     Parameters
     ----------
@@ -2375,6 +2392,11 @@ def animate_network(
     faststart : bool, default False
         Move the mp4 index to the start of the file, so that browsers can
         play it while it downloads; passed to `write_animation`.
+    preset : str, optional
+        x264 preset of an mp4 (``"ultrafast"`` to ``"placebo"``; slower
+        presets usually compress better at the same ``crf``); passed to
+        `write_animation`. Default ``None``: x264's default (medium), as in
+        0.1.0.
 
     Returns
     -------
@@ -2560,7 +2582,9 @@ def animate_network(
                     img = _draw_frame(scenes, movie, k)
                     yield _frame_out(img, k, jpeg_quality, folder)
 
-            return write_animation(frames(), out, fps=fps, crf=crf, faststart=faststart)
+            return write_animation(
+                frames(), out, fps=fps, crf=crf, faststart=faststart, preset=preset
+            )
     # select the offscreen window here (Linux without a display), so that the
     # workers inherit the choice instead of each probing for it
     _headless_window()
@@ -2572,7 +2596,9 @@ def animate_network(
             for k in range(len(times)):
                 yield _frame_out(_open(work / f"{k:05d}.png"), k, jpeg_quality, folder)
 
-        result = write_animation(drawn(), out, fps=fps, crf=crf, faststart=faststart)
+        result = write_animation(
+            drawn(), out, fps=fps, crf=crf, faststart=faststart, preset=preset
+        )
     except BaseException as err:
         _remove_work(work, err)
         raise
@@ -2799,6 +2825,20 @@ def _draw_parallel(build: _ViewsArgs, movie: _Movie, n_jobs: int, work: Path) ->
 # ------------------------------------------------------------------ animations
 
 
+_X264_PRESETS = (
+    "ultrafast",
+    "superfast",
+    "veryfast",
+    "faster",
+    "fast",
+    "medium",
+    "slow",
+    "slower",
+    "veryslow",
+    "placebo",
+)
+
+
 def write_animation(
     images: Iterable[Any],
     out: str | os.PathLike,
@@ -2806,6 +2846,7 @@ def write_animation(
     *,
     crf: int | None = None,
     faststart: bool = False,
+    preset: str | None = None,
 ) -> Path:
     """Write PIL images as an mp4 (H.264, yuv420p) or looping GIF, by suffix.
 
@@ -2836,6 +2877,14 @@ def write_animation(
     faststart : bool, default False
         Move the mp4 index to the start of the file so that browsers can
         play it while it downloads. Not for GIF (``ValueError``).
+    preset : str, optional
+        x264 ``-preset``, one of ``"ultrafast"``, ``"superfast"``,
+        ``"veryfast"``, ``"faster"``, ``"fast"``, ``"medium"``, ``"slow"``,
+        ``"slower"``, ``"veryslow"`` and ``"placebo"``: slower presets take
+        longer and usually give a smaller file at the same ``crf``. Works
+        with or without ``crf`` and ``faststart``. Default ``None``: no
+        ``-preset`` is passed (x264's default, medium), as in 0.1.0. Another
+        value raises ``ValueError``; not for GIF (``ValueError``).
     """
     _check_fps(fps)
     out = Path(out)
@@ -2848,6 +2897,18 @@ def write_animation(
         or not 0 <= crf <= 51
     ):
         raise ValueError(f"crf must be an integer from 0 to 51, got {crf!r}")
+    if preset is not None and (
+        not isinstance(preset, str) or preset not in _X264_PRESETS
+    ):
+        raise ValueError(
+            f"preset must be None or one of x264's presets "
+            f"{', '.join(_X264_PRESETS)}; got {preset!r}"
+        )
+    if suffix == ".gif" and preset is not None:
+        raise ValueError(
+            f"crf, faststart and preset apply to .mp4 only, got {out.name!r} "
+            f"with crf={crf!r}, faststart={faststart!r}, preset={preset!r}"
+        )
     if suffix == ".gif" and (crf is not None or faststart):
         raise ValueError(
             f"crf and faststart apply to .mp4 only, got {out.name!r} "
@@ -2867,6 +2928,12 @@ def write_animation(
     options: dict[str, Any] = {"quality": 8}
     if crf is not None:
         options = {"quality": None, "output_params": ["-crf", str(int(crf))]}
+    if preset is not None:
+        options["output_params"] = [
+            *options.get("output_params", []),
+            "-preset",
+            preset,
+        ]
     if faststart:
         options["output_params"] = [
             *options.get("output_params", []),
@@ -3124,7 +3191,8 @@ def _legend_rows(legend: Any) -> list[list[tuple[tuple[int, int, int], str, str]
     """Legend rows of ``(rgb, label, kind)``, ``rgb`` as 0-255 ints.
 
     ``legend`` is one row, a list of ``(color, label, kind)`` with ``kind``
-    ``"dot"`` or ``"line"``, or a list of such rows.
+    ``"dot"`` or ``"line"``, or a list of such rows. An empty row (in a list
+    of rows) is kept: it reserves a blank band.
     """
 
     def seq(x: Any) -> bool:
@@ -3138,8 +3206,6 @@ def _legend_rows(legend: Any) -> list[list[tuple[tuple[int, int, int], str, str]
     nested = all(seq(row) and all(seq(e) for e in row) for row in legend)
     rows = []
     for r, row in enumerate(legend if nested else [legend], 1):
-        if not row:
-            raise ValueError(f"legend row {r} is empty")
         entries = []
         for entry in row:
             if not (
@@ -3322,6 +3388,10 @@ def _layout(
         x = x0 + k * pw
         d.line([(x, y0), (x, y0 + ph)], fill=ink(200), width=2)
     if rows:
+        for r, row in enumerate(rows):
+            if not row:  # a reserved band is blank, also where a divider ends
+                y = H - legend_h + r * band
+                d.rectangle([0, y, W - 1, y + band - 1], fill=bg)
         _draw_legend(d, rows, W, H - legend_h, band, lsize, ink(0))
     if not frame_size and not width:
         canvas = canvas.crop((0, 0, W - W % 2, H - H % 2))
@@ -3343,7 +3413,7 @@ def _legend_row_widths(rows: list, size: int) -> list[float]:
     font, gap, mark, _, _, pad = _legend_geometry(size)
     return [
         sum(mark + pad + font.getlength(label) for _, label, _ in row)
-        + gap * (len(row) - 1)
+        + gap * max(len(row) - 1, 0)
         for row in rows
     ]
 

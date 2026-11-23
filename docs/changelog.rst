@@ -31,10 +31,25 @@ Network plots and animations
   ``n_jobs``, which draws frames in worker processes. With ``n_jobs`` other
   than 1, a blank (black) render or a dead worker restarts the pool, up to 5
   times.
+- :func:`htfa.plot_network` accepts ``caption``, one line of text drawn as
+  :func:`htfa.animate_network` draws a frame's caption: in a band above the
+  image, or, with ``views``, ``legend`` or ``frame_size``, on a line under the
+  view titles. The caption is drawn by the same code as a movie's. The image
+  equals the frame of a one-window movie with ``captions=[caption]`` when
+  both crop the views to the same box (a still is cropped around its nodes as
+  drawn, a movie around opaque nodes in one contrasting color).
+- An empty legend row reserves a blank band of the normal row height:
+  ``legend=[[], row]`` puts the row one band lower, and a legend of empty rows
+  only is allowed. ``legend=[]`` still raises ``ValueError``.
 - ``crf`` and ``faststart`` set the x264 constant rate factor and move the mp4
   index to the start of the file, in :func:`htfa.animate_network` and
   :func:`htfa.brainnet.write_animation`. With ``crf=None`` the encoding is as
   in 0.1.0.
+- ``preset`` passes an x264 preset name (``"ultrafast"`` to ``"placebo"``) to
+  the encoder, in :func:`htfa.animate_network` and
+  :func:`htfa.brainnet.write_animation`. Other names raise ``ValueError``, and
+  so does a GIF output, as for ``crf``. With ``preset=None`` the encoding is
+  as in 0.1.0.
 - The style key ``supersample`` sets the rendering multiple used for
   anti-aliasing (default 2).
 - :func:`htfa.content_box` returns the bounding box of the non-background

@@ -1127,7 +1127,7 @@ class HTFAResults:
         Other keyword arguments go to `htfa.brainnet.plot_network`, among
         them ``node_color`` (one color, or one per factor), ``views``,
         ``legend`` and ``frame_size`` (several views and a legend in one
-        image). Needs the ``brain3d`` extra.
+        image) and ``caption`` (a line of text). Needs the ``brain3d`` extra.
         """
         subject = self._target(subject, group)
         if subject == "global" and self.global_centers is None:
@@ -1158,7 +1158,7 @@ class HTFAResults:
         ``duration`` (seconds; frames interpolated between windows, see
         ``interpolation``), ``spin`` (turns about x, y, z), ``node_color``,
         ``views``, ``legend``, ``frame_size``, ``compose``, ``n_jobs``,
-        ``crf`` and ``faststart``. Needs the ``brain3d`` extra.
+        ``crf``, ``faststart`` and ``preset``. Needs the ``brain3d`` extra.
 
         Examples
         --------

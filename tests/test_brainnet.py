@@ -674,6 +674,92 @@ def test_write_animation_options_validated(tmp_path):
         bn.write_animation(frames, tmp_path / "x.gif", faststart=True)
 
 
+def _x264_options(data):
+    """x264's settings string, which it writes into the stream as SEI data."""
+    import re
+
+    found = re.search(rb"x264 - core .*? options: ([^\x00]*)", data)
+    assert found is not None, "no x264 settings in the file"
+    return found.group(1).decode().split()
+
+
+def test_write_animation_preset(tmp_path):
+    """preset reaches x264: its settings in the stream follow the preset.
+
+    x264's presets set ``subme`` (2 for veryfast, 7 for medium, x264's
+    default, 8 for slow) and ``ref`` (1, 3, 5). With a fixed crf, "slow" and
+    "veryfast" decode to the same 12 frames of 320 x 200 and the files differ.
+    """
+    import imageio.v2 as iio
+
+    expect = {"veryfast": ("subme=2", "ref=1"), "slow": ("subme=8", "ref=5")}
+    data = {}
+    for preset, keys in expect.items():
+        out = bn.write_animation(
+            _square_frames(), tmp_path / f"{preset}.mp4", crf=23, preset=preset
+        )
+        data[preset] = out.read_bytes()
+        options = _x264_options(data[preset])
+        decoded = iio.mimread(out)
+        print(preset, len(data[preset]), "bytes,", len(decoded), "frames",
+              decoded[0].shape, [o for o in options if o.startswith(("subme",
+              "ref=", "crf"))])  # fmt: skip
+        assert len(decoded) == 12 and decoded[0].shape[:2] == (200, 320)
+        assert all(k in options for k in keys) and "crf=23.0" in options
+    assert data["slow"] != data["veryfast"]
+    # without crf (imageio quality 8, CRF 10) and with faststart
+    out = bn.write_animation(
+        _square_frames(), tmp_path / "q.mp4", preset="veryfast", faststart=True
+    )
+    raw = out.read_bytes()
+    options = _x264_options(raw)
+    moov, mdat = raw.find(b"moov"), raw.find(b"mdat")
+    print("veryfast, default quality, faststart:", [o for o in options if
+          o.startswith(("subme", "crf"))], "moov", moov, "mdat", mdat)  # fmt: skip
+    assert "subme=2" in options and "crf=10.0" in options
+    assert 0 < moov < mdat
+    # the default leaves x264's own preset (medium) in place
+    assert "subme=7" in _x264_options(
+        bn.write_animation(_square_frames(), tmp_path / "d.mp4").read_bytes()
+    )
+
+
+def test_write_animation_preset_none_unchanged(tmp_path):
+    """preset=None gives the same bytes as a call without it (and with crf)."""
+    for kw in ({}, {"crf": 23}, {"faststart": True}):
+        a = bn.write_animation(_square_frames(), tmp_path / "a.mp4", **kw)
+        a = a.read_bytes()
+        b = bn.write_animation(
+            _square_frames(), tmp_path / "b.mp4", preset=None, **kw
+        ).read_bytes()
+        print(kw, len(a), len(b))
+        assert a == b
+
+
+def test_write_animation_preset_validated(tmp_path):
+    frames = _square_frames(2)
+    for bad in ("fastest", "", "Slow", 3, ["slow"]):
+        with pytest.raises(ValueError) as err:
+            bn.write_animation(frames, tmp_path / "x.mp4", preset=bad)
+        print("error:", err.value)
+        assert repr(bad) in str(err.value) and "veryslow" in str(err.value)
+        assert not (tmp_path / "x.mp4").exists()
+    # without preset, the GIF errors read as before preset existed
+    old = "crf and faststart apply to .mp4 only, got 'x.gif' with "
+    for kw, tail in (
+        ({"crf": 23}, "crf=23, faststart=False"),
+        ({"faststart": True}, "crf=None, faststart=True"),
+    ):
+        with pytest.raises(ValueError) as err:
+            bn.write_animation(frames, tmp_path / "x.gif", **kw)
+        print("error:", err.value)
+        assert str(err.value) == old + tail
+    with pytest.raises(ValueError, match="preset") as err:
+        bn.write_animation(frames, tmp_path / "x.gif", preset="slow")
+    print("error:", err.value)
+    assert not (tmp_path / "x.gif").exists()
+
+
 def test_animate_network_long_mp4(tmp_path):
     """A 40-frame animate_network mp4 decodes to 40 frames with changing edges."""
     import imageio.v2 as iio
@@ -2915,8 +3001,16 @@ def test_legend_validation():
     assert one == [[((255, 0, 0), "a", "dot"), ((0, 0, 255), "b", "line")]]
     two = bn._legend_rows([[("red", "a", "dot")], [("#E69F00", "c", "line")]])
     assert two == [[((255, 0, 0), "a", "dot")], [((230, 159, 0), "c", "line")]]
+    # an empty row reserves a band; a legend of empty rows only is allowed
+    assert bn._legend_rows([[]]) == [[]]
+    assert bn._legend_rows([[], [("red", "a", "dot")], []]) == [
+        [],
+        [((255, 0, 0), "a", "dot")],
+        [],
+    ]
     for bad in (
-        [("red", "a", "square")], [("red", "a")], [], [[]], [("notacolor", "a", "dot")]
+        [("red", "a", "square")], [("red", "a")], [], [("notacolor", "a", "dot")],
+        [[], ("red", "a", "dot")],
     ):  # fmt: skip
         with pytest.raises(ValueError) as err:
             bn._legend_rows(bad)
@@ -2925,6 +3019,104 @@ def test_legend_validation():
     with pytest.raises(ValueError, match="legend row 2") as err:
         bn.plot_network(CENTERS, legend=wide, frame_size=(320, 200), **_ANIM)
     print("error:", err.value)
+
+
+def test_legend_empty_row_reserves_band(tmp_path):
+    """An empty legend row is a blank band of the normal row height.
+
+    Without frame_size: [[], row] is one band taller than [row], with the
+    views and the row's pixels unchanged and the row one band lower; [row, []]
+    adds the blank band below the row. With frame_size: the size stays, the
+    row stays at the bottom, and the views get one band less height. The
+    scene has no edges, so every render is exact.
+    """
+    style = {**_ANIM, "views": ("left", "dorsal")}
+    one = _rgb(bn.plot_network(CENTERS, legend=PN_LEGEND, **style))
+    top = _rgb(bn.plot_network(CENTERS, legend=[[], PN_LEGEND], **style))
+    low = _rgb(bn.plot_network(CENTERS, legend=[PN_LEGEND, []], **style))
+    H, W = one.shape[:2]
+    band = _band(W)
+    print("frame [row]", one.shape, "[[], row]", top.shape, "[row, []]", low.shape,
+          "band", band)  # fmt: skip
+    # The divider between the two views ends on row L, the first row under
+    # the views: in [row] that is the first row of the legend band. An even
+    # band keeps the parity of the height, so trimming to even sizes removes
+    # the same last row (or none) from every frame here.
+    assert band % 2 == 0
+    assert top.shape == low.shape == (H + band, W, 3)
+    divider = (one == 200).all(axis=-1)
+    xd = int(divider.sum(axis=0).argmax())
+    run = np.flatnonzero(divider[:, xd])
+    L = int(run.max())
+    print("divider column", xd, "rows", run.min(), "to", L)
+    assert len(run) > 50 and H - band <= L <= H - band + 1
+
+    def white(a):
+        return bool((a == 255).all())
+
+    # [[], row]: the views unchanged, then an entirely blank band (the
+    # divider's end is cleared too), then the row's band, one band lower
+    np.testing.assert_array_equal(top[:L], one[:L])
+    assert white(top[L : L + band])
+    np.testing.assert_array_equal(top[L + band + 1 :], one[L + 1 :])
+    # row L of [row] holds only the divider's end; in [[], row] it moved into
+    # the blank band (cleared), so the row's band starts blank
+    assert (one[L] != 255).any(-1).sum() <= 2 and white(top[L + band])
+    legend_rows = np.flatnonzero((_red(one) | _blue(one)).any(axis=1))
+    moved = np.flatnonzero((_red(top) | _blue(top)).any(axis=1))
+    print("legend mark rows [row]", legend_rows[[0, -1]], "[[], row]", moved[[0, -1]])
+    assert len(legend_rows) >= 2  # the line marks, 2 px thick at this font
+    np.testing.assert_array_equal(moved, legend_rows + band)
+    # [row, []]: the frame as before, an entirely blank band below it
+    np.testing.assert_array_equal(low[:H], one)
+    assert white(low[L + band :])
+    # empty rows only: blank bands where the rows would be
+    blank1 = _rgb(bn.plot_network(CENTERS, legend=[[]], **style))
+    blank2 = _rgb(bn.plot_network(CENTERS, legend=[[], []], **style))
+    print("[[]]", blank1.shape, "[[], []]", blank2.shape)
+    assert blank1.shape == one.shape and blank2.shape == top.shape
+    np.testing.assert_array_equal(blank1[:L], one[:L])
+    assert white(blank1[L:])
+    np.testing.assert_array_equal(blank2[:L], one[:L])
+    assert white(blank2[L:])
+    # animate_network draws the same frame (black nodes: same crop reference)
+    still = bn.plot_network(CENTERS, legend=[[], PN_LEGEND], node_color="black",
+                            **style)  # fmt: skip
+    frame = _movie(tmp_path, "blank_row", CENTERS, np.zeros((1, 6, 6)), n=1,
+                   legend=[[], PN_LEGEND], node_color="black", **style)[0]  # fmt: skip
+    np.testing.assert_array_equal(_rgb(still), frame)
+
+
+def test_legend_empty_row_with_frame_size():
+    """frame_size with [[], row]: same size, row at the bottom, blank band above
+    it, and views one band shorter (the frame is height-limited)."""
+    fs = (640, 200)
+    one = _rgb(bn.plot_network(CENTERS, legend=PN_LEGEND, frame_size=fs, **_ANIM))
+    top = _rgb(bn.plot_network(CENTERS, legend=[[], PN_LEGEND], frame_size=fs, **_ANIM))
+    band = _band(640)
+    print("sizes", one.shape, top.shape, "band", band)
+    assert one.shape == top.shape == (200, 640, 3)
+    np.testing.assert_array_equal(top[-band:], one[-band:])
+    np.testing.assert_array_equal(top[-2 * band : -band], np.full((band, 640, 3), 255))
+
+    def extent(a):
+        rows = np.flatnonzero(_drawn(a).any(axis=1))
+        return rows[-1] - rows[0] + 1
+
+    # the views scale with the space between the bands (no title band here)
+    e1, e2 = extent(one[:-band]), extent(top[: -2 * band])
+    expect = e1 * (200 - 2 * band) / (200 - band)
+    print("node extent [row]", e1, "[[], row]", e2, "expected", round(expect, 1))
+    assert e2 < e1 and abs(e2 - expect) <= 2
+    # two views: the band under them is entirely blank, divider end included
+    two = {**_ANIM, "views": ("left", "dorsal"), "frame_size": fs}
+    blank = _rgb(bn.plot_network(CENTERS, legend=[[], PN_LEGEND], **two))
+    plain = _rgb(bn.plot_network(CENTERS, legend=[PN_LEGEND], **two))
+    gap = blank[-2 * band : -band]
+    print("two views: non-white px in the blank band", int((gap != 255).sum()))
+    assert (gap == 255).all()
+    # (the row's band: equal but for the divider end on its first row)
+    np.testing.assert_array_equal(blank[-band + 1 :], plain[-band + 1 :])
 
 
 def test_single_view_layout_path():
@@ -3069,6 +3261,101 @@ def test_legacy_caption_path_unchanged(tmp_path):
         assert b.shape == (200 + head, 320, 3)
         expect = bn._with_header(Image.fromarray(a.astype(np.uint8)), [text])
         np.testing.assert_array_equal(b, _rgb(expect))
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {},
+        {"legend": PN_LEGEND},
+        {"views": ("left", "dorsal"), "legend": PN_LEGEND, "frame_size": (640, 360)},
+    ],
+    ids=["single-view", "legend", "views-frame_size"],
+)
+def test_plot_network_caption_is_a_one_frame_movie(tmp_path, layout):
+    """plot_network(caption=text) equals the frame of a one-window movie with
+    captions=[text], in the single-view path (`_with_header` band) and in the
+    layout path (a line under the titles).
+
+    The scene has no edges (zero connectivity), so the renders are exact, and
+    black nodes, so the movie's crop reference (nodes in black) and the
+    still's crop render are the same image.
+    """
+    text = "t = 12.5 s"
+    style = {**_ANIM, "node_color": "black", **layout}
+    still = bn.plot_network(CENTERS, caption=text, **style)
+    plain = bn.plot_network(CENTERS, **style)
+    frame = _movie(tmp_path, "one", CENTERS, np.zeros((1, 6, 6)), n=1,
+                   captions=[text], **style)[0]  # fmt: skip
+    print(layout, "still", still.size, "plain", plain.size, "movie", frame.shape)
+    np.testing.assert_array_equal(_rgb(still), frame)
+    if layout:
+        # same frame width; a caption row is added under the (possible) titles
+        W = still.size[0]
+        assert still.size[0] == plain.size[0]
+        has_titles = "views" in layout
+        if "frame_size" in layout:
+            assert still.size == plain.size == layout["frame_size"]
+            # the caption's line under the titles holds dark text, where the
+            # captionless image has views or background; the views get less
+            # height
+            t = max(16, W // 32)
+            cap = slice(int(t * 1.5), _head(W, caption=True))
+            a, b = _rgb(still), _rgb(plain)
+            text_px = int(_dark(a[cap]).sum())
+
+            def pane(x):
+                # rows of the divider between the views: top and height of
+                # the panes (its 200-gray line runs from y0 to y0 + ph)
+                line = (x == 200).all(axis=-1)
+                rows = np.flatnonzero(line[:, int(line.sum(axis=0).argmax())])
+                return int(rows[0]), int(rows[-1] - rows[0])
+
+            print("caption row", cap, "dark px", text_px, "differing px",
+                  int((a[cap] != b[cap]).any(-1).sum()), "panes (top, height)",
+                  pane(b), "->", pane(a))  # fmt: skip
+            assert text_px > 20 and (a[cap] != b[cap]).any()
+            # the panes start lower (this frame is width-limited) ...
+            assert pane(a)[0] > pane(b)[0] >= _head(W)
+            # ... and, in a height-limited frame, get less height
+            low = {**style, "frame_size": (640, 240)}
+            ph = [pane(_rgb(bn.plot_network(CENTERS, **c, **low)))[1]
+                  for c in ({}, {"caption": text})]  # fmt: skip
+            print("height-limited pane height", ph[0], "->", ph[1])
+            assert ph[1] < ph[0]
+        else:
+            grow = _head(W, caption=True) - _head(W) if has_titles else None
+            print("height", plain.size[1], "->", still.size[1], "expected +", grow)
+            assert still.size[1] > plain.size[1]
+            if grow is not None:
+                assert still.size[1] - plain.size[1] in (grow - 1, grow, grow + 1)
+    else:
+        expect = bn._with_header(plain, [text])
+        np.testing.assert_array_equal(_rgb(still), _rgb(expect))
+    assert _dark(_rgb(still)[:20]).sum() > 5  # the caption's text is at the top
+
+
+def test_plot_network_caption_none_is_default():
+    """caption=None draws exactly what a call without it draws."""
+    for layout in ({}, {"views": ("left", "dorsal"), "legend": PN_LEGEND}):
+        a = bn.plot_network(CENTERS, **_ANIM, **layout)
+        b = bn.plot_network(CENTERS, caption=None, **_ANIM, **layout)
+        print(layout, a.size, b.size)
+        np.testing.assert_array_equal(_rgb(a), _rgb(b))
+    with pytest.raises(ValueError, match="42") as err:
+        bn.plot_network(CENTERS, caption=42, **_ANIM)
+    print("error:", err.value)
+
+
+def test_results_plot_network_forwards_caption(res_tfa):
+    """HTFAResults.plot_network passes caption on: the image gains the band."""
+    kw = {"mesh": None, "size": (320, 200), "connectivity": np.zeros((3, 3))}
+    plain = res_tfa.plot_network(**kw)
+    capped = res_tfa.plot_network(caption="subject 0", **kw)
+    head = int(max(16, 320 // 32) * (0.5 + 1.3))
+    print("plain", plain.size, "captioned", capped.size, "header", head)
+    assert capped.size == (320, 200 + head)
+    np.testing.assert_array_equal(_rgb(capped)[head:], _rgb(plain))
 
 
 def test_annotate_pair_three_way_equivalence():
@@ -4132,6 +4419,33 @@ def test_animate_network_forwards_encoding(tmp_path):
     for kw in ({"crf": 23}, {"faststart": True}):
         with pytest.raises(ValueError, match="mp4 only"):
             bn.animate_network(CENTERS, _frames(), tmp_path / "x.gif", **kw, **_ANIM)
+
+
+def test_animate_network_forwards_preset(tmp_path):
+    """preset reaches the encoder in the sequential and the n_jobs path, with
+    crf and faststart; a GIF raises as it does for crf."""
+    for jobs in (1, 2):
+        out = bn.animate_network(
+            CENTERS, _frames(), tmp_path / f"p{jobs}.mp4", preset="veryfast",
+            crf=30, faststart=True, n_jobs=jobs, **_ANIM,
+        )  # fmt: skip
+        data = out.read_bytes()
+        options = _x264_options(data)
+        moov, mdat = data.find(b"moov"), data.find(b"mdat")
+        shown = [o for o in options if o.startswith(("subme", "crf"))]
+        print(f"n_jobs={jobs}:", _mp4_count(out), "frames", shown, "moov", moov,
+              "mdat", mdat)  # fmt: skip
+        assert _mp4_count(out) == 3
+        assert "subme=2" in options and "crf=30.0" in options
+        assert 0 < moov < mdat
+    with pytest.raises(ValueError, match="mp4 only"):
+        bn.animate_network(
+            CENTERS, _frames(), tmp_path / "x.gif", preset="slow", **_ANIM
+        )
+    with pytest.raises(ValueError, match="'quick'"):
+        bn.animate_network(
+            CENTERS, _frames(), tmp_path / "y.mp4", preset="quick", **_ANIM
+        )
 
 
 @pytest.mark.parametrize("n_jobs", [0, 1.5, True, "2"])
